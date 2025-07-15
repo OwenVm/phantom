@@ -247,7 +247,7 @@ subroutine wind_step(state)
     if (update_muGamma) call calc_muGamma(state%rho, state%Tg,state%mu, state%gamma, pH, pH_tot)
  endif
 
- if (itau_alloc == 1) then
+ if (itau_alloc == 1 .and. iget_tdust /= 5) then ! In the combination approximation only the non spherically symmetric part gets attenuated
     state%alpha_Edd = calc_Eddington_factor(Mstar_cgs, Lstar_cgs, state%kappa, state%tau)
  else
     state%alpha_Edd = calc_Eddington_factor(Mstar_cgs, Lstar_cgs, state%kappa)
@@ -370,7 +370,7 @@ subroutine wind_step(state)
     if (update_muGamma) call calc_muGamma(state%rho, state%Tg,state%mu, state%gamma, pH, pH_tot)
  endif
 
- if (itau_alloc == 1) then
+ if (itau_alloc == 1 .and. iget_tdust /= 5) then ! In the combination approximation only the non spherically symmetric part gets attenuated
     state%alpha_Edd = calc_Eddington_factor(Mstar_cgs, Lstar_cgs, state%kappa, state%tau)
  else
     state%alpha_Edd = calc_Eddington_factor(Mstar_cgs, Lstar_cgs, state%kappa)

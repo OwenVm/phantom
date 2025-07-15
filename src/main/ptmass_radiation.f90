@@ -31,6 +31,8 @@ module ptmass_radiation
  integer, public  :: iray_resolution = -1
  real,    public  :: tdust_exp       = 0.5
  real,    public  :: alpha_rad       = 0.
+ real,    public  :: alpha_eq        = 0.5
+ real,    public  :: beta_eq         = 0.5
 
  public :: get_rad_accel_from_ptmass
  public :: read_options_ptmass_radiation,write_options_ptmass_radiation
@@ -257,7 +259,7 @@ subroutine get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_pt
  real,     intent(in)    :: xyzh(:,:),xyzmh_ptmass(:,:),eos_vars(:,:)
  real,     intent(inout), optional :: tau(:), tau_lucy(:)
  real,     intent(out)   :: dust_temp(:)
- real                    :: r,L_star,T_star,R_star,xa,ya,za
+ real                    :: r,L_star,T_star,R_star,xa,ya,za,tau_lucy1D,tau_1D
  integer                 :: i,j
 
  !
@@ -330,14 +332,18 @@ subroutine get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_pt
  case(5)
     ! Combination approximation for Tdust (equation TODO)
     !$omp parallel  do default(none) &
-    !$omp shared(npart,xa,ya,za,R_star,T_star,xyzh,dust_temp,tdust_exp,tau_lucy) &
-    !$omp private(i,r)
+    !$omp shared(npart,xa,ya,za,R_star,T_star,xyzh,dust_temp,tdust_exp,tau,tau_lucy,alpha_eq,beta_eq) &
+    !$omp private(i,r,tau_lucy1D,tau_1D)
     do i=1,npart
        if (.not.isdead_or_accreted(xyzh(4,i))) then
           r = sqrt((xyzh(1,i)-xa)**2 + (xyzh(2,i)-ya)**2 + (xyzh(3,i)-za)**2)
           if (r  <  R_star) r = R_star
           if (isnan(tau_lucy(i))) tau_lucy(i) = 2./3.
-          dust_temp(i) = T_star * (.5*(1.-sqrt(1.-(R_star/r)**2)+3./2.*tau_lucy(i)))**(1./4.)
+          tau_lucy1D = 0.
+          tau_1D     = 0.
+          dust_temp(i) = T_star * (.5*(1.-sqrt(1.-(R_star/r)**2)+ &
+                           3./2.*(tau_lucy1D+alpha_eq*(tau_lucy(i)-tau_lucy1D))) &
+                                                      *exp(-beta_eq*(tau(i)-tau_1D)))**(1./4.)
        endif
     enddo
     !$omp end parallel do
@@ -374,6 +380,10 @@ subroutine write_options_ptmass_radiation(iunit)
                 'iget_tdust','dust temperature (0:Tdust=Tgas 1:T(r) 2:Flux dilution 3:Attenuation 4:Lucy 5:Combination)',iunit)
     if (iget_tdust /= 2) call write_inopt(iray_resolution,&
                                    'iray_resolution','set the number of rays to 12*4**iray_resolution (deactivated if <0)',iunit)
+ endif
+ if (iget_tdust == 5) then
+    call write_inopt(alpha_eq,'alpha_eq','fraction of the 3D Lucy optical depth that accounted for (between 0 and 1)',iunit)
+    call write_inopt(beta_eq, 'beta_eq', 'fraction of the optical depth that is accounted for (between 0 and 1)',iunit)
  endif
  if (iget_tdust == 1) then
     call write_inopt(tdust_exp,'tdust_exp','exponent of the dust temperature profile',iunit)
