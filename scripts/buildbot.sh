@@ -13,7 +13,7 @@
 #
 # Written by Daniel Price, 2012-2023, daniel.price@monash.edu
 #
-if [ X$SYSTEM == X ]; then
+if [ "X$SYSTEM" == "X" ]; then
    echo "Error: Need SYSTEM environment variable set to check PHANTOM build";
    echo "Usage: $0 [max idim to check] [url]";
    exit;
@@ -72,11 +72,12 @@ echo "url = $url";
 pwd=$PWD;
 phantomdir="$pwd/../";
 listofcomponents='main setup analysis utils';
-#listofcomponents='analysis'
+#listofcomponents='setup'
 #
 # get list of targets, components and setups to check
 #
 allsetups=`grep 'ifeq ($(SETUP)' $phantomdir/build/Makefile_setups | grep -v skip | cut -d, -f 2 | cut -d')' -f 1`
+#allsetups='star'
 setuparr=($allsetups)
 batchsize=$(( ${#setuparr[@]} / $nbatch + 1 ))
 offset=$(( ($batch-1) * $batchsize ))
@@ -183,9 +184,10 @@ check_phantomsetup ()
    #
    myinput="\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n";
    prefix="myrun";
+   flags="--np=1000"
    echo -e "$myinput" > myinput.txt;
    sed '/-e/d' myinput.txt > mycleanin.txt
-   ./phantomsetup $prefix < mycleanin.txt > /dev/null; err=$?;
+   ./phantomsetup $prefix $flags < mycleanin.txt > /dev/null; err=$?;
    if [ $err -eq 0 ]; then
       print_result "runs" $pass;
    else
@@ -195,14 +197,15 @@ check_phantomsetup ()
    #
    # run phantomsetup up to 3 times to successfully create/rewrite the .setup file
    #
-   ./phantomsetup $prefix < myinput.txt > /dev/null;
-   ./phantomsetup $prefix < myinput.txt > /dev/null;
+   infile="${prefix}.in"
+   ./phantomsetup $prefix $flags < mycleanin.txt > /dev/null;
+   ./phantomsetup $prefix $flags < mycleanin.txt > /dev/null;
    if [ -e "$prefix.setup" ]; then
       print_result "creates .setup file" $pass;
+      test_setupfile_options "$prefix.setup" "$flags" "$setup" $infile;
    else
       print_result "no .setup file" $warn;
    fi
-   infile="${prefix}.in"
    if [ -e "$infile" ]; then
       print_result "creates .in file" $pass;
       #
@@ -245,6 +248,50 @@ check_phantomsetup ()
    if [ $myfail -gt 0 ]; then
       echo $setup >> $faillogsetup;
    fi
+}
+#
+# check that all possible values of certain
+# variables in the .setup file work
+#
+test_setupfile_options()
+{
+   myfail=0;
+   #"$prefix.setup" "$flags" "$setup" $infile
+   setupfile=$1;
+   flags=$2;
+   setup=$3;
+   infile=$4;
+   range=''
+   if [ "X$setup" == "Xstar" ]; then
+      param='iprofile1'
+      range='0 1 2 3 4 5 6 7'
+   fi
+   for x in $range; do
+       valstring="$param = $x"
+       echo "checking $valstring for SETUP=$setup"
+       rm $setupfile;
+       ./phantomsetup $setupfile $flags < mycleanin.txt > /dev/null;
+       sed "s/$param.*=.*$/$valstring/" $setupfile > ${setupfile}.tmp
+       mv ${setupfile}.tmp $setupfile
+       if [ "X$x" == "X6" ]; then
+          #sed "s/ieos.*=.*$/ieos = 9/" $setupfile > ${setupfile}.tmp
+          #mv ${setupfile}.tmp $setupfile
+          sed "s/dist_unit.*=.*$/dist_unit = km/" $setupfile > ${setupfile}.tmp
+          mv ${setupfile}.tmp $setupfile
+       fi
+       echo $setupfile
+       rm $infile
+       ./phantomsetup $setupfile $flags < /dev/null > /dev/null;
+       ./phantomsetup $setupfile $flags < /dev/null > /dev/null;
+
+       if [ -e $infile ]; then
+          print_result "successful phantomsetup with $valstring" $pass;
+       else
+          print_result "FAIL: failed to create .in file with $valstring" $fail;
+          myfail=$(( myfail + 1 ));
+          echo $setup $valstring >> $faillogsetup;
+       fi
+   done
 }
 #
 # unit tests for phantomanalysis utility
@@ -389,7 +436,7 @@ for setup in $listofsetups; do
          echo $setup >> $faillog;
       fi
       if [ -e $errorlogold ]; then
-         diff --unchanged-line-format="" --old-line-format="" --new-line-format="%L" $errorlogold $errorlog | tail -20 > warnings.tmp
+         diff $errorlogold $errorlog | tail -20 > warnings.tmp
          if [ -s warnings.tmp ]; then
             newwarn=1;
          else

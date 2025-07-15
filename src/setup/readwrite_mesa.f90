@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------!
 ! The Phantom Smoothed Particle Hydrodynamics code, by Daniel Price et al. !
-! Copyright (c) 2007-2023 The Authors (see AUTHORS)                        !
+! Copyright (c) 2007-2025 The Authors (see AUTHORS)                        !
 ! See LICENCE file for usage and distribution conditions                   !
 ! http://phantomsph.github.io/                                             !
 !--------------------------------------------------------------------------!
@@ -101,8 +101,9 @@ subroutine read_mesa(filepath,rho,r,pres,m,ene,temp,X_in,Z_in,Xfrac,Yfrac,Mstar,
  call read_column_labels(iu,nheaderlines,ncols,nlabels,header)
  if (nlabels /= ncols) print*,' WARNING: different number of labels compared to columns'
 
- allocate(m(lines),r(lines),pres(lines),rho(lines),ene(lines), &
-          temp(lines),Xfrac(lines),Yfrac(lines))
+ allocate(m(lines))
+ m = -1.
+ allocate(r,pres,rho,ene,temp,Xfrac,Yfrac,source=m)
 
  over_directions: do idir=1,2   ! try backwards, then forwards
     if (idir==1) then
@@ -137,27 +138,44 @@ subroutine read_mesa(filepath,rho,r,pres,m,ene,temp,X_in,Z_in,Xfrac,Yfrac,Mstar,
        case('mass','#mass','m')
           m = dat(1:lines,i)
           if (ismesafile .or. maxval(m) < 1.e-10*solarm) m = m * solarm  ! If reading MESA profile, 'mass' is in units of Msun
+       case('logM','log_mass')
+          m = 10**dat(1:lines,i)
+          if (ismesafile .or. maxval(m) < 1.e-10*solarm) m = m * solarm  ! If reading MESA profile, 'mass' is in units of Msun
        case('rho','density')
           rho = dat(1:lines,i)
        case('logrho')
           rho = 10**(dat(1:lines,i))
        case('energy','e_int','e_internal')
           ene = dat(1:lines,i)
+       case('loge')
+          ene = 10**dat(1:lines,i)
        case('radius_cm')
           r = dat(1:lines,i)
+       case('radius_km')
+          r = dat(1:lines,i) * 1e5
        case('radius','r')
           r = dat(1:lines,i)
           if (ismesafile .or. maxval(r) < 1e-10*solarr) r = r * solarr
        case('logr')
           r = (10**dat(1:lines,i)) * solarr
+       case('logr_cm')
+          r = 10**dat(1:lines,i)
        case('pressure','p')
           pres = dat(1:lines,i)
+       case('logp')
+          pres = 10**dat(1:lines,i)
        case('temperature','t')
           temp = dat(1:lines,i)
-       case('x_mass_fraction_h','xfrac')
+       case('logt')
+          temp = 10**dat(1:lines,i)
+       case('x_mass_fraction_h','x','xfrac','h1')
           Xfrac = dat(1:lines,i)
-       case('y_mass_fraction_he','yfrac')
+       case('log_x')
+          Xfrac = 10**dat(1:lines,i)
+       case('y_mass_fraction_he','y','yfrac','he4')
           Yfrac = dat(1:lines,i)
+       case('log_y')
+          Yfrac = 10**dat(1:lines,i)
        case default
           got_column = .false.
        end select
@@ -175,6 +193,13 @@ subroutine read_mesa(filepath,rho,r,pres,m,ene,temp,X_in,Z_in,Xfrac,Yfrac,Mstar,
     enddo
  enddo over_directions
  close(iu)
+
+ if (min(minval(pres),minval(rho))<0d0)ierr = 1
+
+ if (ierr /= 0) then
+    print "(a,/)",' ERROR reading MESA file [missing required columns]'
+    return
+ endif
 
  if (.not. usecgs) then
     m = m / umass
@@ -198,39 +223,43 @@ subroutine write_mesa(outputpath,m,pres,temp,r,rho,ene,Xfrac,Yfrac,csound,mu)
  real, intent(in)                :: m(:),rho(:),pres(:),r(:),ene(:),temp(:)
  real, intent(in), optional      :: Xfrac(:),Yfrac(:),csound(:),mu(:)
  character(len=120), intent(in)  :: outputpath
- character(len=200)              :: headers
- integer                         :: i,noptionalcols,j,iu
+ character(len=200)              :: headers(100)
+ integer                         :: i,ncols,noptionalcols,j,iu
  real, allocatable               :: optionalcols(:,:)
- character(len=*), parameter     :: fmtstring = "(5(es13.6,2x),es13.6)"
+ character(len=*), parameter     :: fmtstring = "(5(es24.16e3,2x),es24.16e3)"
 
- headers = '[    Mass   ]  [  Pressure ]  [Temperature]  [   Radius  ]  [  Density  ]  [   E_int   ]'
+ ncols = 6
+ headers(1:ncols) = (/'       Mass','   Pressure','Temperature','     Radius','    Density','       Eint'/)
 
  ! Add optional columns
- allocate(optionalcols(size(r),10))
  noptionalcols = 0
+ allocate(optionalcols(size(r),10))
  if (present(Xfrac)) then
     noptionalcols = noptionalcols + 1
-    headers = trim(headers) // '  [   Xfrac   ]'
+    headers(noptionalcols+ncols) = '      Xfrac'
     optionalcols(:,noptionalcols) = Xfrac
  endif
  if (present(Yfrac)) then
     noptionalcols = noptionalcols + 1
-    headers = trim(headers) // '  [   Yfrac   ]'
+    headers(noptionalcols+ncols) = '      Yfrac'
     optionalcols(:,noptionalcols) = Yfrac
  endif
  if (present(mu)) then
     noptionalcols = noptionalcols + 1
-    headers = trim(headers) // '  [    mu     ]'
+    headers(noptionalcols+ncols) = '        mu'
     optionalcols(:,noptionalcols) = mu
  endif
  if (present(csound)) then
     noptionalcols = noptionalcols + 1
-    headers = trim(headers) // '  [Sound speed]'
+    headers(noptionalcols+ncols) = 'Sound speed'
     optionalcols(:,noptionalcols) = csound
  endif
 
- open(newunit=iu, file = outputpath, status = 'replace')
- write(iu,'(a)') headers
+ open(newunit=iu,file=outputpath,status='replace')
+ do i = 1,noptionalcols+ncols-1
+    write(iu,'(a24,2x)',advance="no") trim(headers(i))
+ enddo
+ write(iu,'(a24)') trim(headers(noptionalcols+ncols))
 
  do i=1,size(r)
     if (noptionalcols <= 0) then
@@ -239,9 +268,9 @@ subroutine write_mesa(outputpath,m,pres,temp,r,rho,ene,Xfrac,Yfrac,csound,mu)
        write(iu,fmtstring,advance="no") m(i),pres(i),temp(i),r(i),rho(i),ene(i)
        do j=1,noptionalcols
           if (j==noptionalcols) then
-             write(iu,'(2x,es13.6)') optionalcols(i,j)
+             write(iu,'(2x,es24.16e3)') optionalcols(i,j)
           else
-             write(iu,'(2x,es13.6)',advance="no") optionalcols(i,j)
+             write(iu,'(2x,es24.16e3)',advance="no") optionalcols(i,j)
           endif
        enddo
     endif

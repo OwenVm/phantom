@@ -1,18 +1,19 @@
 !--------------------------------------------------------------------------!
 ! The Phantom Smoothed Particle Hydrodynamics code, by Daniel Price et al. !
-! Copyright (c) 2007-2023 The Authors (see AUTHORS)                        !
+! Copyright (c) 2007-2025 The Authors (see AUTHORS)                        !
 ! See LICENCE file for usage and distribution conditions                   !
 ! http://phantomsph.github.io/                                             !
 !--------------------------------------------------------------------------!
 module rho_profile
 !
 ! This computes several radial density profiles useful for stars
-! and gravitational collapse calculations, including
-!               1) uniform
-!               2) polytrope
-!               3) piecewise polytrope
-!               4) Evrard
-!               5) Bonnor-Ebert sphere
+! and gravitational collapse calculations, including:
+!
+!  1. uniform
+!  2. polytrope
+!  3. piecewise polytrope
+!  4. Evrard
+!  5. Bonnor-Ebert sphere
 !
 ! :References: Evrard (1988), MNRAS 235, 911-934
 !
@@ -162,6 +163,7 @@ subroutine rho_piecewise_polytrope(rtab,rhotab,rhocentre,mstar_in,get_dPdrho,npt
  lastsign  = 1
  iterate   = .true.
  bisect    = .false.
+ rtab      = 0.
  !
  !--Iterate to get the correct density profile
  do while ( iterate )
@@ -169,6 +171,10 @@ subroutine rho_piecewise_polytrope(rtab,rhotab,rhocentre,mstar_in,get_dPdrho,npt
     if (ierr > 0) then
        !--did not complete the profile; reset dr
        dr   = 2.0*dr
+       ierr = 0
+    elseif (npts < size(rtab)/4) then
+       !--profile is unresolved by radial grid, take smaller dr
+       dr = 0.5*dr
        ierr = 0
     else
        call calc_mass_enc(npts,rtab,rhotab,mstar=mstar)
@@ -233,6 +239,8 @@ subroutine integrate_rho_profile(rtab,rhotab,rhocentre,get_dPdrho,dr,npts,ierr)
     i = i + 1
     rhotab(i) = rhotab(i-1) + dr*drhodr
     rtab(i)   = rtab(i-1)   + dr
+    if (rhotab(i) < 0.0) exit
+
     dPdrho    = get_dPdrho(rhotab(i))
     if (i==2) then
        drhodr = drhodr - fourpi*rhotab(i-1)**2*dr/dPdrho
@@ -242,7 +250,6 @@ subroutine integrate_rho_profile(rtab,rhotab,rhocentre,get_dPdrho,dr,npts,ierr)
               - (dPdrho-dPdrho_prev)/(dr*dPdrho)*drhodr - 2.0*drhodr/rtab(i) )
     endif
     dPdrho_prev = dPdrho
-    if (rhotab(i) < 0.0) iterate = .false.
     if (i >=size(rtab)) then
        ierr    = 1
        iterate = .false.

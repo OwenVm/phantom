@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------!
 ! The Phantom Smoothed Particle Hydrodynamics code, by Daniel Price et al. !
-! Copyright (c) 2007-2023 The Authors (see AUTHORS)                        !
+! Copyright (c) 2007-2025 The Authors (see AUTHORS)                        !
 ! See LICENCE file for usage and distribution conditions                   !
 ! http://phantomsph.github.io/                                             !
 !--------------------------------------------------------------------------!
@@ -100,11 +100,11 @@ subroutine read_kepler_file(filepath,ng_max,n_rows,rtab,rhotab,ptab,temperature,
  !--This is used as a test for saving composition.
  !
  ierr = 0
- open(newunit=iu, file=trim(fullfilepath))
+ open(newunit=iu,file=trim(fullfilepath))
  !The row with the information about column headings is at nheaderlines-1.
  !we skip the first nheaderlines-2 rows and then read the nheaderlines-1 to find the substrings
  call skip_header(iu,nheaderlines-2,ierr)
- read(iu, '(a)', iostat=ierr) line
+ read(iu, '(a)',iostat=ierr) line
 
  !read the column labels and store them in an array.
  allocate(all_label(n_cols))
@@ -125,7 +125,7 @@ subroutine read_kepler_file(filepath,ng_max,n_rows,rtab,rhotab,ptab,temperature,
  !
  !--Read the file again and save the data in stardata tensor.
  !
- open(newunit=iu, file=trim(fullfilepath))
+ open(newunit=iu,file=trim(fullfilepath))
  call skip_header(iu,nheaderlines,ierr)
  do k=1,n_rows
     read(iu,*,iostat=ierr) stardata(k,:)
@@ -199,10 +199,11 @@ end subroutine read_kepler_file
 !
 !+
 !-----------------------------------------------------------------------
-subroutine write_kepler_comp(composition,comp_label,columns_compo,r,&
+subroutine write_kepler_comp(filename,composition,comp_label,columns_compo,r,&
                              xyzh,npart,npts,composition_exists,npin)
 
  use table_utils, only:yinterp
+ character(len=*), intent(in)               :: filename
  integer, intent(in)                        :: columns_compo,npart,npts
  real,    intent(in)                        :: xyzh(:,:)
  real, allocatable,intent(in)               :: r(:)
@@ -212,7 +213,7 @@ subroutine write_kepler_comp(composition,comp_label,columns_compo,r,&
  integer, intent(in), optional              :: npin
  real , allocatable                         :: compositioni(:,:)
  real, allocatable                          :: comp(:)
- integer                                    :: i,j,iu,i1
+ integer                                    :: i,j,iu,i1,ierr
  real                                       :: ri
 
  composition_exists = .false.
@@ -226,9 +227,13 @@ subroutine write_kepler_comp(composition,comp_label,columns_compo,r,&
  endif
 
  if (composition_exists) then
-    print*, 'Writing the stellar composition for each particle into ','kepler.comp'
+    print*, 'Writing the stellar composition for each particle into '//trim(filename)
 
-    open(newunit=iu,file='kepler.comp')
+    open(newunit=iu,file=trim(filename),status='replace',form='formatted',iostat=ierr)
+    if (ierr /= 0) then
+       print*,' ERROR writing to '//trim(filename)
+       return
+    endif
     write(iu,"('#',50(1x,'[',1x,a7,']',2x))") &
             comp_label
     !Now setting the composition of star if the case used was ikepler
@@ -246,7 +251,6 @@ subroutine write_kepler_comp(composition,comp_label,columns_compo,r,&
             (compositioni(j,1),j=1,columns_compo)
     enddo
     close(iu)
-    print*, '>>>>>> done'
  endif
 
 end subroutine write_kepler_comp

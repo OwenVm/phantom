@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------!
 ! The Phantom Smoothed Particle Hydrodynamics code, by Daniel Price et al. !
-! Copyright (c) 2007-2023 The Authors (see AUTHORS)                        !
+! Copyright (c) 2007-2025 The Authors (see AUTHORS)                        !
 ! See LICENCE file for usage and distribution conditions                   !
 ! http://phantomsph.github.io/                                             !
 !--------------------------------------------------------------------------!
@@ -223,7 +223,7 @@ subroutine read_binary_table()
           if (i /= 1) t2(k,i,j) = log10(t1(k,i,j))
        enddo
     enddo
-    print*, i, t1(k-1,i,j-1)
+    !print*, i, t1(k-1,i,j-1)
  enddo
 
  close(1)
@@ -249,7 +249,7 @@ end subroutine Cint
 !  Interpolate between values using linear interpolation in 1D
 !+
 !------------------------------------------------------------------------
-subroutine linear_interpolator_one_d(val0,val1,u,val)
+pure subroutine linear_interpolator_one_d(val0,val1,u,val)
  real, intent(out) :: val
  real, intent(in)  :: val0,val1,u
 

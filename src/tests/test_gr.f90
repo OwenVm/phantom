@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------!
 ! The Phantom Smoothed Particle Hydrodynamics code, by Daniel Price et al. !
-! Copyright (c) 2007-2023 The Authors (see AUTHORS)                        !
+! Copyright (c) 2007-2025 The Authors (see AUTHORS)                        !
 ! See LICENCE file for usage and distribution conditions                   !
 ! http://phantomsph.github.io/                                             !
 !--------------------------------------------------------------------------!
@@ -15,8 +15,8 @@ module testgr
 ! :Runtime parameters: None
 !
 ! :Dependencies: cons2prim, cons2primsolver, eos, extern_gr, inverse4x4,
-!   io, metric, metric_tools, part, physcon, step_lf_global, testutils,
-!   units, utils_gr, vectorutils
+!   io, metric, metric_tools, part, physcon, substepping, testutils, units,
+!   utils_gr, vectorutils
 !
  use testutils, only:checkval,checkvalbuf,checkvalbuf_end,update_test_scores
  implicit none
@@ -59,7 +59,7 @@ subroutine test_precession(ntests,npass)
  real    :: dt,period,x0,vy0,tmax,angtol,postol
  real    :: angmom(3),angmom0(3),xyz(3),vxyz(3)
 
- write(*,'(/,a)') '--> testing step_extern_gr (precession)'
+ write(*,'(/,a)') '--> testing substep_gr (precession)'
  if (imetric /= imet_kerr .and. imetric /= imet_schwarzschild) then
     write(*,'(/,a)') '   Skipping test! Metric is not Kerr (or Schwarzschild).'
     return
@@ -107,7 +107,7 @@ subroutine test_inccirc(ntests,npass)
  real :: m,omega,phi,q,r,rdot,rho2,theta,thetadot,vx,vy,vz,x1,y1,z1
  real :: R2,rfinal
 
- write(*,'(/,a)') '--> testing step_extern_gr (inclined circular orbit)'
+ write(*,'(/,a)') '--> testing substep_gr (inclined circular orbit)'
 
  if (imetric /= imet_kerr) then
     write(*,'(/,a)') '   Skipping test! Metric is not Kerr.'
@@ -160,13 +160,15 @@ end subroutine test_inccirc
 !-----------------------------------------------------------------------
 !+
 !   test the geodesic integrator using test particle integration
-!   and the step_extern_gr routine
+!   and the substep_gr routine
 !+
 !-----------------------------------------------------------------------
 subroutine integrate_geodesic(tmax,dt,xyz,vxyz,angmom0,angmom)
  use io,             only:iverbose
- use part,           only:igas,npartoftype,massoftype,set_particle_type,get_ntypes,ien_type
- use step_lf_global, only:step_extern_gr
+ use part,           only:igas,npartoftype,massoftype,set_particle_type,get_ntypes,ien_type,&
+                          xyzmh_ptmass,vxyz_ptmass,pxyzu_ptmass,metrics_ptmass,&
+                          metricderivs_ptmass,fxyz_ptmass,nptmass
+ use substepping,    only:substep_gr
  use eos,            only:ieos
  use cons2prim,      only:prim2consall
  use metric_tools,   only:init_metric,unpack_metric
@@ -208,8 +210,8 @@ subroutine integrate_geodesic(tmax,dt,xyz,vxyz,angmom0,angmom)
  ien_type       = 1
 
  call init_metric(npart,xyzh,metrics,metricderivs)
- call prim2consall(npart,xyzh,metrics,vxyzu,dens,pxyzu,use_dens=.false.)
- call get_grforce_all(npart,xyzh,metrics,metricderivs,vxyzu,dens,fext,dtextforce)
+ call prim2consall(npart,xyzh,metrics,vxyzu,pxyzu,use_dens=.false.,dens=dens)
+ call get_grforce_all(npart,xyzh,metrics,metricderivs,vxyzu,fext,dtextforce,dens=dens)
  call calculate_angmom(xyzh(1:3,1),metrics(:,:,:,1),massi,vxyzu(1:3,1),angmom0)
 
  nsteps = 0
@@ -217,7 +219,9 @@ subroutine integrate_geodesic(tmax,dt,xyz,vxyz,angmom0,angmom)
     nsteps = nsteps + 1
     time   = time   + dt
     dtextforce = blah
-    call step_extern_gr(npart,ntypes,dt,dtextforce,xyzh,vxyzu,pxyzu,dens,metrics,metricderivs,fext,time)
+    !  call substep_gr(npart,ntypes,dt,dtextforce,xyzh,vxyzu,pxyzu,dens,metrics,metricderivs,fext,time)
+    call substep_gr(npart,nptmass,ntypes,dt,dtextforce,xyzh,vxyzu,pxyzu,dens,metrics,metricderivs,fext,time,&
+                       xyzmh_ptmass,vxyz_ptmass,pxyzu_ptmass,metrics_ptmass,metricderivs_ptmass,fxyz_ptmass)
  enddo
 
  call calculate_angmom(xyzh(1:3,1),metrics(:,:,:,1),massi,vxyzu(1:3,1),angmom)
@@ -468,7 +472,7 @@ subroutine test_cons2prim_i(x,v,dens,u,p,ncheck,nfail,errmax,tol)
  use part,            only:ien_entropy,ien_etotal,ien_entropy_s
  use metric_tools,    only:pack_metric,unpack_metric
  use eos,             only:ieos,equationofstate,calc_temp_and_ene
- use physcon,         only:radconst,kb_on_mh
+ use physcon,         only:radconst
 
  real, intent(in) :: x(1:3),v(1:3),dens,p,tol
  real,    intent(inout) :: u

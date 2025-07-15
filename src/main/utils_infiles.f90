@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------!
 ! The Phantom Smoothed Particle Hydrodynamics code, by Daniel Price et al. !
-! Copyright (c) 2007-2023 The Authors (see AUTHORS)                        !
+! Copyright (c) 2007-2025 The Authors (see AUTHORS)                        !
 ! See LICENCE file for usage and distribution conditions                   !
 ! http://phantomsph.github.io/                                             !
 !--------------------------------------------------------------------------!
@@ -21,6 +21,7 @@ module infile_utils
  public :: write_inopt, read_inopt
  public :: read_next_inopt, get_inopt
  public :: write_infile_series, check_infile, contains_loop, get_optstring
+ public :: int_to_string
 !
 ! generic interface write_inopt to write an input option of any type
 !
@@ -44,7 +45,7 @@ module infile_utils
 ! maximum length for input strings
 ! (if you change this, must also change format statements below)
 !
- integer, parameter, private :: maxlen = 20 ! max length of string containing variable
+ integer, parameter, private :: maxlen = 100 ! max length of string containing variable
  integer, parameter, private :: maxlenval = 100 ! max length of string containing value
  integer, parameter, private :: maxlenstring = 120  ! max length of string variable
  integer, parameter, private :: maxlenline   = 120  ! maximum line length
@@ -177,6 +178,7 @@ subroutine write_inopt_real8(rval,name,descript,iunit,ierr,exp,time)
  logical :: doexp,dotime
  integer :: nhr,nmin !,nsec
  character(len=16) :: tmpstring
+ character(len=3) :: fmts
  real(kind=8) :: trem
  integer :: ierror
 
@@ -189,6 +191,9 @@ subroutine write_inopt_real8(rval,name,descript,iunit,ierr,exp,time)
     if (time) dotime = .true.
  endif
 
+ fmts = "a20"
+ if (len_trim(name) > 20) fmts = "a"
+
  if (dotime) then
     trem = rval
     nhr = int(trem/3600.d0)
@@ -197,12 +202,12 @@ subroutine write_inopt_real8(rval,name,descript,iunit,ierr,exp,time)
     if (nmin > 0) trem = trem - nmin*60.d0
     !nsec = int(trem)
 
-    write(iunit,"(a20,' = ',5x,i3.3,':',i2.2,4x,'! ',a)",iostat=ierror) &
+    write(iunit,"("//trim(fmts)//",' = ',5x,i3.3,':',i2.2,4x,'! ',a)",iostat=ierror) &
          name,nhr,nmin,descript
  else
     if (doexp .or. (abs(rval) < 1.e-3 .and. abs(rval) > tiny(rval)) &
               .or. (abs(rval) >= 1.e4)) then
-       write(iunit,"(a20,' = ',1x,es10.3,4x,'! ',a)",iostat=ierror) &
+       write(iunit,"("//trim(fmts)//",' = ',1x,es10.3,4x,'! ',a)",iostat=ierror) &
          name,rval,descript
     else
        if (abs(rval) <= 1.e-1) then
@@ -215,10 +220,11 @@ subroutine write_inopt_real8(rval,name,descript,iunit,ierr,exp,time)
           write(tmpstring,"(g16.9)",iostat=ierror) rval
           tmpstring = adjustl(strip_zeros(tmpstring,3))
        endif
+
        if (len_trim(tmpstring) > 10) then
-          write(iunit,"(a20,' = ',1x,a,2x,'! ',a)",iostat=ierror) name,adjustr(trim(tmpstring)),descript
+          write(iunit,"("//trim(fmts)//",' = ',1x,a,2x,'! ',a)",iostat=ierror) name,adjustr(trim(tmpstring)),descript
        else
-          write(iunit,"(a20,' = ',1x,a10,4x,'! ',a)",iostat=ierror) name,adjustr(trim(tmpstring)),descript
+          write(iunit,"("//trim(fmts)//",' = ',1x,a10,4x,'! ',a)",iostat=ierror) name,adjustr(trim(tmpstring)),descript
        endif
     endif
  endif
@@ -268,12 +274,16 @@ subroutine write_inopt_string(sval,name,descript,iunit,ierr)
  integer,          intent(in)  :: iunit
  integer,          intent(out), optional :: ierr
  character(len=40) :: fmtstring
+ character(len=3)  :: fmts
  integer :: ierror
 
+ fmts = "a20"
+ if (len_trim(name) > 20) fmts = "a"
+
  if (len_trim(sval) > 10) then
-    fmtstring = '(a20,'' = '',1x,a,3x,''! '',a)'
+    fmtstring = '('//fmts//','' = '',1x,a,3x,''! '',a)'
  else
-    fmtstring = '(a20,'' = '',1x,a10,4x,''! '',a)'
+    fmtstring = '('//fmts//','' = '',1x,a10,4x,''! '',a)'
  endif
 
  write(iunit,fmtstring,iostat=ierror) name,trim(sval),trim(descript)
@@ -434,11 +444,17 @@ subroutine read_inopt_int(ival,tag,db,err,errcount,min,max)
  if (ierr==0) then
     if (present(min)) then
        write(chmin,"(g10.0)") min
-       if (ival < min) ierr = ierr_rangemin
+       if (ival < min) then
+          ierr = ierr_rangemin
+          ival = min
+       endif
     endif
     if (present(max)) then
        write(chmax,"(g10.0)") max
-       if (ival > max) ierr = ierr_rangemax
+       if (ival > max) then
+          ierr = ierr_rangemax
+          ival = max
+       endif
     endif
  endif
 
@@ -484,11 +500,17 @@ subroutine read_inopt_real(val,tag,db,err,errcount,min,max)
  if (ierr==0) then
     if (present(min)) then
        write(chmin,"(g13.4)") min
-       if (val < min) ierr = ierr_rangemin
+       if (val < min) then
+          ierr = ierr_rangemin
+          val = min
+       endif
     endif
     if (present(max)) then
        write(chmax,"(g13.4)") max
-       if (val > max) ierr = ierr_rangemax
+       if (val > max) then
+          ierr = ierr_rangemax
+          val = max
+       endif
     endif
  endif
  if (present(err)) then
@@ -507,17 +529,17 @@ end subroutine read_inopt_real
 !  read a string variable from an input options database
 !+
 !-----------------------------------------------------------------
-subroutine read_inopt_string(valstring,tag,db,err,errcount)
+subroutine read_inopt_string(valstring,tag,db,err,errcount,default)
  character(len=*),          intent(out)   :: valstring
  character(len=*),          intent(in)    :: tag
  type(inopts), allocatable, intent(inout) :: db(:)
  integer,                   intent(out),   optional :: err
  integer,                   intent(inout), optional :: errcount
+ character(len=*),          intent(in),    optional :: default
  integer :: ierr
 
  ierr = 0
  if (.not.match_inopt_in_db(db,tag,valstring)) ierr = -1
-
  if (present(err)) then
     err = ierr
  elseif (ierr /= 0) then
@@ -525,6 +547,12 @@ subroutine read_inopt_string(valstring,tag,db,err,errcount)
  endif
  if (present(errcount)) then
     if (ierr /= 0) errcount = errcount + 1
+ endif
+ ! default string to use if the string read is blank
+ if (present(default)) then
+    if (len_trim(valstring) <= 0) then
+       valstring = default
+    endif
  endif
 
 end subroutine read_inopt_string
@@ -668,8 +696,9 @@ subroutine read_inopt_from_line(line,name,valstring,ierr,comment)
 !
 !--for time strings, assume they are of the form hh:mm:ss
 !  convert to a number of seconds as a real
+!  but be careful to ignore datetime strings like 2020-10-04 12:00:00
 !
- if (index(valstring,':') /= 0) then
+ if (index(valstring,':') /= 0 .and. index(valstring,'-')==0) then
     nsec = 0
     read(valstring,"(i3.3,1x,i2.2,1x,i2.2)",iostat=ierr) nhr,nmin,nsec
     if (ierr/=0) then
@@ -1232,13 +1261,14 @@ end subroutine write_infile_lines
 ! Creates a string out of a list of options
 !
 !---------------------------------------------------------------------------
-subroutine get_optstring(nopts,optstring,string,maxlen)
+subroutine get_optstring(nopts,optstring,string,maxlen,from_zero)
  integer,          intent(in)  :: nopts
  character(len=*), intent(in)  :: optstring(nopts)
  character(len=*), intent(out) :: string
  integer,          intent(in), optional :: maxlen
+ logical,          intent(in), optional :: from_zero
  character(len=len(string)) :: temp
- integer            :: i,maxl,ierr
+ integer            :: i,maxl,ierr,ioffset
 
  if (present(maxlen)) then
     maxl = max(maxlen,1)
@@ -1247,15 +1277,54 @@ subroutine get_optstring(nopts,optstring,string,maxlen)
  endif
 
  string = ''
+ !--allow for enumeration that starts from 0 instead of 1
+ ioffset = 0
+ if (present(from_zero)) then
+    if (from_zero) ioffset = 1
+ endif
+
  do i=1,nopts
     temp = adjustl(optstring(i))
     if (i==nopts) then
-       write(string(len_trim(string)+1:),"(i0,'=',a)",iostat=ierr) i,trim(temp(1:maxl))
+       write(string(len_trim(string)+1:),"(i0,'=',a)",iostat=ierr) i-ioffset,trim(temp(1:maxl))
     else
-       write(string(len_trim(string)+1:),"(i0,'=',a,',')",iostat=ierr) i,trim(temp(1:maxl))
+       write(string(len_trim(string)+1:),"(i0,'=',a,',')",iostat=ierr) i-ioffset,trim(temp(1:maxl))
     endif
  enddo
 
 end subroutine get_optstring
+
+!---------------------------------------------------------------------------
+!
+! convert an integer to a string without using write statements
+! so the function itself can be used in a print or write statement
+!
+!---------------------------------------------------------------------------
+function int_to_string(num) result(str)
+ integer, intent(in) :: num
+ character(len=20) :: str
+ integer :: i, n
+ character(len=1) :: digit
+
+ n = abs(num)  ! Get the absolute value of the number
+ str = ''      ! Initialize the string
+
+ ! Convert integer to string
+ do while (n > 0)
+    i = mod(n, 10)  ! Get the last digit
+    digit = char(i + ichar('0'))  ! Convert digit to character
+    str = trim(adjustl(digit)) // str  ! Prepend digit to string
+    n = n / 10      ! Remove the last digit
+ enddo
+
+ if (num < 0) then
+    str = '-' // trim(str)  ! Add negative sign if necessary
+ endif
+
+ if (num == 0) then
+    str = '0'  ! Handle the case for zero
+ endif
+
+end function int_to_string
 
 end module infile_utils

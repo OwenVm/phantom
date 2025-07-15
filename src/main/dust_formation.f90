@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------!
 ! The Phantom Smoothed Particle Hydrodynamics code, by Daniel Price et al. !
-! Copyright (c) 2007-2023 The Authors (see AUTHORS)                        !
+! Copyright (c) 2007-2025 The Authors (see AUTHORS)                        !
 ! See LICENCE file for usage and distribution conditions                   !
 ! http://phantomsph.github.io/                                             !
 !--------------------------------------------------------------------------!
@@ -16,7 +16,7 @@ module dust_formation
 !   - bowen_Tcond   : *dust condensation temperature (K)*
 !   - bowen_delta   : *condensation temperature range (K)*
 !   - bowen_kmax    : *maximum dust opacity (cm²/g)*
-!   - idust_opacity : *compute dust opacity (0=off,1 (bowen))*
+!   - idust_opacity : *compute dust opacity (0=off, 1=bowen)*
 !   - kappa_gas     : *constant gas opacity (cm²/g)*
 !   - wind_CO_ratio : *wind initial C/O ratio (> 1)*
 !
@@ -56,9 +56,9 @@ module dust_formation
 ! Indices for elements and molecules:
  integer, parameter :: nMolecules = 25
  integer, parameter :: iH = 1, iHe=2, iC=3, iOx=4, iN=5, iNe=6, iSi=7, iS=8, iFe=9, iTi=10
- integer, parameter :: iH2=1, iOH=2, iH2O=3, iCO=4, iCO2=5, iCH4=6, iC2H=7, iC2H2=8, iN2=9, iNH3=10, iCN=11, &
-       iHCN=12, iSi2=13, iSi3=14, iSiO=15, iSi2C=16, iSiH4=17, iS2=18, iHS=19, iH2S=20, iSiS=21, &
-       iSiH=22, iTiO=23, iTiO2=24, iC2 = 25, iTiS=26
+ integer, parameter :: iH2=1, iOH=2, iH2O=3, iCO=4, iCO2=5, iCH4=6, iC2H=7, iC2H2=8, iN2=9, &
+      iNH3=10, iCN=11, iHCN=12, iSi2=13, iSi3=14, iSiO=15, iSi2C=16, iSiH4=17, iS2=18, &
+      iHS=19, iH2S=20, iSiS=21, iSiH=22, iTiO=23, iTiO2=24,iC2 = 25, iTiS=26
  real, parameter :: coefs(5,nMolecules) = reshape([&
        4.25321d+05, -1.07123d+05, 2.69980d+01, 5.48280d-04, -3.81498d-08, & !H2-
        4.15670d+05, -1.05260d+05, 2.54985d+01, 4.78020d-04, -2.82416d-08, & !OH-
@@ -122,7 +122,8 @@ subroutine set_abundances
  eps(iTi) = 8.6d-8
  eps(iC)  = eps(iOx) * wind_CO_ratio
  mass_per_H = atomic_mass_unit*dot_product(Aw,eps)
-
+ !XH  = atomic_mass_unit*eps(iH)/mass_per_H  ! H mass fraction
+ !XHe = atomic_mass_unit*eps(iHe)/mass_per_H ! He mass fraction
 end subroutine set_abundances
 
 !-----------------------------------------------------------------------
@@ -145,7 +146,7 @@ subroutine evolve_dust(dtsph, xyzh, u, JKmuS, Tdust, rho)
  vxyzui(4) = u
  T         = get_temperature(ieos,xyzh,rho,vxyzui,gammai=JKmuS(idgamma),mui=JKmuS(idmu))
  call evolve_chem(dt_cgs, T, rho_cgs, JKmuS)
- JKmuS(idkappa) = calc_kappa_dust(JKmuS(idK3), Tdust, rho_cgs)
+ JKmuS(idkappa)     = calc_kappa_dust(JKmuS(idK3), Tdust, rho_cgs)
 
 end subroutine evolve_dust
 
@@ -371,31 +372,31 @@ end subroutine evol_K
 !----------------------------------------
 subroutine calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot)
 ! all quantities are in cgs
- use io, only:fatal
+ use io,  only:fatal
+ use eos, only:ieos
 
  real, intent(in)    :: rho_cgs
  real, intent(inout) :: T, mu, gamma
  real, intent(out)   :: pH, pH_tot
- real :: KH2, pH2
+ real :: KH2, pH2, x
  real :: T_old, mu_old, gamma_old, tol
  logical :: converged
  integer :: i,isolve
  integer, parameter :: itermax = 100
  character(len=30), parameter :: label = 'calc_muGamma'
 
- if (T > 1.d5) then
+ pH_tot = rho_cgs*T*kboltz/(patm*mass_per_H)
+ T_old = T
+ if (T > 1.d4) then
     mu     = (1.+4.*eps(iHe))/(1.+eps(iHe))
-    gamma  = 5./3.
-    pH_tot = rho_cgs*T*kboltz/(patm*mass_per_H)
     pH     = pH_tot
+    if (ieos /= 17) gamma  = 5./3.
  elseif (T > 450.) then
 ! iterate to get consistently pH, T, mu and gamma
     tol       = 1.d-3
     converged = .false.
     isolve    = 0
-    pH_tot    = rho_cgs*T*kboltz/(patm*mass_per_H) ! to avoid compiler warning
-    pH        = pH_tot ! arbitrary value, overwritten below, to avoid compiler warning
-    !T = atomic_mass_unit*mu*(gamma-1)*u/kboltz
+    pH        = pH_tot ! initial value, overwritten below, to avoid compiler warning
     i = 0
     do while (.not. converged .and. i < itermax)
        i = i+1
@@ -403,35 +404,36 @@ subroutine calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot)
        KH2       = calc_Kd(coefs(:,iH2), T)
        pH        = solve_q(2.*KH2, 1., -pH_tot)
        pH2       = KH2*pH**2
-       mu_old    = mu
-       mu        = (1.+4.*eps(iHe))*pH_tot/(pH+pH2+eps(iHe)*pH_tot)
-       gamma_old = gamma
-       gamma     = (5.*pH+5.*eps(iHe)*pH_tot+7.*pH2)/(3.*pH+3.*eps(iHe)*pH_tot+5.*pH2)
-       T_old     = T
-       T         = T_old*mu*(gamma-1.)/(mu_old*(gamma_old-1.))
-       !T        = T_old    !uncomment this line to cancel iterations
+       mu        = (1.+4.*eps(iHe))/(.5+eps(iHe)+0.5*pH/pH_tot)
+       if (ieos == 17) exit !only update mu, keep gamma constant
+       x         = 2.*(1.+4.*eps(iHe))/mu
+       gamma     = (3.*x+4.+4.*eps(iHe))/(x+4.+4.*eps(iHe))
        converged = (abs(T-T_old)/T_old) < tol
-       !print *,i,T_old,T,gamma_old,gamma,mu_old,mu,abs(T-T_old)/T_old
-       if (i>=itermax .and. .not.converged) then
-          if (isolve==0) then
-             isolve = isolve+1
-             i      = 0
-             tol    = 1.d-2
-             print *,'[dust_formation] cannot converge on T(mu,gamma). Trying with lower tolerance'
-          else
-             print *,'Told=',T_old,',T=',T,',gamma_old=',gamma_old,',gamma=',gamma,',mu_old=',&
-                  mu_old,',mu=',mu,',dT/T=',abs(T-T_old)/T_old
-             call fatal(label,'cannot converge on T(mu,gamma)')
+       if (i == 1) then
+          mu_old = mu
+          gamma_old = gamma
+       else
+          T = T_old*mu/mu_old/(gamma_old-1.)*2.*x/(x+4.+4.*eps(iHe))
+          if (i>=itermax .and. .not.converged) then
+             if (isolve==0) then
+                isolve = isolve+1
+                i      = 0
+                tol    = 1.d-2
+                print *,'[dust_formation] cannot converge on T(mu,gamma). Trying with lower tolerance'
+             else
+                print *,'Told=',T_old,',T=',T,',gamma_old=',gamma_old,',gamma=',gamma,',mu_old=',&
+                  mu_old,',mu=',mu,',dT/T=',abs(T-T_old)/T_old,', rho=',rho_cgs
+                call fatal(label,'cannot converge on T(mu,gamma)')
+             endif
           endif
        endif
     enddo
  else
 ! Simplified low-temperature chemistry: all hydrogen in H2 molecules
-    pH_tot = rho_cgs*T*kboltz/(patm*mass_per_H)
     pH2    = pH_tot/2.
     pH     = 0.
     mu     = (1.+4.*eps(iHe))/(0.5+eps(iHe))
-    gamma  = (5.*eps(iHe)+3.5)/(3.*eps(iHe)+2.5)
+    if (ieos /= 17)  gamma  = (5.*eps(iHe)+3.5)/(3.*eps(iHe)+2.5)
  endif
 
 end subroutine calc_muGamma
@@ -718,9 +720,9 @@ subroutine write_options_dust_formation(iunit)
 
  write(iunit,"(/,a)") '# options controlling dust'
  if (nucleation) then
-    call write_inopt(idust_opacity,'idust_opacity','compute dust opacity (0=off,1 (bowen), 2 (nucleation))',iunit)
+    call write_inopt(idust_opacity,'idust_opacity','compute dust opacity (0=off, 1=bowen, 2=nucleation)',iunit)
  else
-    call write_inopt(idust_opacity,'idust_opacity','compute dust opacity (0=off,1 (bowen))',iunit)
+    call write_inopt(idust_opacity,'idust_opacity','compute dust opacity (0=off, 1=bowen)',iunit)
  endif
  if (idust_opacity == 1) then
     call write_inopt(kappa_gas,'kappa_gas','constant gas opacity (cm²/g)',iunit)

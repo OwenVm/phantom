@@ -1,6 +1,6 @@
 !--------------------------------------------------------------------------!
 ! The Phantom Smoothed Particle Hydrodynamics code, by Daniel Price et al. !
-! Copyright (c) 2007-2023 The Authors (see AUTHORS)                        !
+! Copyright (c) 2007-2025 The Authors (see AUTHORS)                        !
 ! See LICENCE file for usage and distribution conditions                   !
 ! http://phantomsph.github.io/                                             !
 !--------------------------------------------------------------------------!
@@ -9,9 +9,9 @@ module testradiation
 ! Unit tests for radiation hydro
 !
 ! :References:
-!    Whitehouse & Bate (2004), 353, 1078
-!    Whitehouse, Bate & Monaghan (2005), 364, 1367
-!    Biriukov (2019), PhD thesis, Monash Univ.
+!   - Whitehouse & Bate (2004), 353, 1078
+!   - Whitehouse, Bate & Monaghan (2005), 364, 1367
+!   - Biriukov (2019), PhD thesis, Monash Univ.
 !
 ! :Owner: Daniel Price
 !
@@ -66,7 +66,7 @@ subroutine test_radiation(ntests,npass)
 
     if (.not.mpi) then
        implicit_radiation = .true.
-       tol_rad = 1.e-5
+       tol_rad = 1.e-6
        call test_radiation_diffusion(ntests,npass)
     endif
  endif
@@ -89,7 +89,7 @@ subroutine test_exchange_terms(ntests,npass,use_implicit)
  use io,         only:iverbose
  use part,       only:init_part,npart,rhoh,xyzh,fxyzu,vxyzu,massoftype,igas,&
                       iphase,maxphase,isetphase,rhoh,drad,&
-                      npartoftype,rad,radprop,maxvxyzu
+                      npartoftype,rad,radprop,maxvxyzu,luminosity
  use kernel,     only:hfact_default
  use unifdis,    only:set_unifdis
  use eos,        only:gmw,gamma,polyk,iopacity_type
@@ -105,7 +105,7 @@ subroutine test_exchange_terms(ntests,npass,use_implicit)
  real :: dt,t,physrho,rhoi,maxt,laste
  integer :: i,nerr(1),ndiff(1),ncheck,ierrmax,ierr,itest
  integer(kind=8) :: nptot
- logical, parameter :: write_output = .true.
+ logical, parameter :: write_output = .false.
  character(len=12) :: string,filestr
 
  call init_part()
@@ -142,7 +142,6 @@ subroutine test_exchange_terms(ntests,npass,use_implicit)
  pmassi = massoftype(igas)
 
  if (use_implicit) call set_linklist(npart,npart,xyzh,vxyzu)
-
  !
  ! first version of the test: set gas temperature high and radiation temperature low
  ! so that gas cools towards radiation temperature (itest=1)
@@ -161,6 +160,7 @@ subroutine test_exchange_terms(ntests,npass,use_implicit)
        endif
        vxyzu(4,i)        = vxyzu(4,i)/rhoi
        fxyzu(4,i)        = 0.
+       luminosity(i)     = 0.
     enddo
 
     if (write_output) then
@@ -218,7 +218,7 @@ end subroutine test_exchange_terms
 !+
 !---------------------------------------------------------
 subroutine test_implicit_matches_explicit(ntests,npass)
- use part,     only:dvdx,npart,xyzh,vxyzu,dvdx_label,rad,radprop,drad,&
+ use part,     only:npart,xyzh,vxyzu,rad,radprop,drad,&
                     xyzh_label,init_part,radprop_label
  use boundary, only:xmin,xmax,ymin,ymax,zmin,zmax
  use options,  only:implicit_radiation,tolh
@@ -228,12 +228,11 @@ subroutine test_implicit_matches_explicit(ntests,npass)
  use timestep, only:dtmax
  use radiation_implicit, only:do_radiation_implicit
  integer, intent(inout) :: ntests,npass
- real(kind=kind(dvdx)), allocatable :: dvdx_explicit(:,:)
  real(kind=kind(radprop)), allocatable :: flux_explicit(:,:)
  real :: kappa_code,c_code,xi0,rho0,errmax_e,tol_e,tolh_old,pmassi !,exact(9)
  integer :: i,j,itry,nerr_e(9),ierr
 
- if (id==master) write(*,"(/,a)") '--> checking implicit routine matches explicit for dvdx/flux terms'
+ if (id==master) write(*,"(/,a)") '--> checking implicit routine matches explicit for flux terms'
 
  implicit_radiation = .false.
  iverbose = 0
@@ -255,30 +254,17 @@ subroutine test_implicit_matches_explicit(ntests,npass)
     if (itry==1) then
        call get_derivs_global()  ! twice to get density on neighbours correct
 
-       !--allocate and copy dvdx (note: dvdx_explicit = dvdx works
-       !  but gives compiler warnings so we do this with source=)
-       allocate(dvdx_explicit, source=dvdx)
-
        !--allocate and copy flux
        allocate(flux_explicit(3,npart))
        flux_explicit = radprop(ifluxx:ifluxz,1:npart)
-       dvdx = 0.
     else
-       dvdx = 0.
        radprop = 0.
        call do_radiation_implicit(1.e-24,npart,rad,xyzh,vxyzu,radprop,drad,ierr)
     endif
  enddo
 
  ! now check that things match
- nerr_e = 0
- errmax_e = 0.
  tol_e = 1.e-15
- do j=1,9
-    call checkval(npart,dvdx(j,:),dvdx_explicit(j,:),tol_e,nerr_e(j),dvdx_label(j))
- enddo
- call update_test_scores(ntests,nerr_e,npass)
-
  nerr_e = 0
  errmax_e = 0.
  do j=1,3
@@ -464,7 +450,7 @@ subroutine setup_radiation_diffusion_problem_sinusoid(kappa_code,c_code,xi0,rho0
  nptot = reduceall_mpi('+',npart)
 
  rho0 = 2.5e-24
- massoftype(igas) = rho0*dxbound*dybound*dzbound/nptot  !*1e-25
+ massoftype(igas) = rho0*dxbound*dybound*dzbound/nptot
  pmassi = massoftype(igas)
  if (maxphase==maxp) iphase(1:npart) = isetphase(igas,iactive=.true.)
  npartoftype(:) = 0
