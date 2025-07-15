@@ -197,8 +197,11 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
  real,     intent(out)   :: dust_temp(:)
 
  !
- ! compute dust temperature based on previous value of tau or tau_lucy
+ ! compute dust temperature based on previous value of tau and/or tau_lucy
  !
+ if (iget_tdust == 5) then
+    ! calculate the dust temperature using the values of tau and tau_Lucy from the last timestep
+    call get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_temp,tau=tau,tau_lucy=tau_lucy)
  if (iget_tdust == 4) then
     ! calculate the dust temperature using the value of tau_Lucy from the last timestep
     call get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_temp,tau_lucy=tau_lucy)
@@ -212,7 +215,7 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
  !
  ! do ray tracing to get optical depth : calculate new tau, tau_lucy
  !
- if (iget_tdust == 4) then
+ if (itauL_alloc == 1) then
     ! update tau_Lucy
     if (idust_opacity == 2) then
        call get_all_tau(npart, nptmass, xyzmh_ptmass, xyzh, nucleation(:,ikappa), iray_resolution, tau_lucy)
@@ -230,7 +233,10 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
  !
  ! update Tdust with new optical depth. This step gives more consistency but may not be needed. To be checked
  !
- if (iget_tdust == 4) then
+ if (iget_tdust == 5) then
+    ! update dust temperature with new tau and tau_Lucy
+    call get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_temp,tau=tau,tau_lucy=tau_lucy)
+ elseif (iget_tdust == 4) then
     ! update dust temperature with new tau_Lucy
     call get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_temp,tau_lucy=tau_lucy)
  elseif (iget_tdust == 3) then
@@ -321,6 +327,20 @@ subroutine get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_pt
        endif
     enddo
     !$omp end parallel do
+ case(5)
+    ! Combination approximation for Tdust (equation TODO)
+    !$omp parallel  do default(none) &
+    !$omp shared(npart,xa,ya,za,R_star,T_star,xyzh,dust_temp,tdust_exp,tau_lucy) &
+    !$omp private(i,r)
+    do i=1,npart
+       if (.not.isdead_or_accreted(xyzh(4,i))) then
+          r = sqrt((xyzh(1,i)-xa)**2 + (xyzh(2,i)-ya)**2 + (xyzh(3,i)-za)**2)
+          if (r  <  R_star) r = R_star
+          if (isnan(tau_lucy(i))) tau_lucy(i) = 2./3.
+          dust_temp(i) = T_star * (.5*(1.-sqrt(1.-(R_star/r)**2)+3./2.*tau_lucy(i)))**(1./4.)
+       endif
+    enddo
+    !$omp end parallel do
  case default
     ! sets Tdust = Tgas
     !$omp parallel do default(none) &
@@ -350,7 +370,7 @@ subroutine write_options_ptmass_radiation(iunit)
     call write_inopt(alpha_rad,'alpha_rad','fraction of the gravitational acceleration imparted to the gas',iunit)
  endif
  if (isink_radiation >= 2) then
-    call write_inopt(iget_tdust,'iget_tdust','dust temperature (0:Tdust=Tgas 1:T(r) 2:Flux dilution 3:Attenuation 4:Lucy)',iunit)
+    call write_inopt(iget_tdust,'iget_tdust','dust temperature (0:Tdust=Tgas 1:T(r) 2:Flux dilution 3:Attenuation 4:Lucy 5:Combination)',iunit)
     if (iget_tdust /= 2) call write_inopt(iray_resolution,&
                                    'iray_resolution','set the number of rays to 12*4**iray_resolution (deactivated if <0)',iunit)
  endif
@@ -392,7 +412,11 @@ subroutine read_options_ptmass_radiation(name,valstring,imatch,igotall,ierr)
     ngot = ngot + 1
     if (iget_tdust == 3) itau_alloc  = 1
     if (iget_tdust == 4) itauL_alloc = 1
-    if (iget_tdust < 0 .or. iget_tdust > 4) call fatal(label,'invalid setting for iget_tdust ([0,4])')
+    if (iget_tdust == 5) then
+       itau_alloc  = 1
+       itauL_alloc = 1
+    endif
+    if (iget_tdust < 0 .or. iget_tdust > 5) call fatal(label,'invalid setting for iget_tdust ([0,5])')
  case('tdust_exp')
     read(valstring,*,iostat=ierr) tdust_exp
     ngot = ngot + 1

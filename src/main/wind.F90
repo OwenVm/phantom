@@ -90,7 +90,7 @@ subroutine setup_wind(Mstar_cg, Mdot_code, u_to_T, r0, T0, v0, rsonic, tsonic, s
     call get_initial_radius(r0, T0, time_end, v0, Rstar, rsonic, tsonic, stype)
     print*,Rstar/udist, r0/udist, T0, v0*1e-5, rsonic/udist, tsonic
     stop
- elseif (iget_tdust == 4) then
+ elseif (iget_tdust == 4 .or. iget_tdust == 5) then
     call get_initial_tau_lucy(r0, v0, T0, time_end, tau_lucy_init)
  else
     call set_abundances
@@ -151,7 +151,7 @@ subroutine init_wind(r0, v0, T0, time_end, state, tau_lucy_init)
     state%Tdust = Tstar
  elseif (iget_tdust == 2 .or. iget_tdust == 3) then
     state%Tdust = Tstar*(.5)**(1./4.)
- elseif (iget_tdust == 4) then
+ elseif (iget_tdust == 4 .or. iget_tdust == 5) then
     state%Tdust = Tstar*(.5+3./4.*state%tau_lucy)**(1./4.)
  endif
  if (present(tau_lucy_init)) then
@@ -272,7 +272,7 @@ subroutine wind_step(state)
  !state%Tg   = state%p/(state%rho*Rg)*state%mu
 
  !calculate dust temperature using new r and old tau
- if (iget_tdust == 4) then
+ if (iget_tdust == 4 .or. iget_tdust == 5) then
     tau_lucy_bounded = max(0., state%tau_lucy)
     state%Tdust = Tstar * (.5*(1.-sqrt(1.-(state%Rstar/state%r)**2)+3./2.*tau_lucy_bounded))**(1./4.)
  elseif (iget_tdust == 3) then
@@ -303,7 +303,7 @@ subroutine wind_step(state)
       * (state%kappa*state%rho/state%r**2 + kappa_old*rho_old/state%r_old**2)/2.
 
  !update dust temperature using new r and new tau
- if (iget_tdust == 4) then
+ if (iget_tdust == 4 .or. iget_tdust == 5) then
     tau_lucy_bounded = max(0., state%tau_lucy)
     state%Tdust = Tstar * (.5*(1.-sqrt(1.-(state%Rstar/state%r)**2)+3./2.*tau_lucy_bounded))**(1./4.)
  elseif (iget_tdust == 3) then
@@ -409,7 +409,7 @@ subroutine wind_step(state)
  if (.not.isothermal) state%u    = state%p/((state%gamma-1.)*state%rho)
 
  !calculate dust temperature using new r but old tau
- if (iget_tdust == 4) then
+ if (iget_tdust == 4 .or. iget_tdust == 5) then
     tau_lucy_bounded = max(0., state%tau_lucy)
     state%Tdust = Tstar * (.5*(1.-sqrt(1.-(state%Rstar/state%r)**2)+3./2.*tau_lucy_bounded))**(1./4.)
  elseif (iget_tdust == 3) then
@@ -436,7 +436,7 @@ subroutine wind_step(state)
       * (state%kappa*state%rho/state%r**2 + kappa_old*rho_old/state%r_old**2)/2.
 
  !update dust temperature with new r and new tau
- if (iget_tdust == 4) then
+ if (iget_tdust == 4 .or. iget_tdust == 5) then
     tau_lucy_bounded = max(0., state%tau_lucy)
     state%Tdust = Tstar * (.5*(1.-sqrt(1.-(state%Rstar/state%r)**2)+3./2.*tau_lucy_bounded))**(1./4.)
  elseif (iget_tdust == 3) then
@@ -478,7 +478,7 @@ subroutine calc_wind_profile(r0, v0, T0, time_end, state, tau_lucy_init)
  real :: tau_lucy_last
 
  !initialize chemistry and variables
- if (iget_tdust == 4) then
+ if (iget_tdust == 4 .or. iget_tdust == 5) then
     if (present(tau_lucy_init)) then
        call init_wind(r0, v0, T0, time_end, state, tau_lucy_init)
     else
@@ -500,7 +500,7 @@ subroutine calc_wind_profile(r0, v0, T0, time_end, state, tau_lucy_init)
     tau_lucy_last = state%tau_lucy
 
     call wind_step(state)
-    if (iget_tdust == 4 .and. state%tau_lucy < 0.) exit
+    if ((iget_tdust == 4 .or. iget_tdust == 5) .and. state%tau_lucy < 0.) exit
     !if (state%r == state%r_old .or. state%tau_lucy < -1.) state%error = .true.
     if (state%r == state%r_old) state%error = .true.
     !print *,state%time,state%r,state%v/state%c,state%dt,dtmin,state%Tg,Tdust_stop,state%error,state%spcode
@@ -946,7 +946,7 @@ subroutine save_windprofile(r0, v0, T0, rout, tend, tcross, filename)
  write (*,'("Saving 1D model to ",A)') trim(filename)
  !time_end = tmax*utime
  time_end = tend
- if (iget_tdust == 4) then
+ if (iget_tdust == 4 .or. iget_tdust == 5) then
     call get_initial_tau_lucy(r0, v0, T0, tend, tau_lucy_init)
     call init_wind(r0, v0, T0, tend, state, tau_lucy_init)
  else
