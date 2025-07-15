@@ -191,7 +191,7 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
  use part,      only:tau,tau_lucy,ikappa,nucleation
  use raytracer, only:get_all_tau
  use dust_formation, only:calc_kappa_bowen,idust_opacity
- use dim,       only:itau_alloc
+ use dim,       only:itau_alloc,itauL_alloc
  integer,  intent(in)    :: nptmass,npart
  real,     intent(in)    :: xyzh(:,:),xyzmh_ptmass(:,:),eos_vars(:,:)
  real,     intent(out)   :: dust_temp(:)
@@ -202,7 +202,7 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
  if (iget_tdust == 5) then
     ! calculate the dust temperature using the values of tau and tau_Lucy from the last timestep
     call get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_temp,tau=tau,tau_lucy=tau_lucy)
- if (iget_tdust == 4) then
+ elseif (iget_tdust == 4) then
     ! calculate the dust temperature using the value of tau_Lucy from the last timestep
     call get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_temp,tau_lucy=tau_lucy)
  elseif (iget_tdust == 3) then
@@ -370,7 +370,8 @@ subroutine write_options_ptmass_radiation(iunit)
     call write_inopt(alpha_rad,'alpha_rad','fraction of the gravitational acceleration imparted to the gas',iunit)
  endif
  if (isink_radiation >= 2) then
-    call write_inopt(iget_tdust,'iget_tdust','dust temperature (0:Tdust=Tgas 1:T(r) 2:Flux dilution 3:Attenuation 4:Lucy 5:Combination)',iunit)
+    call write_inopt(iget_tdust, &
+                'iget_tdust','dust temperature (0:Tdust=Tgas 1:T(r) 2:Flux dilution 3:Attenuation 4:Lucy 5:Combination)',iunit)
     if (iget_tdust /= 2) call write_inopt(iray_resolution,&
                                    'iray_resolution','set the number of rays to 12*4**iray_resolution (deactivated if <0)',iunit)
  endif
