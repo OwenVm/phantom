@@ -255,6 +255,7 @@ end subroutine get_dust_temperature
 !-----------------------------------------------------------------------
 subroutine get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_temp,tau,tau_lucy)
  use part,    only:isdead_or_accreted,iLum,iTeff,iReff,itemp
+ use wind,    only:interp_tau_profile
  integer,  intent(in)    :: nptmass,npart
  real,     intent(in)    :: xyzh(:,:),xyzmh_ptmass(:,:),eos_vars(:,:)
  real,     intent(inout), optional :: tau(:), tau_lucy(:)
@@ -339,8 +340,7 @@ subroutine get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_pt
           r = sqrt((xyzh(1,i)-xa)**2 + (xyzh(2,i)-ya)**2 + (xyzh(3,i)-za)**2)
           if (r  <  R_star) r = R_star
           if (isnan(tau_lucy(i))) tau_lucy(i) = 2./3.
-          tau_lucy1D = 0.
-          tau_1D     = 0.
+          call interp_tau_profile(r,tau_lucy1D,tau_1D)
           dust_temp(i) = T_star * (.5*(1.-sqrt(1.-(R_star/r)**2)+ &
                            3./2.*(tau_lucy1D+alpha_eq*(tau_lucy(i)-tau_lucy1D))) &
                                                       *exp(-beta_eq*(tau(i)-tau_1D)))**(1./4.)
@@ -428,6 +428,12 @@ subroutine read_options_ptmass_radiation(name,valstring,imatch,igotall,ierr)
        itauL_alloc = 1
     endif
     if (iget_tdust < 0 .or. iget_tdust > 5) call fatal(label,'invalid setting for iget_tdust ([0,5])')
+ case('alpha_eq')
+    read(valstring,*,iostat=ierr) alpha_eq
+    ngot = ngot + 1
+ case('beta_eq')
+    read(valstring,*,iostat=ierr) beta_eq
+    ngot = ngot + 1
  case('tdust_exp')
     read(valstring,*,iostat=ierr) tdust_exp
     ngot = ngot + 1

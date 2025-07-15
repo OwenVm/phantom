@@ -19,7 +19,7 @@ module table_utils
  implicit none
 
  public :: yinterp, linspace, logspace, diff, flip_array, interpolator
- public :: find_nearest_index, interp_1d, linear_interpolator_one_d
+ public :: find_nearest_index, find_nearest_index_binary, interp_1d, linear_interpolator_one_d
 
  private
 
@@ -195,6 +195,40 @@ subroutine find_nearest_index(arr,val,indx)
  endif
 
 end subroutine find_nearest_index
+
+!-----------------------------------------------------------------------
+!+
+!  Find index of nearest lower value in array using binary search
+!+
+!-----------------------------------------------------------------------
+subroutine find_nearest_index_binary(arr,val,indx)
+ real, intent(in)     :: arr(:), val
+ integer, intent(out) :: indx
+ integer              :: istart,istop,imid
+
+ istart = 1
+ istop  = size(arr)
+ indx = istart
+ if (val >= arr(istop)) then
+    indx = istop-1   ! -1 to avoid array index overflow
+ elseif (val <= arr(istart)) then
+    indx = istart
+ else
+    do while (istart <= istop)
+       imid = (istart + istop)/2
+       if (arr(imid) > val) then
+          istop = imid - 1
+       else if (arr(imid) < val) then
+          istart = imid + 1
+       else
+          indx = imid
+          return
+       endif
+    enddo
+    indx = istop
+ endif
+
+end subroutine find_nearest_index_binary
 
 !-----------------------------------------------------------------------
 !+

@@ -25,7 +25,7 @@ module wind
  use dim,  only:isothermal
  implicit none
  public :: setup_wind
- public :: wind_state,save_windprofile,interp_wind_profile!,wind_profile
+ public :: wind_state,save_windprofile,interp_wind_profile,interp_tau_profile!,wind_profile
 
  private
  ! Shared variables
@@ -37,7 +37,7 @@ module wind
  ! input parameters
  real :: Mstar_cgs, Lstar_cgs, wind_gamma, Mdot_cgs, Tstar, Rstar
  real :: u_to_temperature_ratio
- real, dimension (:,:), allocatable, public :: trvurho_1D, JKmuS_1D
+ real, dimension (:,:), allocatable, public :: trvurho_1D, rtau, JKmuS_1D
 
  ! wind properties
  type wind_state
@@ -867,6 +867,24 @@ subroutine get_initial_tau_lucy(r0, v0, T0, time_end, tau_lucy_init)
  endif
 end subroutine get_initial_tau_lucy
 
+subroutine interp_tau_profile(r, tau_lucy, tau)
+ use table_utils,    only:find_nearest_index_binary,interp_1d
+ use units,          only:udist
+
+ real, intent(in) :: r
+ real, intent(out) :: tau, tau_lucy
+
+ real    :: r_temp
+ integer :: indx
+
+ r_temp = r*udist
+ call find_nearest_index_binary(rtau(1,:),r_temp,indx)
+
+ tau_lucy = interp_1d(r_temp,rtau(1,indx),rtau(1,indx+1),rtau(2,indx),rtau(2,indx+1))
+ tau      = interp_1d(r_temp,rtau(1,indx),rtau(1,indx+1),rtau(3,indx),rtau(3,indx+1))
+
+end subroutine interp_tau_profile
+
 !-----------------------------------------------------------------------
 !
 !  Interpolate 1D wind profile
@@ -935,12 +953,12 @@ subroutine save_windprofile(r0, v0, T0, rout, tend, tcross, filename)
  integer, parameter :: nlmax = 8192   ! maxium number of steps store in the 1D profile
  real :: time_end, tau_lucy_init
  real :: r_incr,v_incr,T_incr,mu_incr,gamma_incr,r_base,v_base,T_base,mu_base,gamma_base,eps
- real, allocatable :: trvurho_temp(:,:)
- real, allocatable :: JKmuS_temp(:,:)
+ real, allocatable :: trvurho_temp(:,:), rtau_temp(:,:), JKmuS_temp(:,:)
  type(wind_state) :: state
  integer ::iter,itermax,nwrite,writeline
 
  if (.not. allocated(trvurho_temp)) allocate (trvurho_temp(5,nlmax))
+ if (iget_tdust == 5 .and. .not. allocated(rtau_temp)) allocate (rtau_temp(3,nlmax))
  if (idust_opacity == 2 .and. .not. allocated(JKmuS_temp)) allocate (JKmuS_temp(n_nucleation,nlmax))
 
  write (*,'("Saving 1D model to ",A)') trim(filename)
@@ -961,13 +979,17 @@ subroutine save_windprofile(r0, v0, T0, rout, tend, tcross, filename)
  iter      = 0
  itermax   = int(huge(itermax)/10.) !this number is huge but may be needed for RK6 solver
  tcross    = huge(0.)
- writeline = 0
+ writeline = 1
 
  r_base     = state%r
  v_base     = state%v
  T_base     = state%Tg
  mu_base    = state%mu
  gamma_base = state%gamma
+
+ trvurho_temp(:,writeline) = (/state%time,state%r,state%v,state%u,state%rho/)
+ if (iget_tdust == 5) rtau_temp(:,writeline) = (/state%r,state%tau_lucy,state%tau/)
+ if (idust_opacity == 2) JKmuS_temp(:,writeline) = (/state%JKmuS(1:n_nucleation)/)
 
  do while(state%time < time_end .and. iter < itermax .and. state%Tg > Tdust_stop .and. writeline < nlmax)
     iter = iter+1
@@ -994,6 +1016,7 @@ subroutine save_windprofile(r0, v0, T0, rout, tend, tcross, filename)
        mu_base    = state%mu
        gamma_base = state%gamma
        trvurho_temp(:,writeline) = (/state%time,state%r,state%v,state%u,state%rho/)
+       if (iget_tdust == 5) rtau_temp(:,writeline) = (/state%r,state%tau_lucy,state%tau/)
        if (idust_opacity == 2) JKmuS_temp(:,writeline) = (/state%JKmuS(1:n_nucleation)/)
 
     endif
@@ -1013,7 +1036,12 @@ subroutine save_windprofile(r0, v0, T0, rout, tend, tcross, filename)
  allocate (trvurho_1D(5, writeline))
  trvurho_1D(:,:) = trvurho_temp(:,1:writeline)
  deallocate(trvurho_temp)
- if (idust_opacity == 2) then
+ if (iget_tdust == 5) then
+    if (allocated(rtau)) deallocate(rtau)
+    allocate (rtau(3, writeline))
+    rtau(:,:) = rtau_temp(:,1:writeline)
+    deallocate(rtau_temp)
+ elseif (idust_opacity == 2) then
     if (allocated(JKmuS_1D)) deallocate(JKmuS_1D)
     allocate (JKmuS_1D(n_nucleation, writeline))
     JKmuS_1D(:,:) = JKmuS_temp(:,1:writeline)
