@@ -190,28 +190,27 @@ end subroutine get_radiative_acceleration_from_star
 !+
 !-----------------------------------------------------------------------
 subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_temp)
- use part,      only:tau,tau_lucy,ikappa,nucleation
+ use part,      only:tau,tau_lucy,column_density,ikappa,nucleation
  use raytracer, only:get_all_integrands
  use dust_formation, only:calc_kappa_bowen,idust_opacity
- use dim,       only:itau_alloc,itauL_alloc
+ use dim,       only:itau_alloc,itauL_alloc,icolumn_alloc
  integer,  intent(in)    :: nptmass,npart
  real,     intent(in)    :: xyzh(:,:),xyzmh_ptmass(:,:),eos_vars(:,:)
  real,     intent(out)   :: dust_temp(:)
  logical, dimension(3)   :: type
 
- real, allocatable       :: column_density(:)
+ type = (/ .false., .false., .false. /) ! default : no tau, no tau_Lucy, no column density
 
+ if (itau_alloc == 1) then
+   type(1) = .true. ! tau
+ endif
  if (itauL_alloc == 1) then
-   type = (/ .false., .true., .false. /) ! tau_Lucy
- elseif (itau_alloc == 1) then
-   type = (/ .true., .false., .false. /) ! tau
+   type(2) = .true. ! tau_Lucy
+ endif
+ if (icolumn_alloc == 1) then
+   type(3) = .true. ! column density
  endif
 
- print *, ''
- print *, '###################################'
- print *, '# Check 1'
- print *, '###################################'
- print *, ''
 
  !
  ! compute dust temperature based on previous value of tau and/or tau_lucy
@@ -220,11 +219,6 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
     ! calculate the dust temperature using the values of tau and tau_Lucy from the last timestep
     call get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_temp,tau=tau,tau_lucy=tau_lucy)
  elseif (iget_tdust == 4) then
-    print *, ''
-    print *, '###################################'
-    print *, '# Check 2'
-    print *, '###################################'
-    print *, ''
     ! calculate the dust temperature using the value of tau_Lucy from the last timestep
     call get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_temp,tau_lucy=tau_lucy)
  elseif (iget_tdust == 3) then
@@ -238,11 +232,6 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
  ! do ray tracing to get optical depth : calculate new tau, tau_lucy
  !
  if (itauL_alloc == 1) then
-    print *, ''
-    print *, '###################################'
-    print *, '# Check 3'
-    print *, '###################################'
-    print *, ''
     ! update tau_Lucy
     if (idust_opacity == 2) then
        call get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, nucleation(:,ikappa), iray_resolution, &
@@ -293,7 +282,6 @@ subroutine get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_pt
  real                    :: r,L_star,T_star,R_star,xa,ya,za,tau_lucy1D,tau_1D
  integer                 :: i,j
 
- !
  ! sanity check, return zero if no sink particles or dust flag is off
  !
  if (nptmass < 1) then
