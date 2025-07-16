@@ -56,11 +56,6 @@ subroutine get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, kappa_cgs, ord
  real :: Rinject
  logical, dimension(3), intent(in) :: type
 
- print *, ''
- print *, '###################################'
- print *, '# Check 6'
- print *, '###################################'
- print *, ''
 
  Rinject = xyzmh_ptmass(iReff,1)
  if (nptmass == 2 ) then
@@ -113,6 +108,8 @@ subroutine get_all_integrands_single(npart, primary, Rstar, xyzh, kappa, Rinject
  allocate(rays_dist(ndim, nrays)) ! distance from the central star of the points on the rays
  allocate(rays_tau(ndim, nrays))  ! value of tau at each point along each ray
  allocate(rays_dim(nrays))        ! effective number of points on the ray (< ndim)
+ allocate(rays_tau_lucy(ndim, nrays)) ! value of tau_lucy at each point along each ray
+ allocate(rays_column_density(ndim, nrays)) ! value of column density at each point along each ray
 
  !-------------------------------------------
  ! CONSTRUCT the RAYS given the HEALPix ORDER
@@ -375,6 +372,17 @@ subroutine get_integrands_on_ray(distance, tau_along_ray, tauL_along_ray, column
 
  integer :: L, R, m ! left, right and middle index for binary search
 
+!otherwise a warning is passed
+print *, ''
+print *, 'Checking'
+
+ tau = 0.0
+ tauL = 0.0
+ column_density = 0.0
+
+print *, ''
+print *, 'Succes'
+
  if (distance  <  dist_along_ray(1)) then
     tau = tau_along_ray(1)
     tauL = tauL_along_ray(1)
@@ -463,7 +471,7 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
 
  if (.not. type(1)) then 
    !if tau is not requested, then return empty arrays
-   tau_along_ray = 0.
+    tau_along_ray = 0.
  endif
 
  if (.not. type(2)) then
@@ -472,7 +480,7 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
  endif
 
  if (.not. type(3)) then
-    !if tau_lucy_1D is not requested, then return empty arrays
+    !if column density is not requested, then return empty arrays
     column_density_along_ray = 0.
  endif
     
