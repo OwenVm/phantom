@@ -38,8 +38,10 @@ module ptmass_radiation
  public :: read_options_ptmass_radiation,write_options_ptmass_radiation
  public :: get_dust_temperature
  public :: init_radiation_ptmass
+ public :: interp_tau_profile
 
  private
+ real, dimension (:,:), allocatable, public :: rtau(:,:)
 
 contains
 !-----------------------------------------------------------------------
@@ -275,7 +277,6 @@ end subroutine get_dust_temperature
 !-----------------------------------------------------------------------
 subroutine get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_temp,tau,tau_lucy)
  use part,    only:isdead_or_accreted,iLum,iTeff,iReff,itemp
- !use wind,    only:interp_tau_profile
  integer,  intent(in)    :: nptmass,npart
  real,     intent(in)    :: xyzh(:,:),xyzmh_ptmass(:,:),eos_vars(:,:)
  real,     intent(inout), optional :: tau(:), tau_lucy(:)
@@ -349,23 +350,23 @@ subroutine get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_pt
        endif
     enddo
     !$omp end parallel do
- !case(5)
- !   ! Combination approximation for Tdust (equation TODO)
- !   !$omp parallel  do default(none) &
- !   !$omp shared(npart,xa,ya,za,R_star,T_star,xyzh,dust_temp,tdust_exp,tau,tau_lucy,alpha_eq,beta_eq) &
- !   !$omp private(i,r,tau_lucy1D,tau_1D)
- !   do i=1,npart
- !      if (.not.isdead_or_accreted(xyzh(4,i))) then
- !         r = sqrt((xyzh(1,i)-xa)**2 + (xyzh(2,i)-ya)**2 + (xyzh(3,i)-za)**2)
- !         if (r  <  R_star) r = R_star
- !         if (isnan(tau_lucy(i))) tau_lucy(i) = 2./3.
- !         call interp_tau_profile(r,tau_lucy1D,tau_1D)
- !         dust_temp(i) = T_star * (.5*(1.-sqrt(1.-(R_star/r)**2)+ &
- !                          3./2.*(tau_lucy1D+alpha_eq*(tau_lucy(i)-tau_lucy1D))) &
- !                                                     *exp(-beta_eq*(tau(i)-tau_1D)))**(1./4.)
- !      endif
- !   enddo
- !   !$omp end parallel do
+ case(5)
+   ! Combination approximation for Tdust (equation TODO)
+   !$omp parallel  do default(none) &
+   !$omp shared(npart,xa,ya,za,R_star,T_star,xyzh,dust_temp,tdust_exp,tau,tau_lucy,alpha_eq,beta_eq) &
+   !$omp private(i,r,tau_lucy1D,tau_1D)
+   do i=1,npart
+      if (.not.isdead_or_accreted(xyzh(4,i))) then
+         r = sqrt((xyzh(1,i)-xa)**2 + (xyzh(2,i)-ya)**2 + (xyzh(3,i)-za)**2)
+         if (r  <  R_star) r = R_star
+         if (isnan(tau_lucy(i))) tau_lucy(i) = 2./3.
+         call interp_tau_profile(r,tau_lucy1D,tau_1D)
+         dust_temp(i) = T_star * (.5*(1.-sqrt(1.-(R_star/r)**2)+ &
+                          3./2.*(tau_lucy1D+alpha_eq*(tau_lucy(i)-tau_lucy1D))) &
+                                                     *exp(-beta_eq*(tau(i)-tau_1D)))**(1./4.)
+      endif
+   enddo
+   !$omp end parallel do
  case default
     ! sets Tdust = Tgas
     !$omp parallel do default(none) &
@@ -472,5 +473,23 @@ subroutine read_options_ptmass_radiation(name,valstring,imatch,igotall,ierr)
  if (iget_tdust == 4) itau_alloc = 0
 
 end subroutine read_options_ptmass_radiation
+
+subroutine interp_tau_profile(r, tau_lucy, tau)
+ use table_utils,    only:find_nearest_index_binary,interp_1d
+ use units,          only:udist
+
+ real, intent(in) :: r
+ real, intent(out) :: tau, tau_lucy
+
+ real    :: r_temp
+ integer :: indx
+
+ r_temp = r*udist
+ call find_nearest_index_binary(rtau(1,:),r_temp,indx)
+
+ tau_lucy = interp_1d(r_temp,rtau(1,indx),rtau(1,indx+1),rtau(2,indx),rtau(2,indx+1))
+ tau      = interp_1d(r_temp,rtau(1,indx),rtau(1,indx+1),rtau(3,indx),rtau(3,indx+1))
+
+end subroutine interp_tau_profile
 
 end module ptmass_radiation
