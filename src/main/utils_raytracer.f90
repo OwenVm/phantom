@@ -203,6 +203,8 @@ subroutine get_all_integrands_companion(npart, primary, Rstar, xyzh, kappa, Rinj
  allocate(rays_dist(ndim, nrays)) ! distance from the central star of the points on the rays
  allocate(rays_tau(ndim, nrays))  ! value of tau at each point along each ray
  allocate(rays_dim(nrays))        ! effective number of points on the ray (< ndim)
+ allocate(rays_tau_lucy(ndim, nrays)) ! value of tau_lucy at each point along each ray
+ allocate(rays_column_density(ndim, nrays)) ! value of column density at each point along each ray
 
  uvecCompanion = companion-primary
  normCompanion = norm2(uvecCompanion)

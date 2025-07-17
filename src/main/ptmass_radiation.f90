@@ -351,7 +351,7 @@ subroutine get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_pt
     enddo
     !$omp end parallel do
  case(5)
-   ! Combination approximation for Tdust (equation TODO)
+   ! Combination approximation for Tdust
    !$omp parallel  do default(none) &
    !$omp shared(npart,xa,ya,za,R_star,T_star,xyzh,dust_temp,tdust_exp,tau,tau_lucy,alpha_eq,beta_eq) &
    !$omp private(i,r,tau_lucy1D,tau_1D)
