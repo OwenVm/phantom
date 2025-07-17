@@ -251,6 +251,7 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
                      tau, tau_lucy, column_density, type)
     endif
  endif
+
  !
  ! update Tdust with new optical depth. This step gives more consistency but may not be needed. To be checked
  !
@@ -416,7 +417,7 @@ end subroutine write_options_ptmass_radiation
 !-----------------------------------------------------------------------
 subroutine read_options_ptmass_radiation(name,valstring,imatch,igotall,ierr)
  use io,  only:fatal
- use dim, only:itau_alloc,itauL_alloc
+ use dim, only:itau_alloc,itauL_alloc !, icolumn_alloc
  character(len=*), intent(in)  :: name,valstring
  logical, intent(out) :: imatch,igotall
  integer,intent(out) :: ierr

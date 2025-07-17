@@ -53,6 +53,7 @@ subroutine get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, kappa_cgs, ord
  integer, intent(in) :: npart, order, nptmass
  real, intent(in)    :: kappa_cgs(:), xyzh(:,:), xyzmh_ptmass(:,:)
  real, intent(out)   :: tau(:), tau_lucy(:), column_density(:)
+ real, dimension(npart)   :: tau_temp, tau_lucy_temp, column_density_temp
  real :: Rinject
  logical, dimension(3), intent(in) :: type
 
@@ -60,11 +61,16 @@ subroutine get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, kappa_cgs, ord
  Rinject = xyzmh_ptmass(iReff,1)
  if (nptmass == 2 ) then
     call get_all_integrands_companion(npart, xyzmh_ptmass(1:3,1), xyzmh_ptmass(iReff,1), xyzh, kappa_cgs, &
-            Rinject, xyzmh_ptmass(1:3,2), xyzmh_ptmass(iReff,2), order, tau, tau_lucy, column_density, type)
+            Rinject, xyzmh_ptmass(1:3,2), xyzmh_ptmass(iReff,2), order, tau_temp, tau_lucy_temp, column_density_temp, type)
  else
     call get_all_integrands_single(npart, xyzmh_ptmass(1:3,1), xyzmh_ptmass(iReff,1), xyzh,&
-         kappa_cgs, Rinject, order, tau, tau_lucy, column_density, type)
+         kappa_cgs, Rinject, order, tau_temp, tau_lucy_temp, column_density_temp, type)
  endif
+
+ if (type(1)) tau(:npart) = tau_temp
+ if (type(2)) tau_lucy(:npart) = tau_lucy_temp
+ if (type(3)) column_density(:npart) = column_density_temp
+
 end subroutine get_all_integrands
 
  !---------------------------------------------------------------------------------
@@ -131,7 +137,7 @@ subroutine get_all_integrands_single(npart, primary, Rstar, xyzh, kappa, Rinject
  !$omp enddo
  !$omp end parallel
 
-
+ 
  !_----------------------------------------------
  ! DETERMINE the optical depth for each particle
  ! using the values available on the HEALPix rays
@@ -372,16 +378,11 @@ subroutine get_integrands_on_ray(distance, tau_along_ray, tauL_along_ray, column
 
  integer :: L, R, m ! left, right and middle index for binary search
 
-!otherwise a warning is passed
-print *, ''
-print *, 'Checking'
 
+ !otherwise a warning is passed
  tau = 0.0
  tauL = 0.0
  column_density = 0.0
-
-print *, ''
-print *, 'Succes'
 
  if (distance  <  dist_along_ray(1)) then
     tau = tau_along_ray(1)
@@ -492,7 +493,17 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
 
  distance          = Rinject
  dist_along_ray(i) = distance
+
+ dtauLdr = 0.
+ previousdtauLdr = 0.
+ nextdtauLdr = 0.
+
+ drhodr = 0.
+ previousdrhodr = 0.
+ nextdrhodr = 0.
+
  do while (hasNext(inext,tau_along_ray(i),distance,maxDistance))
+
     distance = distance+dr
     call find_next(primary + distance*ray, xyzh(4,inext), ray, xyzh, kappa, nextdtaudr, nextdrhodr, next_dr, inext)
     i = i + 1
