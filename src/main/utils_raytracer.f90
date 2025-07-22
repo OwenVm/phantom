@@ -347,8 +347,8 @@ subroutine interpolate_integrands(nsides, vec, rays_tau, rays_tau_lucy, rays_col
                   rays_column_density(:,neighbours(k)), rays_dist(:,neighbours(k)), rays_dim(neighbours(k)), &
                   tautemp, tauLtemp, column_densitytemp, type)
     tau    = tau + tautemp/tempdist(k)
-    tau_lucy = tauLtemp/tempdist(k)
-    column_density = column_densitytemp/tempdist(k)
+    tau_lucy = tau_lucy + tauLtemp/tempdist(k)
+    column_density = column_density + column_densitytemp/tempdist(k)
     weight = weight + 1./tempdist(k)
  enddo
  tau = tau / weight
