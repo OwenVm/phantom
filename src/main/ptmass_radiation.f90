@@ -109,8 +109,8 @@ end subroutine get_rad_accel_from_ptmass
 !+
 !-----------------------------------------------------------------------
 subroutine calc_rad_accel_from_ptmass(npart,i,dx,dy,dz,Lstar_cgs,Mstar_cgs,fextx,fexty,fextz,tau)
- use part,  only:isdead_or_accreted,dust_temp,nucleation,idkappa,idalpha
- use dim,   only:do_nucleation,itau_alloc
+ use part,  only:isdead_or_accreted,dust_temp,nucleation,idkappa,idalpha,alpha_rad
+ use dim,   only:do_nucleation,itau_alloc,itauL_alloc
  use dust_formation, only:calc_kappa_bowen
  integer,           intent(in)    :: npart,i
  real, optional,    intent(in)    :: tau(:)
@@ -137,11 +137,11 @@ subroutine calc_rad_accel_from_ptmass(npart,i,dx,dy,dz,Lstar_cgs,Mstar_cgs,fextx
        call get_radiative_acceleration_from_star(r,dx,dy,dz,Mstar_cgs,Lstar_cgs,&
                kappa,ax,ay,az,alpha)
     endif
+    if (itau_alloc == 1 .and. itauL_alloc == 1) alpha_rad(i) = alpha
  endif
  fextx = fextx + ax
  fexty = fexty + ay
  fextz = fextz + az
-
 end subroutine calc_rad_accel_from_ptmass
 
 

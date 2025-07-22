@@ -136,7 +136,7 @@ subroutine startrun(infile,logfile,evfile,dumpfile,noread)
  use options,          only:iexternalforce,icooling,use_dustfrac,rhofinal1,rhofinal_cgs
  use readwrite_infile, only:read_infile,write_infile
  use readwrite_dumps,  only:read_dump,write_fulldump
- use part,             only:npart,xyzh,vxyzu,fxyzu,fext,divcurlv,divcurlB,Bevol,dBevol,tau, tau_lucy, column_density, &
+ use part,             only:npart,xyzh,vxyzu,fxyzu,fext,divcurlv,divcurlB,Bevol,dBevol,tau,tau_lucy,alpha_rad,column_density,&
                             npartoftype,maxtypes,ndusttypes,alphaind,ntot,ndim,update_npartoftypetot,&
                             maxphase,iphase,isetphase,iamtype,igas,idust,imu,igamma,massoftype, &
                             nptmass,xyzmh_ptmass,vxyz_ptmass,fxyz_ptmass,dsdt_ptmass,fxyz_ptmass_sinksink,&
@@ -630,6 +630,8 @@ subroutine startrun(infile,logfile,evfile,dumpfile,noread)
     if (itau_alloc == 1) tau = 0.
     !initialize Lucy optical depth array tau_lucy
     if (itauL_alloc == 1) tau_lucy = 2./3.
+    !initialize alpha radiation array alpha_rad
+    if (itau_alloc == 1 .and. itauL_alloc == 1) alpha_rad = 0.
     !initialize column density array
     if (icolumn_alloc == 1) column_density = 0.
  endif
