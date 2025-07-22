@@ -33,6 +33,7 @@ module ptmass_radiation
  real,    public  :: alpha_rad       = 0.
  real,    public  :: alpha_eq        = 0.5
  real,    public  :: beta_eq         = 0.5
+ real,    public  :: gamma_eq        = 0.5
 
  public :: get_rad_accel_from_ptmass
  public :: read_options_ptmass_radiation,write_options_ptmass_radiation
@@ -159,9 +160,15 @@ subroutine get_radiative_acceleration_from_star(r,dx,dy,dz,Mstar_cgs,Lstar_cgs,&
  real, intent(in), optional  :: tau_in
  real, intent(out)           :: ax,ay,az,alpha
  real :: fac,tau
+ real :: tau_1D,tau_lucy1D
 
  if (present(tau_in)) then
-    tau = tau_in
+    if (iget_tdust == 5) then
+        call interp_tau_profile(r,tau_lucy1D,tau_1D)
+        tau = gamma_eq*(tau_in - tau_1D)
+    else
+       tau = tau_in
+    endif
  else
     tau = 0.
  endif
@@ -402,8 +409,12 @@ subroutine write_options_ptmass_radiation(iunit)
                                    'iray_resolution','set the number of rays to 12*4**iray_resolution (deactivated if <0)',iunit)
  endif
  if (iget_tdust == 5) then
-    call write_inopt(alpha_eq,'alpha_eq','fraction of the 3D Lucy optical depth that accounted for (between 0 and 1)',iunit)
-    call write_inopt(beta_eq, 'beta_eq', 'fraction of the optical depth that is accounted for (between 0 and 1)',iunit)
+    call write_inopt(alpha_eq,'alpha_eq',&
+    'fraction of the 3D Lucy optical depth that accounted for in the dust temperature (between 0 and 1)',iunit)
+    call write_inopt(beta_eq, 'beta_eq', &
+    'fraction of the 3D optical depth that is accounted for in the dust temperature (between 0 and 1)',iunit)
+    call write_inopt(gamma_eq,'gamma_eq',&
+    'fraction of the 3D optical depth that is accounted for in the radiation acceleration (between 0 and 1)',iunit)
  endif
  if (iget_tdust == 1) then
     call write_inopt(tdust_exp,'tdust_exp','exponent of the dust temperature profile',iunit)
@@ -453,6 +464,9 @@ subroutine read_options_ptmass_radiation(name,valstring,imatch,igotall,ierr)
     ngot = ngot + 1
  case('beta_eq')
     read(valstring,*,iostat=ierr) beta_eq
+    ngot = ngot + 1
+ case('gamma_eq')
+    read(valstring,*,iostat=ierr) gamma_eq
     ngot = ngot + 1
  case('tdust_exp')
     read(valstring,*,iostat=ierr) tdust_exp
