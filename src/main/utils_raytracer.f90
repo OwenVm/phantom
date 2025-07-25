@@ -504,32 +504,30 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
  previousdrhodr = 0.
  nextdrhodr = 0.
 
- do while (hasNext(inext,tau_along_ray(i),distance,maxDistance))
+ do while (hasNext(inext,distance,maxDistance))
 
     distance = distance+dr
     call find_next(primary + distance*ray, xyzh(4,inext), ray, xyzh, kappa, nextdtaudr, nextdrhodr, next_dr, inext)
     i = i + 1
-    
+
+    if (type(1)) then 
+       dtaudr            = (nextdtaudr+previousdtaudr)/2.
+       previousdtaudr    = nextdtaudr
+       tau_along_ray(i) = tau_along_ray(i-1) + dr*dtaudr/unit_opacity
+    endif
+
     if (type(2)) then
-       nextdtauLdr = nextdtaudr*(Rstar/distance)**2
+       nextdtauLdr = nextdtaudr * (Rstar/distance)**2
        dtauLdr = (nextdtauLdr + previousdtauLdr)/2.
        previousdtauLdr = nextdtauLdr
-       tauL_along_ray(i) = tauL_along_ray(i-1) + real(dr*dtauLdr/unit_opacity)
+       tauL_along_ray(i) = tauL_along_ray(i-1) + dr*dtauLdr/unit_opacity
     endif
 
     if (type(3)) then
        nextdrhodr = drhodr
        drhodr = (nextdrhodr + previousdrhodr)/2.
        previousdrhodr = nextdrhodr
-       column_density_along_ray(i) = column_density_along_ray(i-1) + real(dr*drhodr/unit_density)
-    endif
-
-    dtaudr            = (nextdtaudr+previousdtaudr)/2.
-    previousdtaudr    = nextdtaudr
-
-    if (type(1)) then 
-       !tau is requested, so calculate it
-       tau_along_ray(i) = tau_along_ray(i-1) + real(dr*dtaudr/unit_opacity)
+       column_density_along_ray(i) = column_density_along_ray(i-1) + dr*drhodr/unit_density
     endif
 
     dist_along_ray(i) = distance
@@ -542,11 +540,7 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
     tau_along_ray(i)  = tau_max
     dist_along_ray(i) = maxDistance
  endif
- if (type(2) .and. present(maxDistance)) then
-    i = i + 1
-    tauL_along_ray(i) = tauL_max
-    dist_along_ray(i) = maxDistance
- endif
+ 
  if (type(3) .and. present(maxDistance)) then
     i = i + 1
     column_density_along_ray(i) = column_density_max
@@ -570,21 +564,21 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
              L = m + 1
           endif
        enddo
-       tauL_along_ray(1:L) = 2./3.
+       tauL_along_ray(1:L-1) = 2./3.
        !The photosphere is located between ray grid point L and L+1, may be useful information!
     endif
  endif
+
 end subroutine ray_tracer
 
-logical function hasNext(inext, tau, distance, maxDistance)
+logical function hasNext(inext, distance, maxDistance)
  integer, intent(in) :: inext
- real, intent(in)    :: tau, distance
+ real, intent(in)    :: distance
  real, optional      :: maxDistance
- real                :: tau_max = 99.
  if (present(maxDistance)) then
-    hasNext = inext /= 0 .and. distance < maxDistance .and. tau < tau_max
+    hasNext = inext /= 0 .and. distance < maxDistance
  else
-    hasNext = inext /= 0 .and. tau < tau_max
+    hasNext = inext /= 0
  endif
 end function hasNext
 
