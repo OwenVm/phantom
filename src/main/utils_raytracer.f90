@@ -43,7 +43,7 @@ contains
  !  IN: xyzh:            The array containing the particles position+smooting lenght
  !  IN: kappa_cgs:       The array containing the opacities of all SPH particles
  !  IN: order:           The healpix order which is used for the uniform ray sampling
- !  IN: type:            The type of integrands to use (tau, tau_lucy, tau_lucy_1D) in a list as e.g. [.true., .false., .false.]
+ !  IN: type:            The type of integrands to use (tau, tau_lucy, column density) in a list as e.g. [.true., .false., .false.]
  !+
  !  OUT: tau:            The array of optical depths for each SPH particle
  !+
@@ -233,15 +233,16 @@ subroutine get_all_integrands_companion(npart, primary, Rstar, xyzh, kappa, Rinj
     ray_dir = (/cosphi*ray_dir(1) - sinphi*ray_dir(2),sinphi*ray_dir(1) + cosphi*ray_dir(2), ray_dir(3)/)
     theta   = acos(dot_product(uvecCompanion, ray_dir))
     !the ray intersects the companion: only calculate tau up to the companion
-    if (theta < theta0) then
-       root  = sqrt(Rcomp**2-normCompanion**2*sin(theta)**2)
-       sep   = normCompanion*cos(theta)-root
-       call ray_tracer(primary,ray_dir,xyzh,kappa,Rstar,Rinject, &
-               rays_tau(:,i), rays_tau_lucy(:,i), rays_column_density(:,i), rays_dist(:,i), rays_dim(i), type, sep)
-    else
-       call ray_tracer(primary,ray_dir,xyzh,kappa,Rstar,Rinject, &
+    !if (theta < theta0) then
+    !   root  = sqrt(Rcomp**2-normCompanion**2*sin(theta)**2)
+    !   sep   = normCompanion*cos(theta)-root
+    !   !print *, "I am intersecting"
+    !   call ray_tracer(primary,ray_dir,xyzh,kappa,Rstar,Rinject, &
+    !           rays_tau(:,i), rays_tau_lucy(:,i), rays_column_density(:,i), rays_dist(:,i), rays_dim(i), type, sep)
+    !else
+    call ray_tracer(primary,ray_dir,xyzh,kappa,Rstar,Rinject, &
                rays_tau(:,i), rays_tau_lucy(:,i), rays_column_density(:,i), rays_dist(:,i), rays_dim(i), type)
-    endif
+    
  enddo
  !$omp enddo
  !$omp end parallel
@@ -284,6 +285,10 @@ end subroutine get_all_integrands_companion
  !  IN: vec:             The vector from the primary to the particle
  !  IN: rays_tau:        2-dimensional array containing the cumulative optical
  !                       depth along each ray
+ !  IN: rays_tau_lucy:   2-dimensional array containing the cumulative optical
+ !                       depth along each ray for tau_lucy
+ !  IN: rays_column_density: 2-dimensional array containing the cumulative column
+ !                       density along each ray
  !  IN: rays_dist:       2-dimensional array containing the distances from the
  !                       primary along each ray
  !  IN: rays_dim:        The vector containing the number of points defined along each ray
@@ -297,7 +302,6 @@ subroutine interpolate_integrands(nsides, vec, rays_tau, rays_tau_lucy, rays_col
  real, intent(in)    :: vec(:), rays_dist(:,:), rays_tau(:,:), rays_tau_lucy(:,:), rays_column_density(:,:)
  real, intent(out)   :: tau, tau_lucy, column_density
  logical, dimension(3), intent(in) :: type
-
 
  integer :: rayIndex, neighbours(8), nneigh, i, k
  real    :: tautemp, tauLtemp, column_densitytemp, ray(3), vectemp(3), weight, tempdist(8), distRay_sq, vec_norm2
@@ -354,6 +358,11 @@ subroutine interpolate_integrands(nsides, vec, rays_tau, rays_tau_lucy, rays_col
  tau = tau / weight
  tau_lucy = tau_lucy / weight
  column_density = column_density / weight
+
+! for some reason it is possible for the interpolation to be greater than 2/3, in that case put it to 2/3
+ if (tau_lucy > 2./3.) then
+     tau_lucy = 2./3.
+ endif 
 end subroutine interpolate_integrands
 
 
@@ -553,6 +562,7 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
     tauL_along_ray(1:len) = tauL_along_ray(len) - tauL_along_ray(1:len)
     !find the first point where tau_lucy < 2/3
     if (tauL_along_ray(1) > 2./3.) then
+       !print *, tauL_along_ray
        L = 1
        R = len
        !bysection search for the index of the closest point to tau = 2/3
@@ -565,6 +575,7 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
           endif
        enddo
        tauL_along_ray(1:L-1) = 2./3.
+       !print *, tauL_along_ray
        !The photosphere is located between ray grid point L and L+1, may be useful information!
     endif
  endif

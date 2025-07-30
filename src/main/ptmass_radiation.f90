@@ -64,8 +64,9 @@ end subroutine init_radiation_ptmass
 !+
 !-----------------------------------------------------------------------
 subroutine get_rad_accel_from_ptmass (nptmass,npart,i,xi,yi,zi,xyzmh_ptmass,fextx,fexty,fextz,tau,fsink_old,extrapfac)
- use part,    only:ilum
+ use part,    only:ilum,rhoh
  use units,   only:umass,unit_luminosity
+ !use eos,     only:ieos, get_temperature
  integer,        intent(in)    :: nptmass,npart,i
  real,           intent(in)    :: xi,yi,zi
  real,           intent(in)    :: xyzmh_ptmass(:,:)
@@ -73,6 +74,7 @@ subroutine get_rad_accel_from_ptmass (nptmass,npart,i,xi,yi,zi,xyzmh_ptmass,fext
  real,           intent(inout) :: fextx,fexty,fextz
  real, optional, intent(in)    :: fsink_old(:,:)
  real, optional, intent(in)    :: extrapfac
+ !real, dimension(nptmass)      :: T, rho
  real                    :: dx,dy,dz,Mstar_cgs,Lstar_cgs
  integer                 :: j
  logical                 :: extrap
@@ -82,6 +84,10 @@ subroutine get_rad_accel_from_ptmass (nptmass,npart,i,xi,yi,zi,xyzmh_ptmass,fext
  else
     extrap = .false.
  endif
+
+ !rho = rhoh(xyzmh_ptmass(5,:), xyzmh_ptmass(4,:)) ! rhoh is the density in cgs
+
+ !T = get_temperature(ieos,xyzh,rho,vxyzui)
 
  do j=1,nptmass
     if (xyzmh_ptmass(4,j) < 0.) cycle
@@ -118,8 +124,8 @@ subroutine calc_rad_accel_from_ptmass(npart,i,dx,dy,dz,Lstar_cgs,Mstar_cgs,fextx
  real,              intent(in)    :: dx,dy,dz,Lstar_cgs,Mstar_cgs
  real,              intent(inout) :: fextx,fexty,fextz
  real                             :: r,ax,ay,az,alpha,kappa
-
-
+ !real, optional,    intent(in)    :: Tgas(:)
+ 
  r = sqrt(dx**2 + dy**2 + dz**2)
  if (do_nucleation) then
     if (itau_alloc == 1) then

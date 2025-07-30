@@ -213,6 +213,7 @@ end subroutine evolve_chem
 pure elemental real function calc_kappa_bowen(Teq)
 !all quantities in cgs
  real,    intent(in)  :: Teq
+ !real,    intent(in), optional  :: Tgas, Tlim
  real :: dlnT
 
  dlnT = (Teq-bowen_Tcond)/bowen_delta
@@ -221,6 +222,13 @@ pure elemental real function calc_kappa_bowen(Teq)
  else
     calc_kappa_bowen = bowen_kmax/(1.0 + exp(dlnT)) + kappa_gas
  endif
+ !else 
+ !   if (present(Tgas) .and. Tgas > Tlim) then
+ !     calc_kappa_bowen = kappa_gas
+ !   else
+ !     calc_kappa_bowen = bowen_kmax/(1.0 + exp(dlnT)) + kappa_gas
+ !   endif
+ !endif
 
 end function calc_kappa_bowen
 
