@@ -52,6 +52,8 @@ module dust_formation
  real :: bowen_kmax  = 2.7991
  real :: bowen_Tcond = 1500.
  real :: bowen_delta = 60.
+ real :: bowen_rho_disk = 1e-13
+ real :: bowen_delta_rho = 1e-14
 
 ! Indices for elements and molecules:
  integer, parameter :: nMolecules = 25
@@ -210,25 +212,21 @@ end subroutine evolve_chem
 !  Bowen dust opacity formula
 !
 !------------------------------------
-pure elemental real function calc_kappa_bowen(Teq)
+pure elemental real function calc_kappa_bowen(Teq, rho)
 !all quantities in cgs
  real,    intent(in)  :: Teq
- !real,    intent(in), optional  :: Tgas, Tlim
- real :: dlnT
+ real,    intent(in)  , optional :: rho
+ real :: dlnT, dlnrho
 
  dlnT = (Teq-bowen_Tcond)/bowen_delta
  if (dlnT > 50.) then
     calc_kappa_bowen = 0.
+ else if (present(rho)) then
+    dlnrho = (rho-bowen_rho_disk)/bowen_delta_rho
+    calc_kappa_bowen = bowen_kmax/(1.0 + exp(dlnT) + exp(dlnrho)) + kappa_gas
  else
     calc_kappa_bowen = bowen_kmax/(1.0 + exp(dlnT)) + kappa_gas
  endif
- !else 
- !   if (present(Tgas) .and. Tgas > Tlim) then
- !     calc_kappa_bowen = kappa_gas
- !   else
- !     calc_kappa_bowen = bowen_kmax/(1.0 + exp(dlnT)) + kappa_gas
- !   endif
- !endif
 
 end function calc_kappa_bowen
 

@@ -66,7 +66,6 @@ end subroutine init_radiation_ptmass
 subroutine get_rad_accel_from_ptmass (nptmass,npart,i,xi,yi,zi,xyzmh_ptmass,fextx,fexty,fextz,tau,fsink_old,extrapfac)
  use part,    only:ilum,rhoh
  use units,   only:umass,unit_luminosity
- !use eos,     only:ieos, get_temperature
  integer,        intent(in)    :: nptmass,npart,i
  real,           intent(in)    :: xi,yi,zi
  real,           intent(in)    :: xyzmh_ptmass(:,:)
@@ -74,7 +73,6 @@ subroutine get_rad_accel_from_ptmass (nptmass,npart,i,xi,yi,zi,xyzmh_ptmass,fext
  real,           intent(inout) :: fextx,fexty,fextz
  real, optional, intent(in)    :: fsink_old(:,:)
  real, optional, intent(in)    :: extrapfac
- !real, dimension(nptmass)      :: T, rho
  real                    :: dx,dy,dz,Mstar_cgs,Lstar_cgs
  integer                 :: j
  logical                 :: extrap
@@ -84,10 +82,6 @@ subroutine get_rad_accel_from_ptmass (nptmass,npart,i,xi,yi,zi,xyzmh_ptmass,fext
  else
     extrap = .false.
  endif
-
- !rho = rhoh(xyzmh_ptmass(5,:), xyzmh_ptmass(4,:)) ! rhoh is the density in cgs
-
- !T = get_temperature(ieos,xyzh,rho,vxyzui)
 
  do j=1,nptmass
     if (xyzmh_ptmass(4,j) < 0.) cycle
@@ -116,15 +110,15 @@ end subroutine get_rad_accel_from_ptmass
 !+
 !-----------------------------------------------------------------------
 subroutine calc_rad_accel_from_ptmass(npart,i,dx,dy,dz,Lstar_cgs,Mstar_cgs,fextx,fexty,fextz,tau)
- use part,  only:isdead_or_accreted,dust_temp,nucleation,idkappa,idalpha,alpha_rad
+ use part,  only:isdead_or_accreted,dust_temp,nucleation,idkappa,idalpha,alpha_rad,rhoh,xyzh,massoftype,igas
  use dim,   only:do_nucleation,itau_alloc,itauL_alloc
  use dust_formation, only:calc_kappa_bowen
+ use units, only:unit_density
  integer,           intent(in)    :: npart,i
  real, optional,    intent(in)    :: tau(:)
  real,              intent(in)    :: dx,dy,dz,Lstar_cgs,Mstar_cgs
  real,              intent(inout) :: fextx,fexty,fextz
  real                             :: r,ax,ay,az,alpha,kappa
- !real, optional,    intent(in)    :: Tgas(:)
  
  r = sqrt(dx**2 + dy**2 + dz**2)
  if (do_nucleation) then
@@ -136,7 +130,7 @@ subroutine calc_rad_accel_from_ptmass(npart,i,dx,dy,dz,Lstar_cgs,Mstar_cgs,fextx
                nucleation(idkappa,i),ax,ay,az,nucleation(idalpha,i))
     endif
  else
-    kappa = calc_kappa_bowen(dust_temp(i))
+    kappa = calc_kappa_bowen(dust_temp(i), rhoh(xyzh(4,i),massoftype(igas)*unit_density))
     if (itau_alloc == 1) then
        call get_radiative_acceleration_from_star(r,dx,dy,dz,Mstar_cgs,Lstar_cgs,&
                kappa,ax,ay,az,alpha,tau(i))
@@ -205,14 +199,17 @@ end subroutine get_radiative_acceleration_from_star
 !+
 !-----------------------------------------------------------------------
 subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_temp)
- use part,      only:tau,tau_lucy,column_density,ikappa,nucleation
+ use part,      only:tau,tau_lucy,column_density,ikappa,nucleation,rhoh,massoftype,igas
  use raytracer, only:get_all_integrands
  use dust_formation, only:calc_kappa_bowen,idust_opacity
  use dim,       only:itau_alloc,itauL_alloc,icolumn_alloc
+ use units,     only:unit_density
  integer,  intent(in)    :: nptmass,npart
  real,     intent(in)    :: xyzh(:,:),xyzmh_ptmass(:,:),eos_vars(:,:)
  real,     intent(out)   :: dust_temp(:)
  logical, dimension(3)   :: type
+ integer :: j
+ real, dimension(npart)  :: rho
 
  type = (/ .false., .false., .false. /) ! default : no tau, no tau_Lucy, no column density
 
@@ -226,6 +223,9 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
    type(3) = .true. ! column density
  endif
 
+ do j=1,npart
+    rho(j) = rhoh(xyzh(4,j), massoftype(igas)) * unit_density
+ end do
 
  !
  ! compute dust temperature based on previous value of tau and/or tau_lucy
@@ -252,9 +252,8 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
        call get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, nucleation(:,ikappa), iray_resolution, &
                      tau, tau_lucy, column_density, type)
     else
-       
-       call get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, calc_kappa_bowen(dust_temp(1:npart)), iray_resolution, &
-                     tau, tau_lucy, column_density, type)
+       call get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, calc_kappa_bowen(dust_temp(1:npart), rho(1:npart)), &
+                     iray_resolution, tau, tau_lucy, column_density, type)
     endif
  elseif (itau_alloc == 1) then
     ! update tau
@@ -262,8 +261,8 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
        call get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, nucleation(:,ikappa), iray_resolution, & 
                      tau, tau_lucy, column_density, type)
     else
-       call get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, calc_kappa_bowen(dust_temp(1:npart)), iray_resolution, & 
-                     tau, tau_lucy, column_density, type)
+       call get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, calc_kappa_bowen(dust_temp(1:npart), rho(1:npart)), &
+                     iray_resolution, tau, tau_lucy, column_density, type)
     endif
  endif
 
