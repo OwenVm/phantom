@@ -243,7 +243,7 @@ subroutine wind_step(state)
     state%kappa          = calc_kappa_dust(state%JKmuS(idK3), state%Tdust, state%rho)
     state%JKmuS(idalpha) = state%alpha_Edd+alpha_rad
  else
-    if (idust_opacity == 1) state%kappa = calc_kappa_bowen(state%Tdust, state%rho)
+    if (idust_opacity == 1) state%kappa = calc_kappa_bowen(state%Tdust)
     if (update_muGamma) call calc_muGamma(state%rho, state%Tg,state%mu, state%gamma, pH, pH_tot)
  endif
 
@@ -293,7 +293,7 @@ subroutine wind_step(state)
  if (idust_opacity == 2) then
     state%kappa = calc_kappa_dust(state%JKmuS(idK3), state%Tdust, state%rho)
  elseif (idust_opacity == 1) then
-    state%kappa = calc_kappa_bowen(state%Tdust, state%rho)
+    state%kappa = calc_kappa_bowen(state%Tdust)
  endif
 
  ! update optical depths
@@ -366,7 +366,7 @@ subroutine wind_step(state)
     state%gamma     = state%JKmuS(idgamma)
     state%kappa     = calc_kappa_dust(state%JKmuS(idK3), state%Tdust, state%rho)
  else
-    if (idust_opacity == 1) state%kappa     = calc_kappa_bowen(state%Tdust, state%rho)
+    if (idust_opacity == 1) state%kappa     = calc_kappa_bowen(state%Tdust)
     if (update_muGamma) call calc_muGamma(state%rho, state%Tg,state%mu, state%gamma, pH, pH_tot)
  endif
 
@@ -426,7 +426,7 @@ subroutine wind_step(state)
  if (idust_opacity == 2) then
     state%kappa = calc_kappa_dust(state%JKmuS(idK3), state%Tdust, state%rho)
  elseif (idust_opacity == 1) then
-    state%kappa = calc_kappa_bowen(state%Tdust, state%rho)
+    state%kappa = calc_kappa_bowen(state%Tdust)
  endif
 
  !calculate new tau
