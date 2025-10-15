@@ -162,8 +162,8 @@ subroutine get_radiative_acceleration_from_star(r,dx,dy,dz,Mstar_cgs,Lstar_cgs,&
 
  if (present(tau_in)) then
     if (iget_tdust == 5) then
-        call interp_tau_profile(r,tau_lucy1D,tau_1D)
-        tau = gamma_eq*(tau_in - tau_1D)
+       call interp_tau_profile(r,tau_lucy1D,tau_1D)
+       tau = gamma_eq*(tau_in - tau_1D)
     else
        tau = tau_in
     endif
@@ -209,13 +209,13 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
  type = (/ .false., .false., .false. /) ! default : no tau, no tau_Lucy, no column density
 
  if (itau_alloc == 1) then
-   type(1) = .true. ! tau
+    type(1) = .true. ! tau
  endif
  if (itauL_alloc == 1) then
-   type(2) = .true. ! tau_Lucy
+    type(2) = .true. ! tau_Lucy
  endif
  if (icolumn_alloc == 1) then
-   type(3) = .true. ! column density
+    type(3) = .true. ! column density
  endif
 
  !
@@ -356,31 +356,31 @@ subroutine get_dust_temperature_from_ptmass(npart,xyzh,eos_vars,nptmass,xyzmh_pt
     enddo
     !$omp end parallel do
  case(5)
-   ! Combination approximation for Tdust
-   !$omp parallel  do default(none) &
-   !$omp shared(npart,xa,ya,za,R_star,T_star,xyzh,dust_temp,tdust_exp,tau,tau_lucy,alpha_eq,beta_eq) &
-   !$omp shared(massoftype,unit_density,eos_vars) &
-   !$omp private(i,r,tau_lucy1D,tau_1D,rho,kappa)
-   do i=1,npart
-      if (.not.isdead_or_accreted(xyzh(4,i))) then
-         r = sqrt((xyzh(1,i)-xa)**2 + (xyzh(2,i)-ya)**2 + (xyzh(3,i)-za)**2)
-         if (r  <  R_star) r = R_star
-         if (isnan(tau_lucy(i))) tau_lucy(i) = 2./3.
-         call interp_tau_profile(r,tau_lucy1D,tau_1D)
-         ! if (tau(i) > 5*tau_1D) then
-         !    tau(i) = 5*tau_1D
-         ! endif
-         dust_temp(i) = T_star * (.5*(1.-sqrt(1.-(R_star/r)**2)+ &
+    ! Combination approximation for Tdust
+    !$omp parallel  do default(none) &
+    !$omp shared(npart,xa,ya,za,R_star,T_star,xyzh,dust_temp,tdust_exp,tau,tau_lucy,alpha_eq,beta_eq) &
+    !$omp shared(massoftype,unit_density,eos_vars) &
+    !$omp private(i,r,tau_lucy1D,tau_1D,rho,kappa)
+    do i=1,npart
+       if (.not.isdead_or_accreted(xyzh(4,i))) then
+          r = sqrt((xyzh(1,i)-xa)**2 + (xyzh(2,i)-ya)**2 + (xyzh(3,i)-za)**2)
+          if (r  <  R_star) r = R_star
+          if (isnan(tau_lucy(i))) tau_lucy(i) = 2./3.
+          call interp_tau_profile(r,tau_lucy1D,tau_1D)
+          ! if (tau(i) > 5*tau_1D) then
+          !    tau(i) = 5*tau_1D
+          ! endif
+          dust_temp(i) = T_star * (.5*(1.-sqrt(1.-(R_star/r)**2)+ &
                           3./2.*(tau_lucy1D+alpha_eq*(tau_lucy(i)-tau_lucy1D))) &
                                                      *exp(-beta_eq*(tau(i)-tau_1D)))**(1./4.)
-         rho = rhoh(xyzh(4,i), massoftype(igas)) * unit_density
-         kappa = calc_kappa_bowen(dust_temp(i))
-         if (rho * kappa * 14959787070000.0 > 10.) then ! Check if this region is optically thick on a lenght scale of 1 au. If so, dust_temp = gas_temp
-            dust_temp(i) = eos_vars(itemp,i)
-         endif
-      endif
-   enddo
-   !$omp end parallel do
+          rho = rhoh(xyzh(4,i), massoftype(igas)) * unit_density
+          kappa = calc_kappa_bowen(dust_temp(i))
+          if (rho * kappa * 14959787070000.0 > 10.) then ! Check if this region is optically thick on a lenght scale of 1 au. If so, dust_temp = gas_temp
+             dust_temp(i) = eos_vars(itemp,i)
+          endif
+       endif
+    enddo
+    !$omp end parallel do
  case default
     ! sets Tdust = Tgas
     !$omp parallel do default(none) &

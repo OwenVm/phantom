@@ -361,7 +361,7 @@ subroutine interpolate_integrands(nsides, vec, rays_tau, rays_tau_lucy, rays_col
 
 ! for some reason it is possible for the interpolation to be greater than 2/3, in that case put it to 2/3
  if (tau_lucy > 2./3.) then
-     tau_lucy = 2./3.
+    tau_lucy = 2./3.
  endif
 end subroutine interpolate_integrands
 
@@ -482,7 +482,7 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
  enddo
 
  if (.not. type(1)) then
-   !if tau is not requested, then return empty arrays
+    !if tau is not requested, then return empty arrays
     tau_along_ray = 0.
  endif
 
