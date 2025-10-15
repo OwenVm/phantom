@@ -10,12 +10,13 @@ module analysis
 !
 ! :References: Esseldeurs M., Siess L. et al, 2023, A&A, 674, A122
 !
-! :Owner: Mats Esseldeurs
+! :Owner: Lionel Siess
 !
 ! :Runtime parameters: None
 !
 ! :Dependencies: dump_utils, dust_formation, getneighbours, linklist,
-!   omp_lib, part, physcon, raytracer, raytracer_all
+!   omp_lib, part, physcon, ptmass_radiation, raytracer, raytracer_all,
+!   units
 !
  use raytracer_all,    only:get_all_tau_inwards, get_all_tau_outwards, get_all_tau_adaptive
  use raytracer,        only:get_all_tau
