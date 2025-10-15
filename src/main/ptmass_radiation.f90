@@ -117,7 +117,7 @@ subroutine calc_rad_accel_from_ptmass(npart,i,dx,dy,dz,Lstar_cgs,Mstar_cgs,fextx
  real,              intent(in)    :: dx,dy,dz,Lstar_cgs,Mstar_cgs
  real,              intent(inout) :: fextx,fexty,fextz
  real                             :: r,ax,ay,az,alpha,kappa
- 
+
  r = sqrt(dx**2 + dy**2 + dz**2)
  if (do_nucleation) then
     if (itau_alloc == 1) then
@@ -249,7 +249,7 @@ subroutine get_dust_temperature(npart,xyzh,eos_vars,nptmass,xyzmh_ptmass,dust_te
  elseif (itau_alloc == 1) then
     ! update tau
     if (idust_opacity == 2) then
-       call get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, nucleation(:,ikappa), iray_resolution, & 
+       call get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, nucleation(:,ikappa), iray_resolution, &
                      tau, tau_lucy, column_density, type)
     else
        call get_all_integrands(npart, nptmass, xyzmh_ptmass, xyzh, calc_kappa_bowen(dust_temp(1:npart)), &

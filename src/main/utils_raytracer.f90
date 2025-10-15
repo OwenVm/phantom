@@ -91,7 +91,7 @@ end subroutine get_all_integrands
  !+
  !  OUT: taus:           The array of optical depths to each SPH particle
  !  OUT: tau_lucy:       The array of optical depths to each SPH particle using the Lucy method
- !  OUT: column_density: The array of column densities to each SPH particle 
+ !  OUT: column_density: The array of column densities to each SPH particle
  !+
  !---------------------------------------------------------------------------------
 subroutine get_all_integrands_single(npart, primary, Rstar, xyzh, kappa, Rinject, order, tau, tau_lucy, column_density, type)
@@ -137,7 +137,7 @@ subroutine get_all_integrands_single(npart, primary, Rstar, xyzh, kappa, Rinject
  !$omp enddo
  !$omp end parallel
 
- 
+
  !_----------------------------------------------
  ! DETERMINE the optical depth for each particle
  ! using the values available on the HEALPix rays
@@ -242,7 +242,7 @@ subroutine get_all_integrands_companion(npart, primary, Rstar, xyzh, kappa, Rinj
     !else
     call ray_tracer(primary,ray_dir,xyzh,kappa,Rstar,Rinject, &
                rays_tau(:,i), rays_tau_lucy(:,i), rays_column_density(:,i), rays_dist(:,i), rays_dim(i), type)
-    
+
  enddo
  !$omp enddo
  !$omp end parallel
@@ -262,7 +262,7 @@ subroutine get_all_integrands_companion(npart, primary, Rstar, xyzh, kappa, Rinj
        !vector joining the source to the particle
        part_dir = xyzh(1:3,i)-primary
        part_dir = (/cosphi*part_dir(1) + sinphi*part_dir(2),-sinphi*part_dir(1) + cosphi*part_dir(2), part_dir(3)/)
-       call interpolate_integrands(nsides, part_dir, rays_tau, rays_tau_lucy, rays_column_density, & 
+       call interpolate_integrands(nsides, part_dir, rays_tau, rays_tau_lucy, rays_column_density, &
                        rays_dist, rays_dim, tau(i), tau_lucy(i), column_density(i), type)
     else
        tau(i) = -99.
@@ -314,7 +314,7 @@ subroutine interpolate_integrands(nsides, vec, rays_tau, rays_tau_lucy, rays_col
  call pix2vec_nest(nsides, rayIndex, ray)
  !compute optical depth along ray rayIndex(+1)
  call get_integrands_on_ray(vec_norm2, rays_tau(:,rayIndex+1), rays_tau_lucy(:,rayIndex+1), &
-               rays_column_density(:,rayIndex+1), rays_dist(:,rayIndex+1), rays_dim(rayIndex+1), & 
+               rays_column_density(:,rayIndex+1), rays_dist(:,rayIndex+1), rays_dim(rayIndex+1), &
                tautemp, tauLtemp, column_densitytemp, type)
  !determine distance of the particle to the HEALPix ray
  vectemp       = vec - vec_norm2*ray
@@ -362,7 +362,7 @@ subroutine interpolate_integrands(nsides, vec, rays_tau, rays_tau_lucy, rays_col
 ! for some reason it is possible for the interpolation to be greater than 2/3, in that case put it to 2/3
  if (tau_lucy > 2./3.) then
      tau_lucy = 2./3.
- endif 
+ endif
 end subroutine interpolate_integrands
 
 
@@ -380,7 +380,7 @@ end subroutine interpolate_integrands
  !  OUT: tau:            The optical depth to the given distance along the ray
  !+
  !--------------------------------------------------------------------------
-subroutine get_integrands_on_ray(distance, tau_along_ray, tauL_along_ray, column_density_along_ray, & 
+subroutine get_integrands_on_ray(distance, tau_along_ray, tauL_along_ray, column_density_along_ray, &
                            dist_along_ray, len, tau, tauL, column_density, type)
  real, intent(in)    :: distance, tau_along_ray(:), tauL_along_ray(:), column_density_along_ray(:), dist_along_ray(:)
  integer, intent(in) :: len
@@ -403,7 +403,7 @@ subroutine get_integrands_on_ray(distance, tau_along_ray, tauL_along_ray, column
     tau = tau_along_ray(len)
     tauL = tauL_along_ray(len)
     column_density = column_density_along_ray(len)
- 
+
  else
     L = 2
     R = len
@@ -457,7 +457,7 @@ end subroutine get_integrands_on_ray
  !  OPT: maxDistance:    The maximal distance the ray needs to be traced
  !+
  !--------------------------------------------------------------------------
-subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, tauL_along_ray, column_density_along_ray, & 
+subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, tauL_along_ray, column_density_along_ray, &
                   dist_along_ray, len, type, maxDistance)
  use units, only:unit_opacity, unit_density
  !use part,  only:itauL_alloc
@@ -481,7 +481,7 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
     call find_next(primary+Rinject*ray, h, ray, xyzh, kappa, previousdtaudr, previousdrhodr, dr, inext)
  enddo
 
- if (.not. type(1)) then 
+ if (.not. type(1)) then
    !if tau is not requested, then return empty arrays
     tau_along_ray = 0.
  endif
@@ -495,9 +495,9 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
     !if column density is not requested, then return empty arrays
     column_density_along_ray = 0.
  endif
-    
+
  i = 1
- 
+
  tau_along_ray(i)  = 0.
  tauL_along_ray(i) = 0.
  column_density_along_ray(i) = 0.
@@ -519,7 +519,7 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
     call find_next(primary + distance*ray, xyzh(4,inext), ray, xyzh, kappa, nextdtaudr, nextdrhodr, next_dr, inext)
     i = i + 1
 
-    if (type(1)) then 
+    if (type(1)) then
        dtaudr            = (nextdtaudr+previousdtaudr)/2.
        previousdtaudr    = nextdtaudr
        tau_along_ray(i) = tau_along_ray(i-1) + dr*dtaudr/unit_opacity
@@ -549,7 +549,7 @@ subroutine ray_tracer(primary, ray, xyzh, kappa, Rstar, Rinject, tau_along_ray, 
     tau_along_ray(i)  = tau_max
     dist_along_ray(i) = maxDistance
  endif
- 
+
  if (type(3) .and. present(maxDistance)) then
     i = i + 1
     column_density_along_ray(i) = column_density_max
