@@ -111,7 +111,7 @@ subroutine do_analysis(dumpfile,num,xyzh,vxyzu,particlemass,npart,time,iunit)
    xa = primsec(1,1)
    ya = primsec(2,1)
    za = primsec(3,1)
-   open(newunit=iu4, file='tauL_'//dumpfile//'.txt', status='old', action='read')
+   open(newunit=iu4,file='tauL_'//dumpfile//'.txt',status='old',action='read')
    do i=1, npart2
          read(iu4,*) tauL(i)
    enddo
@@ -685,7 +685,7 @@ endif
     enddo
     print*,maxval(tau)
     close(iu4)
-    open(newunit=iu4, file='Tdust_'//dumpfile//'.txt', status='replace', action='write')
+    open(newunit=iu4,file='Tdust_'//dumpfile//'.txt',status='replace',action='write')
     do i=1, npart2
        write(iu4, *) temp(i)
     enddo
