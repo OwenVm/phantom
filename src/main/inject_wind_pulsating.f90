@@ -1,0 +1,447 @@
+!--------------------------------------------------------------------------!
+! The Phantom Smoothed Particle Hydrodynamics code, by Daniel Price et al. !
+! Copyright (c) 2007-2025 The Authors (see AUTHORS)                        !
+! See LICENCE file for usage and distribution conditions                   !
+! http://phantomsph.github.io/                                             !
+!--------------------------------------------------------------------------!
+module inject
+!
+! Handles initial setup of stellar atmosphere with pulsating boundary layers
+!
+! :References: None
+!
+! :Owner: Owen Vermeulen
+!
+! :Runtime parameters:
+!   - iboundary_spheres  : *number of boundary spheres (integer)*
+!   - n_shells_total     : *total number of atmospheric shells*
+!   - iwind_resolution   : *geodesic sphere resolution*
+!   - r_min_on_rstar     : *inner radius as fraction of R_star*
+!   - pulsation_period   : *pulsation period (days)*
+!   - pulsation_amplitude: *fractional pulsation amplitude*
+!
+! :Dependencies: dim, eos, icosahedron, infile_utils, injectutils, io,
+!   part, partinject, physcon, units, set_star
+!
+ use dim, only:isothermal
+
+ implicit none
+ character(len=*), parameter, public :: inject_type = 'atmosphere'
+
+ public :: init_inject,inject_particles,write_options_inject,read_options_inject,&
+           set_default_options_inject,update_injected_par
+ private
+
+!--runtime settings for this module
+ integer :: iboundary_spheres = 5
+ integer :: n_shells_total = 50
+ integer :: n_profile_points = 10000
+ integer :: iwind_resolution = 5
+ real    :: r_inner = 0.8
+ real    :: pulsation_period_days = 300.0
+ real    :: pulsation_amplitude_km_s = 10.0
+ real    :: atmos_mass_fraction = 0.03  ! Atmosphere mass as fraction of total mass
+
+! global variables
+ integer, parameter :: wind_emitting_sink = 1
+ real :: geodesic_R(0:19,3,3), geodesic_v(0:11,3)
+ real :: pulsation_period, omega_pulsation, deltaR_osc
+ real :: Rstar, r_min, r_max, mass_of_particles
+ real :: Mtotal, Matmos, Msink  ! Total, atmosphere, and sink masses
+ integer :: particles_per_sphere, iresolution
+ logical :: atmosphere_setup_complete = .false.
+ 
+ ! Store boundary particle information
+ real, allocatable :: r_boundary_equilibrium(:)
+ integer, allocatable :: boundary_particle_ids(:)
+ integer :: n_boundary_particles
+
+ character(len=*), parameter :: label = 'inject_atmosphere'
+
+contains
+
+!-----------------------------------------------------------------------
+!+
+!  Initialize atmospheric setup and pulsation parameters
+!+
+!-----------------------------------------------------------------------
+subroutine init_inject(ierr)
+ use io,          only:fatal
+ use physcon,     only:pi,days,au,solarm
+ use icosahedron, only:compute_matrices,compute_corners
+ use eos,         only:gmw,gamma
+ use units,       only:utime,udist,umass
+ use part,        only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff
+ use injectutils, only:get_parts_per_sphere
+ use set_star,    only:setup_star,calc_stellar_profile
+
+ integer, intent(out) :: ierr
+ real :: Mstar_cgs, Rstar_cgs, Tstar, r_inner
+
+ ierr = 0
+
+ if (nptmass < 1) then
+    call fatal(label,'need at least one sink particle for central star')
+ endif
+
+ ! Get stellar properties from sink particle
+ Mtotal    = xyzmh_ptmass(4,wind_emitting_sink)
+ Rstar     = xyzmh_ptmass(iReff,wind_emitting_sink)
+ Rstar_cgs = Rstar * udist
+ Mstar_cgs = Mtotal * umass
+ Tstar     = xyzmh_ptmass(iTeff,wind_emitting_sink)
+
+ ! Calculate mass distribution
+ Matmos = atmos_mass_fraction * Mtotal
+ Msink  = Mtotal - Matmos
+
+ ! Setup pulsation parameters
+ pulsation_period = calculate_period(Mstar_cgs,Rstar_cgs)
+ omega_pulsation = 2.0*pi/pulsation_period
+
+ ! Setup geodesic sphere parameters
+ iresolution = iwind_resolution
+ call compute_matrices(geodesic_R)
+ call compute_corners(geodesic_v)
+ particles_per_sphere = get_parts_per_sphere(iresolution)
+
+ ! Define radial range for atmosphere
+ r_min = r_inner * Rstar
+ r_max = Rstar
+
+  ! Setup stellar structure calculation
+ call setup_star(Matmos * u_mass, Rstar_cgs, r_inner, gmw, gamma, n_shells_total)
+ 
+ ! Calculate stellar profile for the atmosphere
+ call calc_stellar_profile(Matmos, r_inner, Rstar, n_profile_points)
+
+ ! Calculate particle mass from atmospheric mass
+ ! Total atmospheric mass distributed over all particles
+ mass_of_particles = Matmos / real(n_shells_total * particles_per_sphere)
+ massoftype(igas) = mass_of_particles
+ massoftype(iboundary) = mass_of_particles
+
+ xyzmh_ptmass(4,wind_emitting_sink) = Msink
+
+end subroutine init_inject
+
+
+!-----------------------------------------------------------------------
+!+
+!  Calculate pulsation period based on stellar mass and radius
+!  Using empirical relation from Ostlie & Cox (1986)
+!+
+!+-----------------------------------------------------------------------
+
+subroutine calculate_period(M, R)
+ use physcon, only:solarm,au,days
+ real, intent(in)  :: M, R
+ real              :: logP, logM, logR
+ real, intent(out) :: pulsation_period_days
+
+ logM = log10(M/solarm)
+ logR = log10(R/au)
+ logP = -1.92 - 0.73*logM + 1.86*logR
+ pulsation_period_days = 10.0**logP
+
+end subroutine calculate_period
+
+!-----------------------------------------------------------------------
+!+
+!  Main routine: called at the start to setup atmosphere,
+!  then called each timestep to handle pulsation
+!+
+!-----------------------------------------------------------------------
+subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,&
+                            npart,npart_old,npartoftype,dtinject)
+ use part,        only:igas,iboundary,nptmass,iphase,iamtype
+
+ real,    intent(in)    :: time,dtlast
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ integer, intent(inout) :: npart,npart_old
+ integer, intent(inout) :: npartoftype(:)
+ real,    intent(out)   :: dtinject
+
+ ! Set timestep constraint for pulsation
+ dtinject = 0.02 * pulsation_period
+
+ ! Initial setup: create all shells
+ if (.not. atmosphere_setup_complete) then
+    call setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,&
+                                  npart,npartoftype)
+    atmosphere_setup_complete = .true.
+    return
+ endif
+
+ ! After initial setup: apply pulsation to boundary particles
+ if (pulsation_amplitude > 0.) then
+    call apply_pulsation(time,xyzh,vxyzu,npart)
+ endif
+
+end subroutine inject_particles
+
+!-----------------------------------------------------------------------
+!+
+!  Setup initial atmosphere with all shells at t=0
+!+
+!-----------------------------------------------------------------------
+subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,&
+                                    npart,npartoftype)
+ use part,        only:igas,iboundary,iphase,iamtype
+ use injectutils, only:inject_geodesic_sphere
+ use set_star,    only:interp_stellar_profile
+ use physcon,     only:pi
+
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
+ real,    intent(in)    :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ integer, intent(inout) :: npart
+ integer, intent(inout) :: npartoftype(:)
+
+ integer :: i,j,first_particle,ipart_type,nboundary
+ real    :: r,dr,rho,u,T,P,x0(3),v0(3),GM,v_radial
+ real    :: phase
+ logical :: is_boundary
+
+ ! Get sink particle position
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ v0 = vxyz_ptmass(1:3,wind_emitting_sink)
+ GM = xyzmh_ptmass(4,wind_emitting_sink)
+
+ ! Shell spacing
+ dr = (r_max - r_min) / real(n_shells_total - 1)
+
+ ! Initial phase for pulsation (starting at equilibrium)
+ phase = 0.0
+
+ ! Create shells from inner to outer
+ npart = 0
+ do i = 1, n_shells_total
+    ! Calculate radius for this shell
+    r = r_min + (i-1)*dr
+    
+    ! Determine if this is a boundary or free shell
+    is_boundary = (i <= iboundary_spheres)
+    
+    ! Get stellar properties at this radius from 1D stellar profile
+    ! This interpolates on the stellar_1D array calculated by set_star
+    call interp_stellar_profile(r, rho, P, u, T)
+    
+    ! Initial radial velocity (zero for equilibrium start)
+    v_radial = 0.0
+    
+    ! Set particle type - this tagging ensures forces are handled correctly
+    ! (see partinject.f90 where boundary particles get special treatment)
+    if (is_boundary) then
+       ipart_type = iboundary
+    else
+       ipart_type = igas
+    endif
+    
+    ! Inject this shell using geodesic sphere
+    first_particle = npart + 1
+    call inject_geodesic_sphere(i, first_particle, iresolution, r, v_radial, u, rho, &
+                                geodesic_R, geodesic_v, npart, npartoftype, &
+                                xyzh, vxyzu, ipart_type, x0, v0)
+ enddo
+
+ ! Store information about boundary particles for pulsation
+ nboundary = npartoftype(iboundary)
+ n_boundary_particles = nboundary
+ 
+ if (nboundary > 0) then
+    allocate(r_boundary_equilibrium(nboundary))
+    allocate(boundary_particle_ids(nboundary))
+    
+    ! Store equilibrium radii and IDs of boundary particles
+    j = 0
+    do i = 1, npart
+       if (iamtype(iphase(i)) == iboundary) then
+          j = j + 1
+          boundary_particle_ids(j) = i
+          r_boundary_equilibrium(j) = sqrt(xyzh(1,i)**2 + xyzh(2,i)**2 + xyzh(3,i)**2)
+       endif
+    enddo
+ endif
+
+end subroutine setup_initial_atmosphere
+
+!-----------------------------------------------------------------------
+!+
+!  Apply radial pulsation to boundary particles
+!+
+!-----------------------------------------------------------------------
+subroutine apply_pulsation(time,xyzh,vxyzu,npart)
+ use physcon, only:pi
+
+ real,    intent(in)    :: time
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
+ integer, intent(in)    :: npart
+
+ integer :: i,ipart
+ real    :: r_eq,r_new,r_current,scale_factor,phase
+ real    :: vr_pulsation,x_hat(3),r_dot,base_r
+
+ if (.not. allocated(boundary_particle_ids)) return
+ if (n_boundary_particles == 0) return
+
+ ! Current pulsation phase
+ phase = omega_pulsation * time
+ 
+ ! Base radius (innermost boundary shell)
+ base_r = minval(r_boundary_equilibrium)
+ 
+ ! Pulsation amplitude and velocity
+ ! R(t) = R_eq * [1 + A * sin(ωt)]
+ ! dR/dt = R_eq * A * ω * cos(ωt)
+ r_dot = base_r * pulsation_amplitude * omega_pulsation * cos(phase)
+
+ ! Update each boundary particle
+ do i = 1, n_boundary_particles
+    ipart = boundary_particle_ids(i)
+    
+    ! Equilibrium radius for this particle
+    r_eq = r_boundary_equilibrium(i)
+    
+    ! New radius with pulsation
+    r_new = r_eq * (1.0 + pulsation_amplitude * ( pulsation_period / (2*pi)) * sin(phase))
+    
+    ! Current radius
+    r_current = sqrt(xyzh(1,ipart)**2 + xyzh(2,ipart)**2 + xyzh(3,ipart)**3)
+    
+    if (r_current > 1.e-10) then
+       ! Radial unit vector
+       x_hat(1) = xyzh(1,ipart) / r_current
+       x_hat(2) = xyzh(2,ipart) / r_current
+       x_hat(3) = xyzh(3,ipart) / r_current
+       
+       ! Scale factor to move to new radius
+       scale_factor = r_new / r_current
+       
+       ! Update position (radial motion only)
+       xyzh(1,ipart) = xyzh(1,ipart) * scale_factor
+       xyzh(2,ipart) = xyzh(2,ipart) * scale_factor
+       xyzh(3,ipart) = xyzh(3,ipart) * scale_factor
+       
+       ! Update velocity (radial pulsation velocity)
+       ! Scale velocity by ratio to equilibrium radius
+       vr_pulsation = r_dot * (r_new/r_eq)
+       vxyzu(1,ipart) = vr_pulsation * x_hat(1)
+       vxyzu(2,ipart) = vr_pulsation * x_hat(2)
+       vxyzu(3,ipart) = vr_pulsation * x_hat(3)
+       
+    endif
+ enddo
+
+end subroutine apply_pulsation
+
+!-----------------------------------------------------------------------
+!+
+!  Placeholder for additional updates
+!+
+!-----------------------------------------------------------------------
+subroutine update_injected_par
+ ! Could be used to update thermodynamic properties during pulsation
+ ! or handle particle transitions from boundary to gas type
+end subroutine update_injected_par
+
+!-----------------------------------------------------------------------
+!+
+!  Set default options
+!+
+!-----------------------------------------------------------------------
+subroutine set_default_options_inject(flag)
+ integer, optional, intent(in) :: flag
+
+ iboundary_spheres = 5
+ n_shells_total = 50
+ iwind_resolution = 5
+ r_min_on_rstar = 0.8
+ pulsation_period_days = 300.0
+ pulsation_amplitude_km_s = 10
+ atmos_mass_fraction = 0.02  ! 2% of total mass in atmosphere
+
+end subroutine set_default_options_inject
+
+!-----------------------------------------------------------------------
+!+
+!  Write options to input file
+!+
+!-----------------------------------------------------------------------
+subroutine write_options_inject(iunit)
+ use infile_utils, only:write_inopt
+ integer, intent(in) :: iunit
+
+ call write_inopt(n_shells_total,'n_shells_total',&
+      'total number of atmospheric shells',iunit)
+ call write_inopt(iboundary_spheres,'iboundary_spheres',&
+      'number of boundary spheres (inner layers)',iunit)
+ call write_inopt(iwind_resolution,'iwind_resolution',&
+      'geodesic sphere resolution (integer)',iunit)
+ call write_inopt(r_min_on_rstar,'r_min_on_rstar',&
+      'inner radius as fraction of R_star',iunit)
+ call write_inopt(atmos_mass_fraction,'atmos_mass_fraction',&
+      'atmospheric mass as fraction of total stellar mass',iunit)
+ call write_inopt(pulsation_period_days,'pulsation_period',&
+      'pulsation period (days)',iunit)
+ call write_inopt(pulsation_amplitude,'pulsation_amplitude',&
+      'fractional pulsation amplitude (DeltaR/R)',iunit)
+
+end subroutine write_options_inject
+
+!-----------------------------------------------------------------------
+!+
+!  Read options from input file
+!+
+!-----------------------------------------------------------------------
+subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
+ use io, only:fatal
+ character(len=*), intent(in)  :: name,valstring
+ logical,          intent(out) :: imatch,igotall
+ integer,          intent(out) :: ierr
+
+ integer, save :: ngot = 0
+ integer, parameter :: noptions = 7
+
+ imatch = .true.
+ select case(trim(name))
+ case('n_shells_total')
+    read(valstring,*,iostat=ierr) n_shells_total
+    ngot = ngot + 1
+    if (n_shells_total <= 0) call fatal(label,'n_shells_total must be > 0')
+ case('iboundary_spheres')
+    read(valstring,*,iostat=ierr) iboundary_spheres
+    ngot = ngot + 1
+    if (iboundary_spheres < 0) call fatal(label,'iboundary_spheres must be >= 0')
+    if (iboundary_spheres > n_shells_total) &
+       call fatal(label,'iboundary_spheres must be <= n_shells_total')
+ case('iwind_resolution')
+    read(valstring,*,iostat=ierr) iwind_resolution
+    ngot = ngot + 1
+    if (iwind_resolution < 1) call fatal(label,'iwind_resolution must be >= 1')
+ case('r_min_on_rstar')
+    read(valstring,*,iostat=ierr) r_min_on_rstar
+    ngot = ngot + 1
+    if (r_min_on_rstar <= 0. .or. r_min_on_rstar >= 1.0) &
+       call fatal(label,'r_min_on_rstar must be in range (0,1)')
+ case('atmos_mass_fraction')
+    read(valstring,*,iostat=ierr) atmos_mass_fraction
+    ngot = ngot + 1
+    if (atmos_mass_fraction <= 0. .or. atmos_mass_fraction >= 1.0) &
+       call fatal(label,'atmos_mass_fraction must be in range (0,1)')
+ case('pulsation_period')
+    read(valstring,*,iostat=ierr) pulsation_period_days
+    ngot = ngot + 1
+    if (pulsation_period_days < 0.) call fatal(label,'pulsation_period must be >= 0')
+ case('pulsation_amplitude')
+    read(valstring,*,iostat=ierr) pulsation_amplitude
+    ngot = ngot + 1
+    if (pulsation_amplitude < 0.) call fatal(label,'pulsation_amplitude must be >= 0')
+ case default
+    imatch = .false.
+ end select
+
+ igotall = (ngot >= noptions)
+
+end subroutine read_options_inject
+
+end module inject
