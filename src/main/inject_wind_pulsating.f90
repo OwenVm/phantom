@@ -125,27 +125,6 @@ subroutine init_inject(ierr)
 
 end subroutine init_inject
 
-
-!-----------------------------------------------------------------------
-!+
-!  Calculate pulsation period based on stellar mass and radius
-!  Using empirical relation from Ostlie & Cox (1986)
-!+
-!+-----------------------------------------------------------------------
-
-subroutine calculate_period(M, R)
- use physcon, only:solarm,au,days
- real, intent(in)  :: M, R
- real              :: logP, logM, logR
- real, intent(out) :: pulsation_period_days
-
- logM = log10(M/solarm)
- logR = log10(R/au)
- logP = -1.92 - 0.73*logM + 1.86*logR
- pulsation_period_days = 10.0**logP
-
-end subroutine calculate_period
-
 !-----------------------------------------------------------------------
 !+
 !  Main routine: called at the start to setup atmosphere,
