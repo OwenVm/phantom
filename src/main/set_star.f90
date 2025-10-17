@@ -128,7 +128,7 @@ subroutine calc_stellar_profile(n)
  real :: r_new
 
  ! Initialize stellar structure
- call init_stellar(state)
+ call init_atmosphere(state)
 
  ! Allocate storage for profile
  if (allocated(stellar_1D)) deallocate(stellar_1D)
