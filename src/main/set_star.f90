@@ -16,8 +16,6 @@ module set_star
 !
 ! :Dependencies: eos, io, physcon, table_utils, units
 !
-
- use dim, only:isothermal
  implicit none
  public :: setup_star
  public :: stellar_state,save_stellarprofile,interp_stellar_profile
@@ -25,10 +23,9 @@ module set_star
  private
  ! Shared variables
  real, parameter :: rho_power = 2.0  ! Density profile exponent (i.e. rho ~ r^(-rho_power))
-!  character(len=*), parameter :: label = 'set_star'
 
  ! input parameters
- real :: Mstar_cgs, Rstar_cgs, r_inner, star_gamma, star_mu
+ real :: Mstar_cgs, Rstar_cgs, r_inner, Star_gamma, Star_mu, number_of_steps, P0
  real, dimension(:,:), allocatable, public :: stellar_1D
 
  ! stellar properties
@@ -40,19 +37,21 @@ module set_star
 
 contains
 
-subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n)
- use physcon, only:solarm, au
+subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, surface_pressure)
+ use units,   only:umass,udist
  use eos,     only:gamma, gmw
- use io,      only:iverbose
 
  real, intent(in)    :: Mstar_in, Rstar_in, r_min, mu_in, gamma_in
  integer, intent(in) :: n
+ real, intent(in)    :: surface_pressure
 
- Mstar_cgs  = Mstar_in * solarm
+ Mstar_cgs  = Mstar_in
  Rstar_cgs  = Rstar_in * au
- r_inner    = r_min * Rstar_cgs  ! Inner radius for atmosphere (in cgs)
- star_gamma = gamma_in
- star_mu    = mu_in
+ r_inner    = r_min * Rstar_cgs  ! Location where the stellar atmosphere is assumed to be inverse quadratic (i.e. inner boundary)
+ Star_gamma = gamma_in
+ Star_mu    = mu_in
+ number_of_steps = n
+ P0 = surface_pressure
 
 end subroutine setup_star
 
@@ -61,24 +60,23 @@ end subroutine setup_star
 !  Initialize variables for stellar profile integration
 !
 !-----------------------------------------------------------------------
-subroutine init_stellar(n, state)
+subroutine init_atmosphere(state)
 ! all quantities in cgs
  use physcon, only:pi, Rg, kboltz, mass_proton_cgs
- integer, intent(in) :: n
  type(stellar_state), intent(out) :: state
 
  ! Initialize at stellar surface
  state%r0     = Rstar_cgs
  state%r      = Rstar_cgs
  state%Rstar  = Rstar_cgs
- state%P      = 200.  ! Some non zero pressure at surface
+ state%P      = P0
  state%rho    = Mstar_cgs / (4.*pi * Rstar_cgs**rho_power * Rstar_cgs)
- state%u      = state%P / (state%rho * (star_gamma - 1.))
- state%T      = star_mu * mass_proton_cgs / kboltz * (star_gamma - 1.) * state%u
+ state%u      = state%P / (state%rho * (Star_gamma - 1.))
+ state%T      = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
  state%nsteps = 1
  state%error  = .false.
 
-end subroutine init_stellar
+end subroutine init_atmosphere
 
 !-----------------------------------------------------------------------
 !
@@ -130,7 +128,7 @@ subroutine calc_stellar_profile(n)
  real :: r_new
 
  ! Initialize stellar structure
- call init_stellar(n, state)
+ call init_stellar(state)
 
  ! Allocate storage for profile
  if (allocated(stellar_1D)) deallocate(stellar_1D)
@@ -143,7 +141,7 @@ subroutine calc_stellar_profile(n)
  stellar_1D(4, n) = state%u
  stellar_1D(5, n) = state%T
 
- ! Integrate inward from surface to center
+ ! Integrate inward from surface to center in steps of dr
  dr = (Rstar_cgs - r_inner) / real(n-1) 
 
  do i = n-1, 1, -1
@@ -159,7 +157,7 @@ subroutine calc_stellar_profile(n)
  enddo
 
  ! Save profile to file
- call save_stellarprofile(n, 'stellar_profile1D.dat')
+!  call save_stellarprofile(n, 'stellar_profile1D.dat')
 
 end subroutine calc_stellar_profile
 
@@ -170,7 +168,7 @@ end subroutine calc_stellar_profile
 !-----------------------------------------------------------------------
 subroutine interp_stellar_profile(r, rho, P, u, T)
  !in/out variables in code units
- use units,       only:udist, unit_density, unit_ergg
+ use units,       only:udist, unit_density, unit_ergg, unit_pressure
  use table_utils, only:find_nearest_index, interp_1d
  use io,          only:fatal
 
@@ -188,29 +186,25 @@ subroutine interp_stellar_profile(r, rho, P, u, T)
  r_cgs = r * udist
 
  if (r_cgs <= stellar_1D(1,1)) then
-    rho = stellar_1D(2, 1) !/ unit_density
-    P   = stellar_1D(3, 1)
-    u   = stellar_1D(4, 1) !/ unit_ergg
+    rho = stellar_1D(2, 1) / unit_density
+    P   = stellar_1D(3, 1) / unit_pressure
+    u   = stellar_1D(4, 1) / unit_ergg
     T   = stellar_1D(5, 1)
     return
  elseif (r_cgs >= stellar_1D(1, n)) then
-    rho = stellar_1D(2, n) !/ unit_density
-    P   = stellar_1D(3, n)
-    u   = stellar_1D(4, n) !/ unit_ergg
+    rho = stellar_1D(2, n) / unit_density
+    P   = stellar_1D(3, n) / unit_pressure
+    u   = stellar_1D(4, n) / unit_ergg
     T   = stellar_1D(5, n)
     return
  endif
 
  call find_nearest_index(stellar_1D(1,:), r_cgs, indx)
 
- rho = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1),stellar_1D(2,indx), stellar_1D(2,indx+1))
- P   = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1),stellar_1D(3,indx), stellar_1D(3,indx+1))
- u   = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1),stellar_1D(4,indx), stellar_1D(4,indx+1))
- T   = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1),stellar_1D(5,indx), stellar_1D(5,indx+1))
-
- ! Convert to code units
-!  rho = rho / unit_density
-!  u   = u / unit_ergg
+ rho = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1),stellar_1D(2,indx), stellar_1D(2,indx+1)) / unit_density
+ P   = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1),stellar_1D(3,indx), stellar_1D(3,indx+1)) / unit_pressure
+ u   = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1),stellar_1D(4,indx), stellar_1D(4,indx+1)) / unit_ergg
+ T   = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1),stellar_1D(5,indx), stellar_1D(5,indx+1)) 
 
 end subroutine interp_stellar_profile
 
