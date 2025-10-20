@@ -25,7 +25,9 @@ module setup
  real :: semi_major_axis, semi_major_axis_au, eccentricity
  real :: primary_Teff, primary_lum_lsun, primary_mass_msun, primary_reff_au, primary_racc_au
  real :: secondary_lum_lsun, secondary_mass_msun, secondary_reff_au, secondary_racc_au
- real :: pulsation_period_days, default_particle_mass
+ real :: primary_Reff,primary_lum,primary_mass,primary_racc
+ real :: secondary_Reff,secondary_Teff,secondary_lum,secondary_mass,secondary_racc
+ real :: pulsation_period_days, default_particle_mass, piston_velocity_km_s
 
 contains
 
@@ -53,6 +55,7 @@ subroutine set_default_parameters_wind()
  default_particle_mass = 1.e-10
 
  pulsation_period_days = 300.0
+ piston_velocity_km_s   = 10.0
 
 end subroutine set_default_parameters_wind
 
@@ -64,11 +67,11 @@ end subroutine set_default_parameters_wind
 subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,time,fileprefix)
  use part,      only: xyzmh_ptmass, vxyz_ptmass, nptmass, igas, iTeff, iLum, iReff
  use physcon,   only: au, solarm, mass_proton_cgs, kboltz, solarl
- use units,     only:set_units,umass,udist,unit_luminosity 
+ use units,     only: set_units,umass,udist,utime,unit_energ
  use inject,    only: set_default_options_inject
  use setbinary, only: set_binary
  use io,        only: master
- use eos,       only: gmw,ieos,isink
+!  use eos,       only: gmw,ieos,isink
  use spherical, only: set_sphere
  
  integer,           intent(in)    :: id
@@ -179,7 +182,7 @@ end subroutine get_lum_and_Reff
 !+
 !+-----------------------------------------------------------------------
 
-subroutine calculate_period(M, R)
+subroutine calculate_period(M, R, pulsation_period_days)
  real, intent(in)  :: M, R
  real              :: logP, logM, logR
  real, intent(out) :: pulsation_period_days
@@ -230,7 +233,7 @@ subroutine write_setupfile(filename)
  if (iwind == 1) then
     call write_inopt(piston_velocity_km_s,'piston_velocity','piston velocity amplitude (km/s)',iunit)
  else
-     call calculate_period(primary_mass_msun, primary_Reff_au)
+     call calculate_period(primary_mass_msun, primary_Reff_au, pulsation_period_days)
      call write_inopt(piston_velocity_km_s,'piston_velocity','piston velocity amplitude (km/s)',iunit)
  endif
 
@@ -248,11 +251,13 @@ end subroutine write_setupfile
 subroutine read_setupfile(filename,ierr)
  use infile_utils, only:open_db_from_file,inopts,read_inopt,close_db
  use physcon,      only:au,steboltz,solarl,solarm,pi
+ use units,        only:udist,umass,utime,unit_energ
  use io,           only:error,fatal
  character(len=*), intent(in)  :: filename
  integer,          intent(out) :: ierr
  integer, parameter :: iunit = 21
  type(inopts), allocatable :: db(:)
+ integer :: nerr,ichange
 
 
  nerr = 0
