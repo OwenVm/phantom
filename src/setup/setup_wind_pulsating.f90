@@ -68,7 +68,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use inject,    only: set_default_options_inject
  use setbinary, only: set_binary
  use io,        only: master
- use eos,       only: gmw,ieos,isink,qfacdisc
+ use eos,       only: gmw,ieos,isink
  use spherical, only: set_sphere
  
  integer,           intent(in)    :: id

@@ -182,11 +182,11 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
     call apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  endif
 
- do i = 1, npart
-    if (iamtype(iphase(i)) == igas) then
-       add_or_update_particle(igas,xyzh(1:3,i),vxyzu(1:3,i),xyzh(4,i),dum,i,npart,npartoftype,xyzh,vxyzu)
-    endif
- enddo
+!  do i = 1, npart
+!     if (iamtype(iphase(i)) == igas) then
+!        add_or_update_particle(igas,xyzh(1:3,i),vxyzu(1:3,i),xyzh(4,i),dum,i,npart,npartoftype,xyzh,vxyzu)
+!     endif
+!  enddo
 
 end subroutine inject_particles
 

@@ -38,6 +38,7 @@ module wind_pulsating
 contains
 
 subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, surface_pressure)
+ use physcon, only:au, solarm
  use units,   only:umass,udist
  use eos,     only:gamma, gmw
 
@@ -45,7 +46,7 @@ subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, surface_pre
  integer, intent(in) :: n
  real, intent(in)    :: surface_pressure
 
- Mstar_cgs  = Mstar_in
+ Mstar_cgs  = Mstar_in * solarm
  Rstar_cgs  = Rstar_in * au
  r_inner    = r_min * Rstar_cgs  ! Location where the stellar atmosphere is assumed to be inverse quadratic (i.e. inner boundary)
  Star_gamma = gamma_in
@@ -105,7 +106,6 @@ subroutine stellar_step(state, r_new)
  state%r   = r_new
  state%P   = state%P + dP
  state%rho = C_rho / state%r**rho_power
- state%mr  = Mstar_cgs * state%r / Rstar_cgs
 
  ! Calculate thermodynamic quantities
  state%u = state%P / (state%rho * (star_gamma - 1.))
@@ -125,7 +125,7 @@ subroutine calc_stellar_profile(n)
  integer, intent(in) :: n
  type(stellar_state) :: state
  integer :: i
- real :: r_new
+ real :: r_new, dr
 
  ! Initialize stellar structure
  call init_atmosphere(state)
@@ -176,6 +176,7 @@ subroutine interp_stellar_profile(r, rho, P, u, T)
  real, intent(out) :: rho, P, u, T
  real :: r_cgs
  integer :: indx, n
+ character(len=*), parameter :: label = 'interp_stellar_profile'
 
  ! Check if profile exists
  if (.not. allocated(stellar_1D)) then

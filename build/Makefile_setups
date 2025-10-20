@@ -814,6 +814,17 @@ ifeq ($(SETUP), ismwind)
     KNOWN_SETUP=yes
 endif
 
+ifeq ($(SETUP), wind)
+#   wind setup with dust nucleation
+    SETUPFILE= setup_pulsating_wind.f90
+    ANALYSIS= wind_pulsating.F90 inject_pulsating_wind.f90
+    SINK_RADIATION=yes
+    H2CHEM=yes
+    DUST_NUCLEATION=yes
+    INJECT_PARTICLES=yes
+    KNOWN_SETUP=yes
+endif
+
 ifeq ($(SETUP), radwind)
 #   wind setup with dust nucleation
     SETUPFILE= setup_wind.f90
