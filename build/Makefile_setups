@@ -816,8 +816,8 @@ endif
 
 ifeq ($(SETUP), pulsating_wind)
 #   wind setup with dust nucleation
-    SETUPFILE= setup_pulsating_wind.f90
-    ANALYSIS= wind_pulsating.F90 inject_pulsating_wind.f90
+    SETUPFILE= setup_wind_pulsating.f90
+    ANALYSIS= wind_pulsating.f90 inject_pulsating_wind.f90
     SINK_RADIATION=yes
     H2CHEM=yes
     DUST_NUCLEATION=yes
