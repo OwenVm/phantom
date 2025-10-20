@@ -46,11 +46,12 @@ module inject
  real   :: pulsation_period_days = 300.0  ! Pulsation period in days
  real   :: piston_velocity_km_s = 10.0     ! Piston velocity (in km/s)
  real   :: atmos_mass_fraction = 0.03  ! Atmosphere mass as fraction of total mass
+ real   :: surface_pressure = 300.0  ! Surface pressure in cgs units
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
  real :: geodesic_R(0:19,3,3), geodesic_v(0:11,3)
- real :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity
+ real :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity, pulsation_amplitude
  real :: Rstar, r_min, r_max, mass_of_particles
  real :: Mtotal, Matmos, Msink  ! Total, atmosphere, and sink masses
  integer :: particles_per_sphere, iresolution
@@ -83,6 +84,7 @@ subroutine set_default_options_inject(flag)
  pulsation_period_days = 300.0
  piston_velocity_km_s = 10.0
  atmos_mass_fraction = 0.03
+ surface_pressure = 300.0
 
 end subroutine set_default_options_inject
 
@@ -93,10 +95,10 @@ end subroutine set_default_options_inject
 !-----------------------------------------------------------------------
 subroutine init_inject(ierr)
  use io,            only:fatal
- use physcon,       only:pi,days,au,solarm
+ use physcon,       only:pi,days,au,solarm,km
  use icosahedron,   only:compute_matrices,compute_corners
  use eos,           only:gmw,gamma
- use units,         only:utime,udist,umass
+ use units,         only:utime,udist,umass,unit_velocity
  use part,          only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff
  use injectutils,   only:get_parts_per_sphere
  use wind_pulsating,only:setup_star,calc_stellar_profile
@@ -138,14 +140,19 @@ subroutine init_inject(ierr)
  r_max = Rstar
 
   ! Setup stellar structure calculation
- call setup_star(Matmos * u_mass, Rstar_cgs, r_inner, gmw, gamma, n_shells_total)
+ call setup_star(Matmos * umass, Rstar_cgs, r_inner, gmw, gamma, n_shells_total,surface_pressure)
  
  ! Calculate stellar profile for the atmosphere
- call calc_stellar_profile(Matmos, r_inner, Rstar, n_profile_points)
+ call calc_stellar_profile(n_profile_points)
 
  ! Calculate particle mass from atmospheric mass
  ! Total atmospheric mass distributed over all particles
  mass_of_particles = Matmos / real(n_shells_total * particles_per_sphere)
+
+ print *, 'Atmospheric particle mass (Msun): ', mass_of_particles
+ print *, 'Particles per sphere: ', particles_per_sphere
+ print *, 'Amount of particles: ', n_shells_total * particles_per_sphere
+ 
  massoftype(igas) = mass_of_particles
  massoftype(iboundary) = mass_of_particles
 
@@ -166,16 +173,18 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(inout) :: npart,npart_old
  integer, intent(inout) :: npartoftype(:)
- real,    intent(out)   :: dtinject, dum
+ real,    intent(out)   :: dtinject
 
  ! Set timestep constraint for pulsation
  dtinject = 0.02 * pulsation_period
 
  ! Initial setup: create all shells
  if (.not. atmosphere_setup_complete) then
+    print *, 'Setting up stellar atmosphere with ', n_shells_total, ' shells.'
     call setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
     atmosphere_setup_complete = .true.
     return
+    print *, 'Stellar atmosphere setup complete.'
  endif
 
  if (pulsation_amplitude > 0.) then
@@ -198,7 +207,7 @@ end subroutine inject_particles
 subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
  use part,        only:igas,iboundary,iphase,iamtype
  use injectutils, only:inject_geodesic_sphere
- use set_star,    only:interp_stellar_profile
+ use wind_pulsating, only:interp_stellar_profile
  use physcon,     only:pi
 
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
@@ -285,6 +294,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  integer :: i,ipart
  real    :: r_eq,r_new,r_current,scale_factor,phase
  real    :: vr_pulsation,x_hat(3),r_dot,base_r
+ real    :: x0(3),v0(3),GM
 
  if (.not. allocated(boundary_particle_ids)) return
  if (n_boundary_particles == 0) return
@@ -363,7 +373,8 @@ subroutine write_options_inject(iunit)
  call write_inopt(r_min_on_rstar,'r_min_on_rstar', 'inner radius as fraction of R_star',iunit)
  call write_inopt(atmos_mass_fraction,'atmos_mass_fraction', 'atmospheric mass as fraction of total stellar mass',iunit)
  call write_inopt(pulsation_period_days,'pulsation_period', 'pulsation period (days)',iunit)
- call write_inopt(piston_velocity,'piston_velocity', 'fractional piston velocity (km/s)',iunit)
+ call write_inopt(piston_velocity,'piston_velocity', 'piston velocity (km/s)',iunit)
+ call write_inopt(surface_pressure,'surface_pressure', 'surface pressure (cgs)',iunit)
 
 end subroutine write_options_inject
 
@@ -379,7 +390,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 7
+ integer, parameter :: noptions = 8
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -421,6 +432,10 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) piston_velocity_km_s
     ngot = ngot + 1
     if (piston_velocity_km_s < 0.) call fatal(label,'piston_velocity must be >= 0')
+case('surface_pressure')
+    read(valstring,*,iostat=ierr) surface_pressure
+    ngot = ngot + 1
+    if (surface_pressure < 0.) call fatal(label,'surface_pressure must be >= 0')
  case default
     imatch = .false.
  end select

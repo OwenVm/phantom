@@ -18,7 +18,7 @@ module wind_pulsating
 !
  implicit none
  public :: setup_star
- public :: stellar_state,save_stellarprofile,interp_stellar_profile
+ public :: stellar_state,save_stellarprofile,interp_stellar_profile,calc_stellar_profile
 
  private
  ! Shared variables
@@ -39,8 +39,8 @@ contains
 
 subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, surface_pressure)
  use physcon, only:au, solarm
- use units,   only:umass,udist
- use eos,     only:gamma, gmw
+!  use units,   only:umass,udist
+!  use eos,     only:gamma, gmw
 
  real, intent(in)    :: Mstar_in, Rstar_in, r_min, mu_in, gamma_in
  integer, intent(in) :: n

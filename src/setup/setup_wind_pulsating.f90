@@ -21,6 +21,7 @@ module setup
  public :: setpart
   
  private
+ real, public :: wind_gamma
  integer :: icompanion_star, iwind
  real :: semi_major_axis, semi_major_axis_au, eccentricity
  real :: primary_Teff, primary_lum_lsun, primary_mass_msun, primary_reff_au, primary_racc_au
@@ -38,6 +39,7 @@ contains
 !+-----------------------------------------------------------------------
 
 subroutine set_default_parameters_wind()
+ wind_gamma            = 5./3.
  icompanion_star       = 0
  iwind                 = 1
  semi_major_axis       = 4.0
@@ -72,7 +74,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use setbinary, only: set_binary
  use io,        only: master
 !  use eos,       only: gmw,ieos,isink
- use spherical, only: set_sphere
+!  use spherical, only: set_sphere
  
  integer,           intent(in)    :: id
  integer,           intent(inout) :: npart
@@ -103,6 +105,8 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
        call write_setupfile(filename)
     endif
  endif
+
+ gamma = wind_gamma
 
  !
 !--space available for injected gas particles
@@ -188,9 +192,11 @@ subroutine calculate_period(M, R, pulsation_period_days)
  real, intent(out) :: pulsation_period_days
 
  logM = log10(M)
- logR = log10(R)
+ logR = log10(R * 215.032)
  logP = -1.92 - 0.73*logM + 1.86*logR
  pulsation_period_days = 10.0**logP
+
+ print *, 'Calculated pulsation period (days): ', pulsation_period_days
 
 end subroutine calculate_period
 
@@ -202,7 +208,7 @@ end subroutine calculate_period
 subroutine write_setupfile(filename)
  use infile_utils, only:write_inopt
  character(len=*), intent(in) :: filename
- integer :: iunit
+ integer, parameter           :: iunit = 20
 
 
  print "(a)",' writing setup options file '//trim(filename)
@@ -238,6 +244,8 @@ subroutine write_setupfile(filename)
  endif
 
  call write_inopt(default_particle_mass,'mass_of_particles','particle mass (Msun, overwritten anyway <>0)',iunit)
+
+ call write_inopt(wind_gamma,'wind_gamma','adiabatic index for wind gas',iunit)
 
  close(iunit)
  
@@ -308,6 +316,7 @@ subroutine read_setupfile(filename,ierr)
 call read_inopt(iwind,'iwind',db,min=1,max=2,errcount=nerr)
 call read_inopt(pulsation_period_days,'pulsation_period',db,min=0.,errcount=nerr)
 call read_inopt(piston_velocity_km_s,'piston_velocity',db,min=0.,errcount=nerr)
+call read_inopt(wind_gamma,'wind_gamma',db,min=1.,max=4.,errcount=nerr)
 
 call close_db(db)
 
