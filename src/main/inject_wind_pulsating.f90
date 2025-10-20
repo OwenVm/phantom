@@ -179,7 +179,7 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
  endif
 
  if (pulsation_amplitude > 0.) then
-    call apply_pulsation(time,xyzh,vxyzu,npart)
+    call apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  endif
 
  do i = 1, npart
@@ -208,7 +208,6 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
 
  integer :: i,j,first_particle,ipart_type,nboundary
  real    :: r,dr,rho,u,T,P,x0(3),v0(3),GM,v_radial
- real    :: phase
  logical :: is_boundary
 
  ! Get sink particle position
@@ -218,9 +217,6 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
 
  ! Shell spacing
  dr = (r_max - r_min) / real(n_shells_total - 1)
-
- ! Initial phase for pulsation (starting at equilibrium)
- phase = 0.0
 
  ! Create shells from inner to outer
  npart = 0
@@ -279,11 +275,11 @@ end subroutine setup_initial_atmosphere
 !  Apply radial pulsation to boundary particles
 !+
 !-----------------------------------------------------------------------
-subroutine apply_pulsation(time,xyzh,vxyzu,npart)
+subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  use physcon, only:pi
 
  real,    intent(in)    :: time
- real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(in)    :: npart
 
  integer :: i,ipart
@@ -292,6 +288,11 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart)
 
  if (.not. allocated(boundary_particle_ids)) return
  if (n_boundary_particles == 0) return
+
+ ! Get sink particle position
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ v0 = vxyz_ptmass(1:3,wind_emitting_sink)
+ GM = xyzmh_ptmass(4,wind_emitting_sink)
 
  phase = omega_pulsation * time
  base_r = minval(r_boundary_equilibrium) ! Equilibrium radius
@@ -324,17 +325,19 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart)
        scale_factor = r_new / r_current
        
        ! Update position (radial motion only)
-       xyzh(1,ipart) = xyzh(1,ipart) * scale_factor
-       xyzh(2,ipart) = xyzh(2,ipart) * scale_factor
-       xyzh(3,ipart) = xyzh(3,ipart) * scale_factor
-       
+       ! Add ontop the location of the sink
+       xyzh(1,ipart) = xyzh(1,ipart) * scale_factor + x0(1)
+       xyzh(2,ipart) = xyzh(2,ipart) * scale_factor + x0(2)
+       xyzh(3,ipart) = xyzh(3,ipart) * scale_factor + x0(3)
+
        ! Update velocity (radial pulsation velocity)
        ! Scale velocity by ratio to equilibrium radius
+       ! Add the orbital velocity of the sink
        vr_pulsation = r_dot * (r_new/r_eq)
-       vxyzu(1,ipart) = vr_pulsation * x_hat(1)
-       vxyzu(2,ipart) = vr_pulsation * x_hat(2)
-       vxyzu(3,ipart) = vr_pulsation * x_hat(3)
-       
+       vxyzu(1,ipart) = vr_pulsation * x_hat(1) + v0(1)
+       vxyzu(2,ipart) = vr_pulsation * x_hat(2) + v0(2)
+       vxyzu(3,ipart) = vr_pulsation * x_hat(3) + v0(3)
+
     endif
  enddo
 
