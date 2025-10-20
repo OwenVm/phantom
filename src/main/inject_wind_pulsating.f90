@@ -417,10 +417,10 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) pulsation_period_days
     ngot = ngot + 1
     if (pulsation_period_days < 0.) call fatal(label,'pulsation_period must be >= 0')
- case('pulsation_amplitude')
-    read(valstring,*,iostat=ierr) pulsation_amplitude
+ case('piston_velocity')
+    read(valstring,*,iostat=ierr) piston_velocity_km_s
     ngot = ngot + 1
-    if (pulsation_amplitude < 0.) call fatal(label,'pulsation_amplitude must be >= 0')
+    if (piston_velocity_km_s < 0.) call fatal(label,'piston_velocity must be >= 0')
  case default
     imatch = .false.
  end select

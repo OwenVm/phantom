@@ -13,40 +13,164 @@ module setup
 ! :Owner: Owen Vermeulen
 !
 ! :Runtime parameters:
-!   - Mstar_Msun           : *stellar mass (solar masses)*
-!   - Rstar_au             : *stellar radius (AU)*
-!   - Tstar                : *effective temperature (K)*
-!   - Psurf                : *pressure at the surface (dyn/cm^2)*
-!   - atmos_mass_fraction  : *atmospheric mass as fraction of total*
-!   - n_shells_total       : *total number of atmospheric shells*
-!   - iboundary_spheres    : *number of inner boundary shells*
-!   - r_min_on_rstar       : *inner atmosphere radius / R_star*
-!   - pulsation_amplitude  : *amplitude of the pulsations in km/s*
-!   - iwind_resolution     : *geodesic sphere resolution*
 !
 ! :Dependencies: boundary, dim, infile_utils, io, kernel, options, part,
 !   physcon, prompting, ptmass, setup_params, table_utils, timestep, units
 !
- use part, only: nptmass
  implicit none
- 
  public :: setpart
- 
- ! Default parameters
- real    :: Mstar_Msun = 1.0
- real    :: Rstar_au = 1.0
- real    :: Tstar = 3000.0
- real    :: Psurf  = 300.0
- real    :: atmos_mass_fraction = 0.01
- integer :: n_shells_total = 50
- integer :: iboundary_spheres = 5
- real    :: r_min_on_rstar = 0.8
- real    :: pulsation_amplitude = 10
- integer :: iwind_resolution = 5
- 
+  
  private
+ integer :: icompanion_star, iwind
+ real :: semi_major_axis, semi_major_axis_au, eccentricity
+ real :: primary_Teff, primary_lum_lsun, primary_mass_msun, primary_reff_au, primary_racc_au
+ real :: secondary_lum_lsun, secondary_mass_msun, secondary_reff_au, secondary_racc_au
+ real :: pulsation_period_days, default_particle_mass
 
 contains
+
+!-----------------------------------------------------------------------
+!+
+!  Sets the default parameters for a pulsating AGB star with wind
+!+
+!+-----------------------------------------------------------------------
+
+subroutine set_default_parameters_wind()
+ icompanion_star       = 0
+ iwind                 = 1
+ semi_major_axis       = 4.0
+ semi_major_axis_au    = 4.0
+ eccentricity          = 0.0
+ primary_Teff          = 3000.0
+ primary_lum_lsun      = 5315.
+ primary_mass_msun     = 1.5
+ primary_Reff_au       = 1.
+ primary_racc_au       = 1.
+ secondary_lum_lsun    = 0.
+ secondary_mass_msun   = 1.0
+ secondary_Reff_au     = 0.
+ secondary_racc_au     = 0.1
+ default_particle_mass = 1.e-10
+
+ pulsation_period_days = 300.0
+
+end subroutine set_default_parameters_wind
+
+!----------------------------------------------------------------
+!+
+!  Setup routine for pulsating AGB star with wind
+!+
+!----------------------------------------------------------------
+subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,time,fileprefix)
+ use part,      only: xyzmh_ptmass, vxyz_ptmass, nptmass, igas, iTeff, iLum, iReff
+ use physcon,   only: au, solarm, mass_proton_cgs, kboltz, solarl
+ use units,     only:set_units,umass,udist,unit_luminosity 
+ use inject,    only: set_default_options_inject
+ use setbinary, only: set_binary
+ use io,        only: master
+ use eos,       only: gmw,ieos,isink,qfacdisc
+ use spherical, only: set_sphere
+ 
+ integer,           intent(in)    :: id
+ integer,           intent(inout) :: npart
+ integer,           intent(out)   :: npartoftype(:)
+ real,              intent(out)   :: xyzh(:,:)
+ real,              intent(out)   :: vxyzu(:,:)
+ real,              intent(out)   :: massoftype(:)
+ real,              intent(out)   :: polyk,gamma,hfact
+ real,              intent(inout) :: time
+ character(len=*),  intent(in)    :: fileprefix
+ character(len=len(fileprefix)+6) :: filename
+ integer :: ierr,k
+ logical :: iexist
+ 
+ ! Set units (mass in Msun, distance in AU, G=1)
+ call set_units(mass=solarm,dist=au,G=1.)
+ call set_default_parameters_wind()
+ filename = trim(fileprefix)//'.setup'
+ inquire(file=filename,exist=iexist)
+ if (.not. iexist) call set_default_options_inject()
+
+ time = 0.
+ filename = trim(fileprefix)//'.setup'
+ inquire(file=filename,exist=iexist)
+ if (iexist) call read_setupfile(filename,ierr)
+ if (.not. iexist .or. ierr /= 0) then
+    if (id==master) then
+       call write_setupfile(filename)
+    endif
+ endif
+
+ !
+!--space available for injected gas particles
+!
+ npart = 0
+ npartoftype(:) = 0
+ xyzh(:,:)  = 0.
+ vxyzu(:,:) = 0.
+ xyzmh_ptmass(:,:) = 0.
+ vxyz_ptmass(:,:) = 0.
+
+ if (icompanion_star == 1) then
+    call set_binary(primary_mass, &
+                    secondary_mass, &
+                    semi_major_axis, &
+                    eccentricity, &
+                    primary_racc, &
+                    secondary_racc, &
+                    xyzmh_ptmass, vxyz_ptmass, nptmass, ierr)
+    xyzmh_ptmass(iTeff,1) = primary_Teff
+    xyzmh_ptmass(iReff,1) = primary_Reff
+    xyzmh_ptmass(iLum,1)  = primary_lum
+    xyzmh_ptmass(iTeff,2) = secondary_Teff
+    xyzmh_ptmass(iReff,2) = secondary_Reff
+    xyzmh_ptmass(iLum,2)  = secondary_lum
+     print *,'Sink particles summary'
+     print *,'  #    mass       racc      lum         Reff'
+     do k=1,nptmass
+        print '(i4,2(2x,f9.5),2(2x,es10.3))',k,xyzmh_ptmass(4:5,k),xyzmh_ptmass(iLum,k)/(solarl*utime/unit_energ),&
+               xyzmh_ptmass(iReff,k)*udist/au
+     enddo
+     print *,''
+
+ else
+    nptmass = 1
+    xyzmh_ptmass(4,1)     = primary_mass
+    xyzmh_ptmass(5,1)     = primary_racc
+    xyzmh_ptmass(iTeff,1) = primary_Teff
+    xyzmh_ptmass(iReff,1) = primary_Reff
+    xyzmh_ptmass(iLum,1)  = primary_lum
+ endif
+
+ ! This is overwritten anyway, calculated by M_atmosphere/N_particles
+ massoftype(igas) = default_particle_mass * (solarm / umass)
+
+end subroutine setpart
+
+!----------------------------------------------------------------
+!+
+!  get luminosity and effective radius in code units
+!  from various combinations of L, Teff and Reff in physical inuts
+!+
+!----------------------------------------------------------------
+subroutine get_lum_and_Reff(lum_lsun,reff_au,Teff,lum,Reff)
+ use physcon, only:au,steboltz,solarl,pi
+ use units,   only:udist,unit_luminosity
+ real, intent(inout) :: lum_lsun,reff_au,Teff
+ real, intent(out)   :: lum,Reff
+
+ if (Teff <= tiny(0.) .and. lum_lsun > 0. .and. Reff_au > 0.) then
+    primary_Teff = (lum_lsun*solarl/(4.*pi*steboltz*(Reff_au*au)**2))**0.25
+ elseif (Reff_au <= 0. .and. lum_lsun > 0. .and. Teff > 0.) then
+    Reff_au = sqrt(lum_lsun*solarl/(4.*pi*steboltz*Teff**4))/au
+ elseif (Reff_au > 0. .and. lum_lsun <= 0. .and. Teff > 0.) then
+    lum_lsun = 4.*pi*steboltz*Teff**4*(primary_Reff_au*au)**2/solarl
+ endif
+
+ lum  = lum_lsun*(solarl/unit_luminosity)
+ Reff = Reff_au*(au/udist)
+
+end subroutine get_lum_and_Reff
 
 !-----------------------------------------------------------------------
 !+
@@ -56,7 +180,6 @@ contains
 !+-----------------------------------------------------------------------
 
 subroutine calculate_period(M, R)
- use physcon, only:solarm,au,days
  real, intent(in)  :: M, R
  real              :: logP, logM, logR
  real, intent(out) :: pulsation_period_days
@@ -70,114 +193,6 @@ end subroutine calculate_period
 
 !----------------------------------------------------------------
 !+
-!  Setup routine for pulsating AGB star with wind
-!+
-!----------------------------------------------------------------
-subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,time,fileprefix)
- use physcon,      only:solarm,au,pi
- use units,        only:set_units,umass,udist,unit_luminosity
- use part,         only:nptmass,xyzmh_ptmass,vxyz_ptmass,ihacc,ihsoft
- use part,         only:igas,iTeff,iReff,ilum
- use io,           only:master,fatal
- use timestep,     only:dtmax,tmax
- use options,      only:iexternalforce
- use eos,          only:gmw
- use kernel,       only:hfact_default
- use ptmass,       only:h_acc,r_crit,icreate_sinks
- 
- integer,           intent(in)    :: id
- integer,           intent(inout) :: npart
- integer,           intent(out)   :: npartoftype(:)
- real,              intent(out)   :: xyzh(:,:)
- real,              intent(out)   :: vxyzu(:,:)
- real,              intent(out)   :: massoftype(:)
- real,              intent(out)   :: polyk,gamma,hfact
- real,              intent(inout) :: time
- character(len=20), intent(in)    :: fileprefix
- 
- real :: Lstar_Lsun, Lstar_cgs, M_atmos
- integer :: ierr
- 
- ! Set units (mass in Msun, distance in AU, G=1)
- call set_units(mass=solarm,dist=au,G=1.d0)
- 
- ! Equation of state
- gamma = 5./3.
- gmw = 2.381  ! Mean molecular weight
- polyk = 0.
- hfact = hfact_default
- time = 0.
- 
- ! No particles initially - atmosphere will be created by inject module
- npart = 0
- npartoftype(:) = 0
- massoftype(:) = 0.
- 
- ! Setup sink particle for central star
- nptmass = 1
- 
- ! Position and velocity at origin
- xyzmh_ptmass(:,1) = 0.
- vxyz_ptmass(:,1) = 0.
- 
- ! The inject module will split this into sink + atmosphere
- xyzmh_ptmass(4,1) = Mstar_Msun
- 
- ! Accretion radius (small, inside inner atmosphere boundary)
- h_acc = 0.5 * r_min_on_rstar * Rstar_au
- xyzmh_ptmass(ihacc,1) = h_acc
- xyzmh_ptmass(ihsoft,1) = 0.0  ! No softening initially
- 
- ! Stellar properties
- xyzmh_ptmass(iTeff,1) = Tstar
- xyzmh_ptmass(iReff,1) = Rstar_au
- 
- ! Luminosity (Stefan-Boltzmann law)
- ! L = 4π R² σ T⁴
- Lstar_cgs = 4.0*pi * (Rstar_au*au)**2 * 5.67e-5 * Tstar**4
- Lstar_Lsun = Lstar_cgs / 3.839e33
- xyzmh_ptmass(ilum,1) = Lstar_Lsun * 3.839e33 / unit_luminosity
- 
- ! Timestep and simulation parameters
- tmax = 1000.  ! Simulation time (code units ~ years)
- dtmax = 10.   ! Time between dumps
- 
- ! No external forces initially
- iexternalforce = 0
- 
- ! Sink creation off (we already have our sink)
- icreate_sinks = 0
- r_crit = 0.
- 
- if (id==master) then
-    print "(a)",'================================================================'
-    print "(a,f8.3,a)",'  Stellar mass (total)      = ',Mstar_Msun,' M_sun'
-    print "(a,f8.3,a)",'  Stellar radius             = ',Rstar_au,' AU'
-    print "(a,f8.1,a)",'  Effective temperature      = ',Tstar,' K'
-    print "(a,f8.3,a)",'  Luminosity                 = ',Lstar_Lsun,' L_sun'
-    print "(a,f8.4,a)",'  Accretion radius           = ',h_acc,' AU'
-    print "(a)",' '
-    print "(a,f6.2,a)",'  Atmosphere mass fraction   = ',atmos_mass_fraction*100.,' %'
-    print "(a,i5)",    '  Total shells               = ',n_shells_total
-    print "(a,i5)",    '  Boundary shells            = ',iboundary_spheres
-    print "(a,i5)",    '  Free shells                = ',n_shells_total-iboundary_spheres
-    print "(a,f6.3)",  '  Inner radius / R_star      = ',r_min_on_rstar
-    print "(a,i5)",    '  Wind resolution            = ',iwind_resolution
-    print "(a)",' '
-    print "(a,f8.2,a)",'  Pulsation period           = ',pulsation_period_days,' days'
-    print "(a,f6.3)",  '  Pulsation amplitude        = ',pulsation_amplitude
-    print "(a)",'================================================================'
-    print "(a)",' '
-    print "(a)",'NOTE: Atmosphere will be created on first timestep by inject module'
-    print "(a,f6.2,a)",'      Atmosphere mass = ',atmos_mass_fraction*Mstar_Msun,' M_sun'
-    print "(a,f6.2,a)",'      Sink mass after = ',(1.-atmos_mass_fraction)*Mstar_Msun,' M_sun'
-    print "(a)",' '
- endif
-
-end subroutine setpart
-
-!----------------------------------------------------------------
-!+
 !  Write setup parameters to input file
 !+
 !----------------------------------------------------------------
@@ -185,35 +200,42 @@ subroutine write_setupfile(filename)
  use infile_utils, only:write_inopt
  character(len=*), intent(in) :: filename
  integer :: iunit
- 
- print "(a)",' Writing setup options file '//trim(filename)
- open(newunit=iunit,file=filename,status='replace',form='formatted')
- write(iunit,"(a)") '# Setup file for pulsating AGB star with wind'
- write(iunit,"(a)") '# Runtime parameters for this setup'
- 
- write(iunit,"(/,a)") '# Stellar parameters'
- call write_inopt(Mstar_Msun,'Mstar_Msun','stellar mass (M_sun)',iunit)
- call write_inopt(Rstar_au,'Rstar_au','stellar radius (AU)',iunit)
- call write_inopt(Tstar,'Tstar','effective temperature (K)',iunit)
- 
- write(iunit,"(/,a)") '# Atmosphere structure'
- call write_inopt(atmos_mass_fraction,'atmos_mass_fraction',&
-      'atmospheric mass / total mass',iunit)
- call write_inopt(n_shells_total,'n_shells_total',&
-      'total number of atmospheric shells',iunit)
- call write_inopt(iboundary_spheres,'iboundary_spheres',&
-      'number of inner boundary shells',iunit)
- call write_inopt(r_min_on_rstar,'r_min_on_rstar',&
-      'inner atmosphere radius / R_star',iunit)
- call write_inopt(iwind_resolution,'iwind_resolution',&
-      'geodesic sphere resolution',iunit)
- 
- write(iunit,"(/,a)") '# Pulsation parameters'
- call write_inopt(pulsation_period_days,'pulsation_period_days',&
-      'pulsation period (days)',iunit)
- call write_inopt(pulsation_amplitude,'pulsation_amplitude',&
-      'fractional pulsation amplitude (DeltaR/R)',iunit)
- 
+
+
+ print "(a)",' writing setup options file '//trim(filename)
+ open(unit=iunit,file=filename,status='replace',form='formatted')
+ write(iunit,"(a)") '# input file for wind setup routine'
+
+ call get_lum_and_Reff(primary_lum_lsun,primary_Reff_au,primary_Teff,primary_lum,primary_Reff)
+
+ call write_inopt(primary_mass_msun,'primary_mass','primary star mass (Msun)',iunit)
+ call write_inopt(primary_racc_au,'primary_racc','primary star accretion radius (au)',iunit)
+ call write_inopt(primary_lum_lsun,'primary_lum','primary star luminosity (Lsun)',iunit)
+ call write_inopt(primary_Teff,'primary_Teff','primary star effective temperature (K)',iunit)
+ call write_inopt(primary_Reff_au,'primary_Reff','primary star effective radius (au)',iunit)
+ call write_inopt(icompanion_star,'icompanion_star','set to 1 for a binary system, 2 for a triple system',iunit)
+ if (icompanion_star == 1) then
+    call get_lum_and_Reff(secondary_lum_lsun,secondary_Reff_au,secondary_Teff,secondary_lum,secondary_Reff) 
+    call write_inopt(secondary_mass_msun,'secondary_mass','secondary star mass (Msun)',iunit)
+    call write_inopt(secondary_racc_au,'secondary_racc','secondary star accretion radius (au)',iunit)
+    call write_inopt(secondary_lum_lsun,'secondary_lum','secondary star luminosity (Lsun)',iunit)
+    call write_inopt(secondary_Teff,'secondary_Teff','secondary star effective temperature)',iunit)
+    call write_inopt(secondary_Reff_au,'secondary_Reff','secondary star effective radius (au)',iunit)
+    call write_inopt(semi_major_axis_au,'semi_major_axis','semi-major axis of the binary system (au)',iunit)
+    call write_inopt(eccentricity,'eccentricity','eccentricity of the binary system',iunit)
+ endif
+
+ call write_inopt(iwind,'iwind','wind type: 1=prescribed, 2=period from mass-radius relation',iunit)
+ call write_inopt(pulsation_period_days,'pulsation_period','pulsation period (days)',iunit)
+ if (iwind == 1) then
+    call write_inopt(piston_velocity_km_s,'piston_velocity','piston velocity amplitude (km/s)',iunit)
+ else
+     call calculate_period(primary_mass_msun, primary_Reff_au)
+     call write_inopt(piston_velocity_km_s,'piston_velocity','piston velocity amplitude (km/s)',iunit)
+ endif
+
+ call write_inopt(default_particle_mass,'mass_of_particles','particle mass (Msun, overwritten anyway <>0)',iunit)
+
  close(iunit)
  
 end subroutine write_setupfile
@@ -225,49 +247,69 @@ end subroutine write_setupfile
 !----------------------------------------------------------------
 subroutine read_setupfile(filename,ierr)
  use infile_utils, only:open_db_from_file,inopts,read_inopt,close_db
+ use physcon,      only:au,steboltz,solarl,solarm,pi
  use io,           only:error,fatal
  character(len=*), intent(in)  :: filename
  integer,          intent(out) :: ierr
  integer, parameter :: iunit = 21
  type(inopts), allocatable :: db(:)
- 
- print "(a)",' Reading setup options from '//trim(filename)
+
+
+ nerr = 0
+ ichange = 0
+ print "(a)",' reading setup options from '//trim(filename)
  call open_db_from_file(db,filename,iunit,ierr)
- 
- ! Stellar parameters
- call read_inopt(Mstar_Msun,'Mstar_Msun',db,ierr)
- call read_inopt(Rstar_au,'Rstar_au',db,ierr)
- call read_inopt(Tstar,'Tstar',db,ierr)
- 
- ! Atmosphere structure
- call read_inopt(atmos_mass_fraction,'atmos_mass_fraction',db,ierr)
- call read_inopt(n_shells_total,'n_shells_total',db,ierr)
- call read_inopt(iboundary_spheres,'iboundary_spheres',db,ierr)
- call read_inopt(r_min_on_rstar,'r_min_on_rstar',db,ierr)
- call read_inopt(iwind_resolution,'iwind_resolution',db,ierr)
- 
- ! Pulsation parameters
- call read_inopt(pulsation_period_days,'pulsation_period_days',db,ierr)
- call read_inopt(pulsation_amplitude,'pulsation_amplitude',db,ierr)
- 
- call close_db(db)
- 
- ! Sanity checks
- if (Mstar_Msun <= 0.) call fatal('setup','Mstar_Msun must be > 0')
- if (Rstar_au <= 0.) call fatal('setup','Rstar_au must be > 0')
- if (Tstar <= 0.) call fatal('setup','Tstar must be > 0')
- if (atmos_mass_fraction <= 0. .or. atmos_mass_fraction >= 1.) &
-    call fatal('setup','atmos_mass_fraction must be in (0,1)')
- if (n_shells_total <= 0) call fatal('setup','n_shells_total must be > 0')
- if (iboundary_spheres < 0) call fatal('setup','iboundary_spheres must be >= 0')
- if (iboundary_spheres > n_shells_total) &
-    call fatal('setup','iboundary_spheres must be <= n_shells_total')
- if (r_min_on_rstar <= 0. .or. r_min_on_rstar >= 1.) &
-    call fatal('setup','r_min_on_rstar must be in (0,1)')
- if (pulsation_period_days < 0.) &
-    call fatal('setup','pulsation_period_days must be >= 0')
- if (pulsation_amplitude < 0.) &
-    call fatal('setup','pulsation_amplitude must be >= 0')
+ call read_inopt(primary_mass_msun,'primary_mass',db,min=0.,max=1000.,errcount=nerr)
+ primary_mass = primary_mass_msun * (solarm / umass)
+ call read_inopt(primary_lum_lsun,'primary_lum',db,min=0.,max=1e7,errcount=nerr)
+ primary_lum = primary_lum_lsun * (solarl * utime / unit_energ)
+ call read_inopt(primary_Teff,'primary_Teff',db,min=0.,errcount=nerr)
+ call read_inopt(primary_Reff_au,'primary_Reff',db,min=0.,errcount=nerr)
+ primary_Reff = primary_Reff_au * au / udist
+ call read_inopt(primary_racc_au,'primary_racc',db,min=0.,errcount=nerr)
+ primary_racc = primary_racc_au * au / udist
+ if (primary_racc < tiny(0.)) then
+    print *,'ERROR: primary accretion radius not defined'
+    nerr = nerr+1
+ endif
+
+ call read_inopt(icompanion_star,'icompanion_star',db,min=0,errcount=nerr)
+ if (icompanion_star == 1) then
+    call read_inopt(secondary_mass_msun,'secondary_mass',db,min=0.,max=1000.,errcount=nerr)
+    secondary_mass = secondary_mass_msun * (solarm / umass)
+    call read_inopt(secondary_lum_lsun,'secondary_lum',db,min=0.,max=1e7,errcount=nerr)
+    secondary_lum = secondary_lum_lsun * (solarl * utime / unit_energ)
+    call read_inopt(secondary_Teff,'secondary_Teff',db,min=0.,errcount=nerr)
+    call read_inopt(secondary_Reff_au,'secondary_Reff',db,min=0.,errcount=nerr)
+    secondary_Reff = secondary_Reff_au * au / udist
+    call read_inopt(secondary_racc_au,'secondary_racc',db,min=0.,errcount=nerr)
+    secondary_racc = secondary_racc_au * au / udist
+    if (secondary_racc < tiny(0.)) then
+       print *,'ERROR: secondary accretion radius not defined'
+       nerr = nerr+1
+    endif
+    call read_inopt(semi_major_axis_au,'semi_major_axis',db,min=0.,errcount=nerr)
+    semi_major_axis = semi_major_axis_au * au / udist
+    call read_inopt(eccentricity,'eccentricity',db,min=0.,errcount=nerr)
+    call read_inopt(secondary_mass_msun,'secondary_mass',db,min=0.,max=1000.,errcount=nerr)
+    secondary_mass = secondary_mass_msun * (solarm / umass)
+    call read_inopt(semi_major_axis_au,'semi_major_axis',db,min=0.,errcount=nerr)
+    semi_major_axis = semi_major_axis_au * au / udist
+    call read_inopt(eccentricity,'eccentricity',db,min=0.,errcount=nerr)
+ endif
+
+ call read_inopt(default_particle_mass,'mass_of_particles',db,min=0.,errcount=nerr)
+
+call read_inopt(iwind,'iwind',db,min=1,max=2,errcount=nerr)
+call read_inopt(pulsation_period_days,'pulsation_period',db,min=0.,errcount=nerr)
+call read_inopt(piston_velocity_km_s,'piston_velocity',db,min=0.,errcount=nerr)
+
+call close_db(db)
+
+call close_db(db)
+ierr = nerr
+call write_setupfile(filename)
+
  
 end subroutine read_setupfile
 
