@@ -49,7 +49,7 @@ subroutine set_default_parameters_wind()
  primary_lum_lsun      = 5315.
  primary_mass_msun     = 1.5
  primary_Reff_au       = 1.
- primary_racc_au       = 1.
+ primary_racc_au       = 0.2
  secondary_lum_lsun    = 0.
  secondary_mass_msun   = 1.0
  secondary_Reff_au     = 0.
@@ -74,9 +74,6 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use wind_pulsating, only: setup_star, calc_stellar_profile, save_stellarprofile
  use setbinary, only: set_binary
  use io,        only: master
- use eos,       only: gmw
-!  use eos,       only: gmw,ieos,isink
-!  use spherical, only: set_sphere
  
  integer,           intent(in)    :: id
  integer,           intent(inout) :: npart
@@ -90,29 +87,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  character(len=len(fileprefix)+6) :: filename
  integer :: ierr,k
  logical :: iexist
- real :: dtlast,dtinject
- integer :: npart_old
-!  integer :: dummy = 0
  
-!  
-! 
-!  real :: Matmos, Rstar_cgs, r_inner
-!  integer :: n_shells_total, n_profile_points
-!  real :: surface_pressure
-
-!  surface_pressure = 300.0  ! in cgs
-!  n_shells_total   = 100
-!  n_profile_points = 10000
-!  Rstar_cgs    = 1.0 * au / udist
-!  Matmos        = 1.5 * 0.03 * solarm / umass  ! in Msun
-!  r_inner = 0.8 
-
-! 
-! 
-
-!  time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npart_old,npartoftype,dtinject
- 
- ! Set units (mass in Msun, distance in AU, G=1)
  call set_units(mass=solarm,dist=au,G=1.)
  call set_default_parameters_wind()
  filename = trim(fileprefix)//'.setup'
@@ -132,8 +107,8 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  gamma = wind_gamma
 
  !
-!--space available for injected gas particles
-!
+ !--space available for injected gas particles
+ !
  npart = 0
  npartoftype(:) = 0
  xyzh(:,:)  = 0.

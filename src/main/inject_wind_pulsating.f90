@@ -47,6 +47,7 @@ module inject
  real   :: piston_velocity_km_s = 10.0     ! Piston velocity (in km/s)
  real   :: atmos_mass_fraction = 0.03  ! Atmosphere mass as fraction of total mass
  real   :: surface_pressure = 300.0  ! Surface pressure in cgs units
+ logical :: use_pulsations = .false.
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
@@ -85,6 +86,7 @@ subroutine set_default_options_inject(flag)
  piston_velocity_km_s = 10.0
  atmos_mass_fraction = 0.03
  surface_pressure = 300.0
+ use_pulsations = .false.
 
 end subroutine set_default_options_inject
 
@@ -119,11 +121,6 @@ subroutine init_inject(ierr)
  Mstar_cgs = Mtotal * solarm 
  Tstar     = xyzmh_ptmass(iTeff,wind_emitting_sink)
 
- print *, ''
- print *, 'Rstar_cgs: ', Rstar_cgs
- print *, 'Mstar_cgs: ', Mstar_cgs
- print *, ''
-
  ! Calculate mass distribution
  Matmos = atmos_mass_fraction * Mtotal
  Msink  = Mtotal - Matmos
@@ -133,6 +130,13 @@ subroutine init_inject(ierr)
  omega_pulsation = 2.0*pi / pulsation_period
  piston_velocity = piston_velocity_km_s * (km / unit_velocity)
  deltaR_osc = pulsation_period * piston_velocity / (2.0*pi)
+
+ print *, ''
+ print *, 'Initializing pulsating atmosphere injection:'
+ print *, ' pulsation period: ', pulsation_period
+ print *, ' piston velocity: ', piston_velocity
+ print *, ' deltaR_osc: ', deltaR_osc
+ print *, ''
  
  ! Setup geodesic sphere parameters
  iresolution = iwind_resolution
@@ -144,10 +148,6 @@ subroutine init_inject(ierr)
  r_min = r_min_on_rstar * Rstar
  r_max = Rstar
 
- print *, ''
- print *, 'Atmosphere radial range (cgs): ', r_min, ' to ', r_max
- print *, ''
-
   ! Setup stellar structure calculation
  call setup_star(Matmos * umass, Rstar_cgs, r_min_on_rstar, gmw, gamma, n_shells_total,surface_pressure)
  
@@ -158,10 +158,11 @@ subroutine init_inject(ierr)
  ! Total atmospheric mass distributed over all particles
  mass_of_particles = Matmos / real(n_shells_total * particles_per_sphere)
 
- print *, 'New version'
+ print *, ''
  print *, 'Atmospheric particle mass (Msun): ', mass_of_particles
  print *, 'Particles per sphere: ', particles_per_sphere
  print *, 'Amount of particles: ', n_shells_total * particles_per_sphere
+ print *, ''
 
  massoftype(igas) = mass_of_particles
  massoftype(iboundary) = mass_of_particles
@@ -193,7 +194,7 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
     print *, 'Setting up stellar atmosphere with ', n_shells_total, ' shells.'
     call setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
     atmosphere_setup_complete = .true.
-     print *, 'Stellar atmosphere setup complete.'
+    print *, 'Stellar atmosphere setup complete.'
     return
  endif
 
@@ -237,17 +238,14 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  ! Shell spacing
  dr = (r_max - r_min) / real(n_shells_total - 1)
  print *, 'Shell spacing dr:', dr
- print *, 'r_min:', r_min, ' r_max:', r_max
 
  ! Create shells from inner to outer
  npart = 0
  do i = 1, n_shells_total
 
-   print *, 'Injecting shell ', i, ' of ', n_shells_total
     ! Calculate radius for this shell
     r = r_min + (i-1)*dr
-    print *, 'radius:', r
-    
+
     ! Determine if this is a boundary or free shell
     is_boundary = (i <= iboundary_spheres)
     
@@ -278,6 +276,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  n_boundary_particles = nboundary
 
  print *, 'Number of boundary particles: ', nboundary
+ print *, 'Number of gas particles: ', npartoftype(igas)
  
  if (nboundary > 0) then
     allocate(r_boundary_equilibrium(nboundary))
@@ -314,6 +313,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  real    :: r_eq,r_new,r_current,scale_factor,phase
  real    :: vr_pulsation,x_hat(3),r_dot,base_r
  real    :: x0(3),v0(3),GM
+ real    :: x, y, z, new_x, new_y, new_z
 
  if (.not. allocated(boundary_particle_ids)) return
  if (n_boundary_particles == 0) return
@@ -340,23 +340,21 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     
     ! New radius with pulsation
     r_new = r_eq + deltaR_osc * sin(phase)
-    
-    ! Current radius
-    r_current = sqrt( (xyzh(1,ipart) - x0(1))**2 + (xyzh(2,ipart) - x0(2))**2 + (xyzh(3,ipart) - x0(3))**2)
+
+    x = xyzh(1,ipart) - x0(1)
+    y = xyzh(2,ipart) - x0(2)
+    z = xyzh(3,ipart) - x0(3)
+
+    r_current = sqrt(x**2 + y**2 + z**2)
     
     ! Radial unit vector
-    x_hat(1) = xyzh(1,ipart) / r_current
-    x_hat(2) = xyzh(2,ipart) / r_current
-    x_hat(3) = xyzh(3,ipart) / r_current
-      
-    ! Scale factor to move to new radius
-    scale_factor = r_new / r_current
-      
-    ! Update position (radial motion only)
-    ! Add ontop the location of the sink
-    xyzh(1,ipart) = xyzh(1,ipart) * scale_factor + x0(1)
-    xyzh(2,ipart) = xyzh(2,ipart) * scale_factor + x0(2)
-    xyzh(3,ipart) = xyzh(3,ipart) * scale_factor + x0(3)
+    x_hat(1) = x / r_current
+    x_hat(2) = y / r_current
+    x_hat(3) = z / r_current
+
+    xyzh(1,ipart) = r_new * x_hat(1) + x0(1)
+    xyzh(2,ipart) = r_new * x_hat(2) + x0(2)
+    xyzh(3,ipart) = r_new * x_hat(3) + x0(3)
 
     ! Update velocity (radial pulsation velocity)
     ! Scale velocity by ratio to equilibrium radius
@@ -389,8 +387,9 @@ subroutine write_options_inject(iunit)
  call write_inopt(r_min_on_rstar,'r_min_on_rstar', 'inner radius as fraction of R_star',iunit)
  call write_inopt(atmos_mass_fraction,'atmos_mass_fraction', 'atmospheric mass as fraction of total stellar mass',iunit)
  call write_inopt(pulsation_period_days,'pulsation_period', 'pulsation period (days)',iunit)
- call write_inopt(piston_velocity,'piston_velocity', 'piston velocity (km/s)',iunit)
+ call write_inopt(piston_velocity_km_s,'piston_velocity', 'piston velocity (km/s)',iunit)
  call write_inopt(surface_pressure,'surface_pressure', 'surface pressure (cgs)',iunit)
+ call write_inopt(use_pulsations,'use_pulsations', 'enable pulsations (logical)',iunit)
 
 end subroutine write_options_inject
 
@@ -406,7 +405,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 8
+ integer, parameter :: noptions = 9
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -452,6 +451,9 @@ case('surface_pressure')
     read(valstring,*,iostat=ierr) surface_pressure
     ngot = ngot + 1
     if (surface_pressure < 0.) call fatal(label,'surface_pressure must be >= 0')
+case('use_pulsations')
+    read(valstring,*,iostat=ierr) use_pulsations
+    ngot = ngot + 1
  case default
     imatch = .false.
  end select
