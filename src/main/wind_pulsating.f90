@@ -46,13 +46,18 @@ subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, surface_pre
  integer, intent(in) :: n
  real, intent(in)    :: surface_pressure
 
- Mstar_cgs  = Mstar_in * solarm
- Rstar_cgs  = Rstar_in * au
+ Mstar_cgs  = Mstar_in
+ Rstar_cgs  = Rstar_in
  r_inner    = r_min * Rstar_cgs  ! Location where the stellar atmosphere is assumed to be inverse quadratic (i.e. inner boundary)
  Star_gamma = gamma_in
  Star_mu    = mu_in
  number_of_steps = n
  P0 = surface_pressure
+
+ print *, "Setting up star with parameters:"
+ print *, "Rstar_cgs:", Rstar_cgs
+ print *, "Mstar_cgs:", Mstar_cgs
+ print *, "r_inner:", r_inner
 
 end subroutine setup_star
 

@@ -51,7 +51,7 @@ module inject
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
  real :: geodesic_R(0:19,3,3), geodesic_v(0:11,3)
- real :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity, pulsation_amplitude
+ real :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity
  real :: Rstar, r_min, r_max, mass_of_particles
  real :: Mtotal, Matmos, Msink  ! Total, atmosphere, and sink masses
  integer :: particles_per_sphere, iresolution
@@ -104,7 +104,7 @@ subroutine init_inject(ierr)
  use wind_pulsating,only:setup_star,calc_stellar_profile
 
  integer, intent(out) :: ierr
- real :: Mstar_cgs, Rstar_cgs, Tstar, r_inner
+ real :: Mstar_cgs, Rstar_cgs, Tstar
 
  ierr = 0
 
@@ -115,9 +115,14 @@ subroutine init_inject(ierr)
  ! Get stellar properties from sink particle
  Mtotal    = xyzmh_ptmass(4,wind_emitting_sink)
  Rstar     = xyzmh_ptmass(iReff,wind_emitting_sink)
- Rstar_cgs = Rstar * udist
- Mstar_cgs = Mtotal * umass
+ Rstar_cgs = Rstar * au 
+ Mstar_cgs = Mtotal * solarm 
  Tstar     = xyzmh_ptmass(iTeff,wind_emitting_sink)
+
+ print *, ''
+ print *, 'Rstar_cgs: ', Rstar_cgs
+ print *, 'Mstar_cgs: ', Mstar_cgs
+ print *, ''
 
  ! Calculate mass distribution
  Matmos = atmos_mass_fraction * Mtotal
@@ -136,11 +141,15 @@ subroutine init_inject(ierr)
  particles_per_sphere = get_parts_per_sphere(iresolution)
 
  ! Define radial range for atmosphere
- r_min = r_inner * Rstar
+ r_min = r_min_on_rstar * Rstar
  r_max = Rstar
 
+ print *, ''
+ print *, 'Atmosphere radial range (cgs): ', r_min, ' to ', r_max
+ print *, ''
+
   ! Setup stellar structure calculation
- call setup_star(Matmos * umass, Rstar_cgs, r_inner, gmw, gamma, n_shells_total,surface_pressure)
+ call setup_star(Matmos * umass, Rstar_cgs, r_min_on_rstar, gmw, gamma, n_shells_total,surface_pressure)
  
  ! Calculate stellar profile for the atmosphere
  call calc_stellar_profile(n_profile_points)
@@ -149,10 +158,11 @@ subroutine init_inject(ierr)
  ! Total atmospheric mass distributed over all particles
  mass_of_particles = Matmos / real(n_shells_total * particles_per_sphere)
 
+ print *, 'New version'
  print *, 'Atmospheric particle mass (Msun): ', mass_of_particles
  print *, 'Particles per sphere: ', particles_per_sphere
  print *, 'Amount of particles: ', n_shells_total * particles_per_sphere
- 
+
  massoftype(igas) = mass_of_particles
  massoftype(iboundary) = mass_of_particles
 
@@ -183,11 +193,11 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
     print *, 'Setting up stellar atmosphere with ', n_shells_total, ' shells.'
     call setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
     atmosphere_setup_complete = .true.
+     print *, 'Stellar atmosphere setup complete.'
     return
-    print *, 'Stellar atmosphere setup complete.'
  endif
 
- if (pulsation_amplitude > 0.) then
+ if (piston_velocity > 0.) then
     call apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  endif
 
@@ -226,12 +236,17 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
 
  ! Shell spacing
  dr = (r_max - r_min) / real(n_shells_total - 1)
+ print *, 'Shell spacing dr:', dr
+ print *, 'r_min:', r_min, ' r_max:', r_max
 
  ! Create shells from inner to outer
  npart = 0
  do i = 1, n_shells_total
+
+   print *, 'Injecting shell ', i, ' of ', n_shells_total
     ! Calculate radius for this shell
     r = r_min + (i-1)*dr
+    print *, 'radius:', r
     
     ! Determine if this is a boundary or free shell
     is_boundary = (i <= iboundary_spheres)
@@ -261,6 +276,8 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  ! Store information about boundary particles for pulsation
  nboundary = npartoftype(iboundary)
  n_boundary_particles = nboundary
+
+ print *, 'Number of boundary particles: ', nboundary
  
  if (nboundary > 0) then
     allocate(r_boundary_equilibrium(nboundary))
@@ -269,7 +286,9 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
     ! Store equilibrium radii and IDs of boundary particles
     j = 0
     do i = 1, npart
-       if (iamtype(iphase(i)) == iboundary) then
+       if (j >= nboundary) then
+          return
+       elseif (iamtype(iphase(i)) == iboundary) then
           j = j + 1
           boundary_particle_ids(j) = i
           r_boundary_equilibrium(j) = sqrt(xyzh(1,i)**2 + xyzh(2,i)**2 + xyzh(3,i)**2)
@@ -310,7 +329,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  ! Pulsation amplitude and velocity
  ! R(t) = R_eq * [1 + A * sin(omega t)]
  ! dR/dt = R_eq * A * omega * cos(omega t)
- r_dot = base_r * pulsation_amplitude * omega_pulsation * cos(phase)
+ r_dot = base_r * deltaR_osc * omega_pulsation * cos(phase)
 
  ! Update each boundary particle
  do i = 1, n_boundary_particles
@@ -320,35 +339,32 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     r_eq = r_boundary_equilibrium(i)
     
     ! New radius with pulsation
-    r_new = r_eq * (1.0 + pulsation_amplitude * ( pulsation_period / (2*pi)) * sin(phase))
+    r_new = r_eq + deltaR_osc * sin(phase)
     
     ! Current radius
-    r_current = sqrt(xyzh(1,ipart)**2 + xyzh(2,ipart)**2 + xyzh(3,ipart)**3)
+    r_current = sqrt( (xyzh(1,ipart) - x0(1))**2 + (xyzh(2,ipart) - x0(2))**2 + (xyzh(3,ipart) - x0(3))**2)
     
-    if (r_current > 1.e-10) then
-       ! Radial unit vector
-       x_hat(1) = xyzh(1,ipart) / r_current
-       x_hat(2) = xyzh(2,ipart) / r_current
-       x_hat(3) = xyzh(3,ipart) / r_current
-       
-       ! Scale factor to move to new radius
-       scale_factor = r_new / r_current
-       
-       ! Update position (radial motion only)
-       ! Add ontop the location of the sink
-       xyzh(1,ipart) = xyzh(1,ipart) * scale_factor + x0(1)
-       xyzh(2,ipart) = xyzh(2,ipart) * scale_factor + x0(2)
-       xyzh(3,ipart) = xyzh(3,ipart) * scale_factor + x0(3)
+    ! Radial unit vector
+    x_hat(1) = xyzh(1,ipart) / r_current
+    x_hat(2) = xyzh(2,ipart) / r_current
+    x_hat(3) = xyzh(3,ipart) / r_current
+      
+    ! Scale factor to move to new radius
+    scale_factor = r_new / r_current
+      
+    ! Update position (radial motion only)
+    ! Add ontop the location of the sink
+    xyzh(1,ipart) = xyzh(1,ipart) * scale_factor + x0(1)
+    xyzh(2,ipart) = xyzh(2,ipart) * scale_factor + x0(2)
+    xyzh(3,ipart) = xyzh(3,ipart) * scale_factor + x0(3)
 
-       ! Update velocity (radial pulsation velocity)
-       ! Scale velocity by ratio to equilibrium radius
-       ! Add the orbital velocity of the sink
-       vr_pulsation = r_dot * (r_new/r_eq)
-       vxyzu(1,ipart) = vr_pulsation * x_hat(1) + v0(1)
-       vxyzu(2,ipart) = vr_pulsation * x_hat(2) + v0(2)
-       vxyzu(3,ipart) = vr_pulsation * x_hat(3) + v0(3)
-
-    endif
+    ! Update velocity (radial pulsation velocity)
+    ! Scale velocity by ratio to equilibrium radius
+    ! Add the orbital velocity of the sink
+    vr_pulsation = r_dot * (r_new/r_eq)
+    vxyzu(1,ipart) = vr_pulsation * x_hat(1) + v0(1)
+    vxyzu(2,ipart) = vr_pulsation * x_hat(2) + v0(2)
+    vxyzu(3,ipart) = vr_pulsation * x_hat(3) + v0(3)
  enddo
 
 end subroutine apply_pulsation

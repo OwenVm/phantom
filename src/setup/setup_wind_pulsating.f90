@@ -57,7 +57,7 @@ subroutine set_default_parameters_wind()
  default_particle_mass = 1.e-10
 
  pulsation_period_days = 300.0
- piston_velocity_km_s   = 10.0
+ piston_velocity_km_s  = 10.0
 
 end subroutine set_default_parameters_wind
 
@@ -70,9 +70,11 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use part,      only: xyzmh_ptmass, vxyz_ptmass, nptmass, igas, iTeff, iLum, iReff
  use physcon,   only: au, solarm, mass_proton_cgs, kboltz, solarl
  use units,     only: set_units,umass,udist,utime,unit_energ
- use inject,    only: set_default_options_inject
+ use inject,    only: set_default_options_inject, inject_particles, init_inject
+ use wind_pulsating, only: setup_star, calc_stellar_profile, save_stellarprofile
  use setbinary, only: set_binary
  use io,        only: master
+ use eos,       only: gmw
 !  use eos,       only: gmw,ieos,isink
 !  use spherical, only: set_sphere
  
@@ -88,6 +90,27 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  character(len=len(fileprefix)+6) :: filename
  integer :: ierr,k
  logical :: iexist
+ real :: dtlast,dtinject
+ integer :: npart_old
+!  integer :: dummy = 0
+ 
+!  
+! 
+!  real :: Matmos, Rstar_cgs, r_inner
+!  integer :: n_shells_total, n_profile_points
+!  real :: surface_pressure
+
+!  surface_pressure = 300.0  ! in cgs
+!  n_shells_total   = 100
+!  n_profile_points = 10000
+!  Rstar_cgs    = 1.0 * au / udist
+!  Matmos        = 1.5 * 0.03 * solarm / umass  ! in Msun
+!  r_inner = 0.8 
+
+! 
+! 
+
+!  time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npart_old,npartoftype,dtinject
  
  ! Set units (mass in Msun, distance in AU, G=1)
  call set_units(mass=solarm,dist=au,G=1.)
@@ -151,6 +174,13 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
 
  ! This is overwritten anyway, calculated by M_atmosphere/N_particles
  massoftype(igas) = default_particle_mass * (solarm / umass)
+
+!  call init_inject(dummy)
+! Setup stellar structure calculation
+!  call setup_star(Matmos, Rstar_cgs, r_inner, gmw, gamma, n_shells_total,surface_pressure)
+!  call calc_stellar_profile(n_profile_points)
+!  call save_stellarprofile(n_profile_points, 'stellar_profile1D.dat')
+!  call inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npart_old,npartoftype,dtinject)
 
 end subroutine setpart
 
