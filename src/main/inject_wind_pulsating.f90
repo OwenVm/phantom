@@ -310,11 +310,10 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  integer, intent(in)    :: npart
 
  integer :: i,ipart
- real    :: r_eq,r_new,r_current,scale_factor,phase
+ real    :: r_eq,r_new,r_current,phase
  real    :: vr_pulsation,x_hat(3),r_dot,base_r
  real    :: x0(3),v0(3),GM
- real    :: x, y, z, new_x, new_y, new_z
-
+ real    :: x, y, z
  if (.not. allocated(boundary_particle_ids)) return
  if (n_boundary_particles == 0) return
 
