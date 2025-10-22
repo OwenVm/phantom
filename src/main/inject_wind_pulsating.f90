@@ -35,18 +35,19 @@ module inject
 !--runtime settings for this module
 !
 ! Read from input file
- integer:: iboundary_spheres = 5
- integer:: n_shells_total = 50
- integer:: n_profile_points = 10000
- integer:: iwind_resolution = 5
- real   :: r_min_on_rstar = 0.8
+ integer :: iboundary_spheres = 5
+ integer :: n_shells_total = 50
+ integer :: n_profile_points = 10000
+ integer :: iwind_resolution = 5
+ real    :: r_min_on_rstar = 0.8
 !  real :: outer_boundary_au = 30.
- real   :: dtpulsation = huge(0.)
- real   :: pulsation_period_days = 300.0  ! Pulsation period in days
- real   :: piston_velocity_km_s = 10.0     ! Piston velocity (in km/s)
- real   :: atmos_mass_fraction = 0.03  ! Atmosphere mass as fraction of total mass
- real   :: surface_pressure = 300.0  ! Surface pressure in cgs units
+ real    :: dtpulsation = huge(0.)
+ real    :: pulsation_period_days = 300.0  ! Pulsation period in days
+ real    :: piston_velocity_km_s = 10.0     ! Piston velocity (in km/s)
+ real    :: atmos_mass_fraction = 0.03  ! Atmosphere mass as fraction of total mass
+ real    :: surface_pressure = 300.0  ! Surface pressure in cgs units
  integer :: iwind = 1  ! Wind type: 1=prescribed, 2=period from mass-radius relation
+ real    :: pulsation_timestep = 0.02
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
@@ -85,6 +86,7 @@ subroutine set_default_options_inject(flag)
  iwind = 1
  pulsation_period_days = 300.0
  piston_velocity_km_s = 10.0
+ pulsation_timestep = 0.02
 
 end subroutine set_default_options_inject
 
@@ -189,7 +191,7 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
  real,    intent(out)   :: dtinject
 
  ! Set timestep constraint for pulsation
- dtinject = 0.02 * pulsation_period
+ dtinject = pulsation_timestep * pulsation_period
 
  ! Initial setup: create all shells
  if (.not. atmosphere_setup_complete) then
@@ -483,8 +485,8 @@ subroutine write_options_inject(iunit)
  call write_inopt(iwind,'iwind','wind type: 1=prescribed, 2=period from mass-radius relation',iunit)
  call write_inopt(pulsation_period_days,'pulsation_period','pulsation period (days) (if iwind == 2 this is overwritten)',iunit)
  call write_inopt(piston_velocity_km_s,'piston_velocity','piston velocity amplitude (km/s)',iunit)
+ call write_inopt(pulsation_timestep,'pulsation_timestep','pulsation timestep as fraction of pulsation period',iunit)
  
-
 end subroutine write_options_inject
 
 !-----------------------------------------------------------------------
@@ -499,7 +501,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 9
+ integer, parameter :: noptions = 10
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -549,7 +551,10 @@ case('pulsation_period')
     read(valstring,*,iostat=ierr) piston_velocity_km_s
     ngot = ngot + 1
     if (piston_velocity_km_s < 0.) call fatal(label,'piston_velocity must be >= 0')
-
+ case('pulsation_timestep')
+    read(valstring,*,iostat=ierr) pulsation_timestep
+    ngot = ngot + 1
+    if (pulsation_timestep <= 0. .or. pulsation_timestep > 1.0) call fatal(label,'pulsation_timestep must be in range (0,1]')
  case default
     imatch = .false.
  end select
