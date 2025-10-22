@@ -22,13 +22,13 @@ module setup
   
  private
  real, public :: wind_gamma
- integer :: icompanion_star, iwind
+ integer :: icompanion_star
  real :: semi_major_axis, semi_major_axis_au, eccentricity
  real :: primary_Teff, primary_lum_lsun, primary_mass_msun, primary_reff_au, primary_racc_au
  real :: secondary_lum_lsun, secondary_mass_msun, secondary_reff_au, secondary_racc_au
  real :: primary_Reff,primary_lum,primary_mass,primary_racc
  real :: secondary_Reff,secondary_Teff,secondary_lum,secondary_mass,secondary_racc
- real :: pulsation_period_days, default_particle_mass, piston_velocity_km_s
+ real :: default_particle_mass
 
 contains
 
@@ -41,7 +41,6 @@ contains
 subroutine set_default_parameters_wind()
  wind_gamma            = 5./3.
  icompanion_star       = 0
- iwind                 = 1
  semi_major_axis       = 4.0
  semi_major_axis_au    = 4.0
  eccentricity          = 0.0
@@ -55,9 +54,6 @@ subroutine set_default_parameters_wind()
  secondary_Reff_au     = 0.
  secondary_racc_au     = 0.1
  default_particle_mass = 1.e-10
-
- pulsation_period_days = 300.0
- piston_velocity_km_s  = 10.0
 
 end subroutine set_default_parameters_wind
 
@@ -185,27 +181,6 @@ subroutine get_lum_and_Reff(lum_lsun,reff_au,Teff,lum,Reff)
 
 end subroutine get_lum_and_Reff
 
-!-----------------------------------------------------------------------
-!+
-!  Calculate pulsation period based on stellar mass and radius
-!  Using empirical relation from Ostlie & Cox (1986)
-!+
-!+-----------------------------------------------------------------------
-
-subroutine calculate_period(M, R, pulsation_period_days)
- real, intent(in)  :: M, R
- real              :: logP, logM, logR
- real, intent(out) :: pulsation_period_days
-
- logM = log10(M)
- logR = log10(R * 215.032)
- logP = -1.92 - 0.73*logM + 1.86*logR
- pulsation_period_days = 10.0**logP
-
- print *, 'Calculated pulsation period (days): ', pulsation_period_days
-
-end subroutine calculate_period
-
 !----------------------------------------------------------------
 !+
 !  Write setup parameters to input file
@@ -234,19 +209,10 @@ subroutine write_setupfile(filename)
     call write_inopt(secondary_mass_msun,'secondary_mass','secondary star mass (Msun)',iunit)
     call write_inopt(secondary_racc_au,'secondary_racc','secondary star accretion radius (au)',iunit)
     call write_inopt(secondary_lum_lsun,'secondary_lum','secondary star luminosity (Lsun)',iunit)
-    call write_inopt(secondary_Teff,'secondary_Teff','secondary star effective temperature)',iunit)
+    call write_inopt(secondary_Teff,'secondary_Teff','secondary star effective temperature (K)',iunit)
     call write_inopt(secondary_Reff_au,'secondary_Reff','secondary star effective radius (au)',iunit)
     call write_inopt(semi_major_axis_au,'semi_major_axis','semi-major axis of the binary system (au)',iunit)
     call write_inopt(eccentricity,'eccentricity','eccentricity of the binary system',iunit)
- endif
-
- call write_inopt(iwind,'iwind','wind type: 1=prescribed, 2=period from mass-radius relation',iunit)
- call write_inopt(pulsation_period_days,'pulsation_period','pulsation period (days)',iunit)
- if (iwind == 1) then
-    call write_inopt(piston_velocity_km_s,'piston_velocity','piston velocity amplitude (km/s)',iunit)
- else
-     call calculate_period(primary_mass_msun, primary_Reff_au, pulsation_period_days)
-     call write_inopt(piston_velocity_km_s,'piston_velocity','piston velocity amplitude (km/s)',iunit)
  endif
 
  call write_inopt(default_particle_mass,'mass_of_particles','particle mass (Msun, overwritten anyway <>0)',iunit)
@@ -318,17 +284,13 @@ subroutine read_setupfile(filename,ierr)
  endif
 
  call read_inopt(default_particle_mass,'mass_of_particles',db,min=0.,errcount=nerr)
-
-call read_inopt(iwind,'iwind',db,min=1,max=2,errcount=nerr)
-call read_inopt(pulsation_period_days,'pulsation_period',db,min=0.,errcount=nerr)
-call read_inopt(piston_velocity_km_s,'piston_velocity',db,min=0.,errcount=nerr)
-call read_inopt(wind_gamma,'wind_gamma',db,min=1.,max=4.,errcount=nerr)
-
-call close_db(db)
-
-call close_db(db)
-ierr = nerr
-call write_setupfile(filename)
+ call read_inopt(wind_gamma,'wind_gamma',db,min=1.,max=4.,errcount=nerr)
+ 
+ call close_db(db)
+ 
+ call close_db(db)
+ ierr = nerr
+ call write_setupfile(filename)
 
  
 end subroutine read_setupfile

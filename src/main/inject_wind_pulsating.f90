@@ -41,13 +41,12 @@ module inject
  integer:: iwind_resolution = 5
  real   :: r_min_on_rstar = 0.8
 !  real :: outer_boundary_au = 30.
- real   :: wind_shell_spacing = 1.
  real   :: dtpulsation = huge(0.)
  real   :: pulsation_period_days = 300.0  ! Pulsation period in days
  real   :: piston_velocity_km_s = 10.0     ! Piston velocity (in km/s)
  real   :: atmos_mass_fraction = 0.03  ! Atmosphere mass as fraction of total mass
  real   :: surface_pressure = 300.0  ! Surface pressure in cgs units
- logical :: use_pulsations = .false.
+ integer :: iwind = 1  ! Wind type: 1=prescribed, 2=period from mass-radius relation
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
@@ -80,13 +79,12 @@ subroutine set_default_options_inject(flag)
  n_profile_points = 10000
  iwind_resolution = 5
  r_min_on_rstar = 0.8
- wind_shell_spacing = 1.
  dtpulsation = huge(0.)
- pulsation_period_days = 300.0
- piston_velocity_km_s = 10.0
  atmos_mass_fraction = 0.03
  surface_pressure = 300.0
- use_pulsations = .false.
+ iwind = 1
+ pulsation_period_days = 300.0
+ piston_velocity_km_s = 10.0
 
 end subroutine set_default_options_inject
 
@@ -124,6 +122,10 @@ subroutine init_inject(ierr)
  ! Calculate mass distribution
  Matmos = atmos_mass_fraction * Mtotal
  Msink  = Mtotal - Matmos
+
+ if (iwind == 2) then
+    call calculate_period(Mtotal, Rstar, pulsation_period_days)
+ endif
 
  ! Setup pulsation parameters
  pulsation_period = pulsation_period_days * (days / utime)
@@ -198,7 +200,7 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
     return
  endif
 
- if (piston_velocity > 0.) then
+if (piston_velocity > 0.) then
     call apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  endif
 
@@ -219,7 +221,8 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  use part,        only:igas,iboundary,iphase,iamtype
  use injectutils, only:inject_geodesic_sphere
  use wind_pulsating, only:interp_stellar_profile
- use physcon,     only:pi
+ use physcon,     only:pi,km
+ use units,       only:unit_velocity
 
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
  real,    intent(in)    :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
@@ -253,7 +256,6 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
     ! This interpolates on the stellar_1D array calculated by set_star
     call interp_stellar_profile(r, rho, P, u, T)
     
-    ! Initial radial velocity (zero for equilibrium start)
     v_radial = 0.0
     
     ! Set particle type - this tagging ensures forces are handled correctly
@@ -311,7 +313,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
 
  integer :: i,ipart
  real    :: r_eq,r_new,r_current,phase
- real    :: vr_pulsation,x_hat(3),r_dot,base_r
+ real    :: x_hat(3),r_dot,base_r
  real    :: x0(3),v0(3),GM
  real    :: x, y, z
  if (.not. allocated(boundary_particle_ids)) return
@@ -358,18 +360,109 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     ! Update velocity (radial pulsation velocity)
     ! Scale velocity by ratio to equilibrium radius
     ! Add the orbital velocity of the sink
-    vr_pulsation = r_dot * (r_new/r_eq)
-    vxyzu(1,ipart) = vr_pulsation * x_hat(1) + v0(1)
-    vxyzu(2,ipart) = vr_pulsation * x_hat(2) + v0(2)
-    vxyzu(3,ipart) = vr_pulsation * x_hat(3) + v0(3)
+    vxyzu(1,ipart) = r_dot * x_hat(1) + v0(1)
+    vxyzu(2,ipart) = r_dot * x_hat(2) + v0(2)
+    vxyzu(3,ipart) = r_dot * x_hat(3) + v0(3)
  enddo
 
 end subroutine apply_pulsation
+
+!-----------------------------------------------------------------------
+!+
+!  Apply radial pulsation to boundary particles
+!+
+!-----------------------------------------------------------------------
+subroutine apply_pulsation_new(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
+ use physcon, only:pi
+
+ real,    intent(in)    :: time
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ integer, intent(in)    :: npart
+
+ integer :: i,ipart
+ real    :: r_eq,r_new,r_current,phase
+ real    :: x_hat(3),r_dot,base_r
+ real    :: x0(3),v0(3),GM
+ real    :: x, y, z
+ if (.not. allocated(boundary_particle_ids)) return
+ if (n_boundary_particles == 0) return
+
+ ! Get sink particle position
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ v0 = vxyz_ptmass(1:3,wind_emitting_sink)
+ GM = xyzmh_ptmass(4,wind_emitting_sink)
+
+ phase = omega_pulsation * time
+ base_r = minval(r_boundary_equilibrium) ! Equilibrium radius
+ 
+ ! Pulsation amplitude and velocity
+ ! R(t) = R_eq * [1 + A * sin(omega t)]
+ ! dR/dt = R_eq * A * omega * cos(omega t)
+ r_dot = base_r * deltaR_osc * omega_pulsation * cos(phase)
+
+ ! Equilibrium radius for this particle
+ r_eq = r_boundary_equilibrium(i)
+ ! New radius with pulsation
+ r_new = r_eq + deltaR_osc * sin(phase)
+
+ ! Update each boundary particle
+ do i = 1, n_boundary_particles
+    ipart = boundary_particle_ids(i)
+
+    x = xyzh(1,ipart) - x0(1)
+    y = xyzh(2,ipart) - x0(2)
+    z = xyzh(3,ipart) - x0(3)
+
+    r_current = sqrt(x**2 + y**2 + z**2)
+    
+    ! Radial unit vector
+    x_hat(1) = x / r_current
+    x_hat(2) = y / r_current
+    x_hat(3) = z / r_current
+
+    xyzh(1,ipart) = r_new * x_hat(1) + x0(1)
+    xyzh(2,ipart) = r_new * x_hat(2) + x0(2)
+    xyzh(3,ipart) = r_new * x_hat(3) + x0(3)
+
+    ! Update velocity (radial pulsation velocity)
+    ! Scale velocity by ratio to equilibrium radius
+    ! Add the orbital velocity of the sink
+    vxyzu(1,ipart) = r_dot * x_hat(1) + v0(1)
+    vxyzu(2,ipart) = r_dot * x_hat(2) + v0(2)
+    vxyzu(3,ipart) = r_dot * x_hat(3) + v0(3)
+ enddo
+
+end subroutine apply_pulsation_new
 
 
 subroutine update_injected_par
  ! -- placeholder function
 end subroutine update_injected_par
+
+!-----------------------------------------------------------------------
+!+
+!  Calculate pulsation period based on stellar mass and radius
+!  Using empirical relation from Ostlie & Cox (1986)
+!+
+!+-----------------------------------------------------------------------
+
+subroutine calculate_period(M, R, pulsation_period_days)
+ real, intent(in)  :: M, R
+ real              :: logP, logM, logR
+ real, intent(out) :: pulsation_period_days
+
+ print *, 'Calculating pulsation period from mass-radius relation:'
+ print *, ' Stellar mass (Msun): ', M
+ print *, ' Stellar radius (Rsun): ', R
+
+ logM = log10(M)
+ logR = log10(R * 215.032)
+ logP = -1.92 - 0.73*logM + 1.86*logR
+ pulsation_period_days = 10.0**logP
+
+ print *, 'Calculated pulsation period (days): ', pulsation_period_days
+
+end subroutine calculate_period
 
 !-----------------------------------------------------------------------
 !+
@@ -385,10 +478,11 @@ subroutine write_options_inject(iunit)
  call write_inopt(iwind_resolution,'iwind_resolution', 'geodesic sphere resolution (integer)',iunit)
  call write_inopt(r_min_on_rstar,'r_min_on_rstar', 'inner radius as fraction of R_star',iunit)
  call write_inopt(atmos_mass_fraction,'atmos_mass_fraction', 'atmospheric mass as fraction of total stellar mass',iunit)
- call write_inopt(pulsation_period_days,'pulsation_period', 'pulsation period (days)',iunit)
- call write_inopt(piston_velocity_km_s,'piston_velocity', 'piston velocity (km/s)',iunit)
  call write_inopt(surface_pressure,'surface_pressure', 'surface pressure (cgs)',iunit)
- call write_inopt(use_pulsations,'use_pulsations', 'enable pulsations (logical)',iunit)
+ call write_inopt(iwind,'iwind','wind type: 1=prescribed, 2=period from mass-radius relation',iunit)
+ call write_inopt(pulsation_period_days,'pulsation_period','pulsation period (days) (if iwind == 2 this is overwritten)',iunit)
+ call write_inopt(piston_velocity_km_s,'piston_velocity','piston velocity amplitude (km/s)',iunit)
+ 
 
 end subroutine write_options_inject
 
@@ -438,7 +532,15 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     ngot = ngot + 1
     if (atmos_mass_fraction <= 0. .or. atmos_mass_fraction >= 1.0) &
        call fatal(label,'atmos_mass_fraction must be in range (0,1)')
- case('pulsation_period')
+case('surface_pressure')
+    read(valstring,*,iostat=ierr) surface_pressure
+    ngot = ngot + 1
+    if (surface_pressure < 0.) call fatal(label,'surface_pressure must be >= 0')
+case('iwind')
+    read(valstring,*,iostat=ierr) iwind
+    ngot = ngot + 1
+    if (iwind /= 1 .and. iwind /= 2) call fatal(label,'iwind must be 1 or 2')
+case('pulsation_period')
     read(valstring,*,iostat=ierr) pulsation_period_days
     ngot = ngot + 1
     if (pulsation_period_days < 0.) call fatal(label,'pulsation_period must be >= 0')
@@ -446,13 +548,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) piston_velocity_km_s
     ngot = ngot + 1
     if (piston_velocity_km_s < 0.) call fatal(label,'piston_velocity must be >= 0')
-case('surface_pressure')
-    read(valstring,*,iostat=ierr) surface_pressure
-    ngot = ngot + 1
-    if (surface_pressure < 0.) call fatal(label,'surface_pressure must be >= 0')
-case('use_pulsations')
-    read(valstring,*,iostat=ierr) use_pulsations
-    ngot = ngot + 1
+
  case default
     imatch = .false.
  end select
