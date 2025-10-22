@@ -256,7 +256,8 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
     ! This interpolates on the stellar_1D array calculated by set_star
     call interp_stellar_profile(r, rho, P, u, T)
     
-    v_radial = 0.0
+    v_radial = piston_velocity
+   !  v_radial = 0.0
     
     ! Set particle type - this tagging ensures forces are handled correctly
     ! (see partinject.f90 where boundary particles get special treatment)
