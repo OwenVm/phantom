@@ -140,9 +140,9 @@ subroutine init_inject(ierr)
 
  print *, ''
  print *, 'Initializing pulsating atmosphere injection:'
- print *, ' pulsation period: ', pulsation_period
- print *, ' piston velocity: ', piston_velocity
- print *, ' deltaR_osc: ', deltaR_osc
+ print *, 'pulsation period: ', pulsation_period
+ print *, 'piston velocity: ', piston_velocity
+ print *, 'deltaR_osc: ', deltaR_osc
  print *, ''
  
  ! Setup geodesic sphere parameters
@@ -299,7 +299,10 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
        elseif (iamtype(iphase(i)) == iboundary) then
           j = j + 1
           boundary_particle_ids(j) = i
-          r_boundary_equilibrium(j) = sqrt(xyzh(1,i)**2 + xyzh(2,i)**2 + xyzh(3,i)**2)
+          r_boundary_equilibrium(j) = sqrt( (xyzh(1,i)-x0(1))**2 + &
+                                            (xyzh(2,i)-x0(2))**2 + &
+                                            (xyzh(3,i)-x0(3))**2 ) &
+                                            / (deltaR_osc * omega_pulsation * sin(phi0))
        endif
     enddo
  endif
