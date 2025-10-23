@@ -104,7 +104,7 @@ subroutine stellar_step(state, r_new)
  ! Get density and enclosed mass at midpoint
  C_rho = Mstar_cgs / (4.*pi * Rstar_cgs)
  rho_mid = C_rho / r_mid**rho_power
- mr_mid = Mstar_cgs + M_env_cgs * ( r_mid - r_inner) / (Rstar_cgs - r_inner)
+ mr_mid = Mstar_cgs + Menv_cgs * ( r_mid - r_inner) / (Rstar_cgs - r_inner)
 
  ! Integrate hydrostatic equilibrium: dP/dr = -rho * G * M(r) / r^2
  dP = -(Gg * mr_mid * rho_mid / r_mid**2) * dr
@@ -152,7 +152,7 @@ subroutine calc_stellar_profile(n)
  dr = (Rstar_cgs - r_inner) / real(n-1) 
 
  do i = n-1, 1, -1
-    r_new = Rstar_cgs - real(i)*dr 
+    r_new = Rstar_cgs - real(n-i)*dr 
     call stellar_step(state, r_new)
 
     ! Store in profile

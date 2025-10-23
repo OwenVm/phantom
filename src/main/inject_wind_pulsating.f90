@@ -35,20 +35,20 @@ module inject
 !--runtime settings for this module
 !
 ! Read from input file
- integer :: iboundary_spheres = 5
- integer :: n_shells_total = 50
+ integer :: iboundary_spheres = 10
+ integer :: n_shells_total = 100
  integer :: n_profile_points = 10000
- integer :: iwind_resolution = 5
- real    :: r_min_on_rstar = 0.8
+ integer :: iwind_resolution = 8
+ real    :: r_min_on_rstar = 0.9
  real    :: dtpulsation = huge(0.)
  real    :: pulsation_period_days = 300.0  ! Pulsation period in days
- real    :: piston_velocity_km_s = 10.0     ! Piston velocity (in km/s)
- real    :: atmos_mass_fraction = 0.03  ! Atmosphere mass as fraction of total mass
- real    :: surface_pressure = 300.0  ! Surface pressure in cgs units
- real    :: surface_density = 1e-10  ! Surface density in cgs units
+ real    :: piston_velocity_km_s = 5.0     ! Piston velocity (in km/s)
+ real    :: atmos_mass_fraction = 0.005  ! Atmosphere mass as fraction of total mass
+ real    :: surface_pressure = 600.0  ! Surface pressure in cgs units
+ real    :: surface_density = 3e-9  ! Surface density in cgs units
  integer :: iwind = 1  ! Wind type: 1=prescribed, 2=period from mass-radius relation
  real    :: pulsation_timestep = 0.02
- real    :: phi0 = -pi/2.0  ! Initial phase offset (-pi/2 for starting at minimal radius)
+ real    :: phi0 = -3.1415926536d0/2.0  ! Initial phase offset (-pi/2 for starting at minimal radius)
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
@@ -76,20 +76,20 @@ contains
 subroutine set_default_options_inject(flag)
  integer, optional, intent(in) :: flag
 
- iboundary_spheres = 5
- n_shells_total = 50
+ iboundary_spheres = 10
+ n_shells_total = 100
  n_profile_points = 10000
- iwind_resolution = 5
- r_min_on_rstar = 0.8
+ iwind_resolution = 8
+ r_min_on_rstar = 0.9
  dtpulsation = huge(0.)
- atmos_mass_fraction = 0.03
- surface_pressure = 300.0
- surface_density = 1e-10
+ atmos_mass_fraction = 0.005
+ surface_pressure = 600.0
+ surface_density = 3e-9
  iwind = 1
  pulsation_period_days = 300.0
- piston_velocity_km_s = 10.0
+ piston_velocity_km_s = 5.0
  pulsation_timestep = 0.02
- phi0 = -pi/2.0
+ phi0 = -3.1415926536d0/2.0
 
 end subroutine set_default_options_inject
 
@@ -227,7 +227,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  use part,        only:igas,iboundary,iphase,iamtype
  use injectutils, only:inject_geodesic_sphere
  use wind_pulsating, only:interp_stellar_profile
- use physcon,     only:pi,km
+ use physcon,     only:pi,km, au
  use units,       only:unit_velocity
 
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
@@ -253,7 +253,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  do i = 1, n_shells_total
 
     ! Calculate radius for this shell
-    r = (r_min + (i-1)*dr) * deltaR_osc * omega_pulsation * sin(phi0)
+    r = (r_min + (i-1)*dr) +  deltaR_osc * sin(phi0)
 
     ! Determine if this is a boundary or free shell
     is_boundary = (i <= iboundary_spheres)
@@ -302,7 +302,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
           r_boundary_equilibrium(j) = sqrt( (xyzh(1,i)-x0(1))**2 + &
                                             (xyzh(2,i)-x0(2))**2 + &
                                             (xyzh(3,i)-x0(3))**2 ) &
-                                            / (deltaR_osc * omega_pulsation * sin(phi0))
+                                            - deltaR_osc * omega_pulsation * sin(phi0)
        endif
     enddo
  endif
@@ -416,6 +416,7 @@ subroutine write_options_inject(iunit)
  use infile_utils, only:write_inopt
  integer, intent(in) :: iunit
 
+ call write_inopt(n_profile_points,'n_profile_points', 'number of points in stellar profile',iunit)
  call write_inopt(n_shells_total,'n_shells_total', 'total number of atmospheric shells',iunit)
  call write_inopt(iboundary_spheres,'iboundary_spheres', 'number of boundary spheres (inner layers)',iunit)
  call write_inopt(iwind_resolution,'iwind_resolution', 'geodesic sphere resolution (integer)',iunit)
@@ -444,7 +445,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 12
+ integer, parameter :: noptions = 13
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -454,6 +455,10 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  imatch = .true.
  igotall = .false.
  select case(trim(name))
+ case('n_profile_points')
+    read(valstring,*,iostat=ierr) n_profile_points
+    ngot = ngot + 1
+    if (n_profile_points <= 10) call fatal(label,'n_profile_points must be > 10')
  case('n_shells_total')
     read(valstring,*,iostat=ierr) n_shells_total
     ngot = ngot + 1
@@ -505,7 +510,7 @@ case('pulsation_period')
  case('phi0')
     read(valstring,*,iostat=ierr) phi0
     ngot = ngot + 1
-    if (phi0 < -pi .or. phi0 > pi) call fatal(label,'phi0 must be in range (-pi,pi)')
+    if (phi0 < -3.1415926536d0 .or. phi0 > 3.1415926536d0) call fatal(label,'phi0 must be in range (-pi,pi)')
  case default
     imatch = .false.
  end select
