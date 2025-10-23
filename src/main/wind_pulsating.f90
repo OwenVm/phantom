@@ -25,7 +25,7 @@ module wind_pulsating
  real, parameter :: rho_power = 2.0  ! Density profile exponent (i.e. rho ~ r^(-rho_power))
 
  ! input parameters
- real :: Mstar_cgs, Rstar_cgs, r_inner, Star_gamma, Star_mu, number_of_steps, P0
+ real :: Mstar_cgs, Rstar_cgs, r_inner, Star_gamma, Star_mu, number_of_steps, P0, rho0, Menv_cgs
  real, dimension(:,:), allocatable, public :: stellar_1D
 
  ! stellar properties
@@ -37,14 +37,13 @@ module wind_pulsating
 
 contains
 
-subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, surface_pressure)
+subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, surface_pressure, surface_density, M_env_in)
  use physcon, only:au, solarm
 !  use units,   only:umass,udist
 !  use eos,     only:gamma, gmw
 
- real, intent(in)    :: Mstar_in, Rstar_in, r_min, mu_in, gamma_in
+ real, intent(in)    :: Mstar_in, Rstar_in, r_min, mu_in, gamma_in, surface_pressure, surface_density, M_env_in
  integer, intent(in) :: n
- real, intent(in)    :: surface_pressure
 
  Mstar_cgs  = Mstar_in
  Rstar_cgs  = Rstar_in
@@ -53,10 +52,13 @@ subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, surface_pre
  Star_mu    = mu_in
  number_of_steps = n
  P0 = surface_pressure
+ rho0 = surface_density
+ Menv_cgs = M_env_in
 
  print *, "Setting up star with parameters:"
  print *, "Rstar_cgs:", Rstar_cgs
  print *, "Mstar_cgs:", Mstar_cgs
+ print *, "Menv_cgs:", Menv_cgs
  print *, "r_inner:", r_inner
 
 end subroutine setup_star
@@ -76,7 +78,7 @@ subroutine init_atmosphere(state)
  state%r      = Rstar_cgs
  state%Rstar  = Rstar_cgs
  state%P      = P0
- state%rho    = Mstar_cgs / (4.*pi * Rstar_cgs**rho_power * Rstar_cgs)
+ state%rho    = rho0
  state%u      = state%P / (state%rho * (Star_gamma - 1.))
  state%T      = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
  state%nsteps = 1
@@ -102,7 +104,7 @@ subroutine stellar_step(state, r_new)
  ! Get density and enclosed mass at midpoint
  C_rho = Mstar_cgs / (4.*pi * Rstar_cgs)
  rho_mid = C_rho / r_mid**rho_power
- mr_mid = Mstar_cgs * r_mid / Rstar_cgs
+ mr_mid = Mstar_cgs + M_env_cgs * ( r_mid - r_inner) / (Rstar_cgs - r_inner)
 
  ! Integrate hydrostatic equilibrium: dP/dr = -rho * G * M(r) / r^2
  dP = -(Gg * mr_mid * rho_mid / r_mid**2) * dr
@@ -162,7 +164,7 @@ subroutine calc_stellar_profile(n)
  enddo
 
  ! Save profile to file
-!  call save_stellarprofile(n, 'stellar_profile1D.dat')
+call save_stellarprofile(n, 'stellar_profile1D.dat')
 
 end subroutine calc_stellar_profile
 
