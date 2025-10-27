@@ -58,7 +58,7 @@ module inject
  integer :: iwind = 1  ! Wind type: 1=prescribed, 2=period from mass-radius relation
  real    :: pulsation_timestep = 0.02
  real    :: phi0 = -3.1415926536d0/2.0  ! Initial phase offset (-pi/2 for starting at minimal radius)
- integer :: idr = 1
+ integer :: idr = 2
  real    :: wss = 1.0 ! Fraction of the tangential and radial distance between particles in the initial setup
 
 ! global variables
@@ -102,7 +102,7 @@ subroutine set_default_options_inject(flag)
  piston_velocity_km_s = 5.0
  pulsation_timestep = 0.02
  phi0 = -3.1415926536d0/2.0
- idr = 1
+ idr = 2
  wss = 1.0
 
 end subroutine set_default_options_inject
