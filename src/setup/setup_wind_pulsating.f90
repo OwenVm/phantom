@@ -13,6 +13,20 @@ module setup
 ! :Owner: Owen Vermeulen
 !
 ! :Runtime parameters:
+!   wind_gamma            - Adiabatic index for wind gas
+!   icompanion_star       - Set to 1 for a binary system, 0 for single star
+!   semi_major_axis       - Semi-major axis of the binary system
+!   eccentricity          - Eccentricity of the binary system
+!   primary_Teff          - Primary star effective temperature (K)
+!   primary_lum_lsun      - Primary star luminosity (Lsun)
+!   primary_mass_msun     - Primary star mass (Msun)
+!   primary_Reff_au       - Primary star effective radius (au)
+!   primary_racc_au       - Primary star accretion radius (au)
+!   secondary_lum_lsun    - Secondary star luminosity (Lsun)
+!   secondary_mass_msun   - Secondary star mass (Msun)
+!   secondary_Reff_au     - Secondary star effective radius (au)
+!   secondary_racc_au     - Secondary star accretion radius (au)
+!   mass_of_particles     - Particle mass (Msun, overwritten anyway <>0)
 !
 ! :Dependencies: boundary, dim, infile_utils, io, kernel, options, part,
 !   physcon, prompting, ptmass, setup_params, table_utils, timestep, units

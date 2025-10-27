@@ -19,11 +19,19 @@ module inject
 !   - r_min_on_rstar     : *inner radius as fraction of R_star*
 !   - pulsation_period   : *pulsation period (days)*
 !   - pulsation_amplitude: *fractional pulsation amplitude*
+!   - piston_velocity    : *piston velocity amplitude (km/s)*
+!   - atmos_mass_fraction: *atmospheric mass as fraction of total stellar mass*
+!   - surface_pressure   : *surface pressure (cgs)*
+!   - surface_density    : *surface density (cgs)*
+!   - iwind              : *wind type: 1=prescribed, 2=period from mass-radius relation*
+!   - pulsation_timestep : *pulsation timestep as fraction of pulsation period*
+!   - phi0               : *initial phase offset (radians) (best taken to be -pi/2 to start at minimum radius)*
+!   - idr                : *1: set r_max = Rstar; 2: set r_max based on n_shells_total and neighbor distance*
+!   - wss                : *fraction of tangential and radial distance between particles in initial atmosphere setup*
 !
 ! :Dependencies: dim, eos, icosahedron, infile_utils, injectutils, io,
 !   part, partinject, physcon, units, set_star
 !
- use dim, only:isothermal
 
  implicit none
  character(len=*), parameter, public :: inject_type = 'atmosphere'
@@ -36,19 +44,22 @@ module inject
 !
 ! Read from input file
  integer :: iboundary_spheres = 10
- integer :: n_shells_total = 100
+ integer :: n_shells_total = 50
  integer :: n_profile_points = 10000
- integer :: iwind_resolution = 8
+ integer :: iwind_resolution = 30
  real    :: r_min_on_rstar = 0.9
  real    :: dtpulsation = huge(0.)
  real    :: pulsation_period_days = 300.0  ! Pulsation period in days
  real    :: piston_velocity_km_s = 5.0     ! Piston velocity (in km/s)
  real    :: atmos_mass_fraction = 0.005  ! Atmosphere mass as fraction of total mass
- real    :: surface_pressure = 600.0  ! Surface pressure in cgs units
+ real    :: surface_pressure = 200.0  ! Surface pressure in cgs units
  real    :: surface_density = 3e-9  ! Surface density in cgs units
+!  real    :: surface_temperature = 3000.0  ! Surface temperature in K
  integer :: iwind = 1  ! Wind type: 1=prescribed, 2=period from mass-radius relation
  real    :: pulsation_timestep = 0.02
  real    :: phi0 = -3.1415926536d0/2.0  ! Initial phase offset (-pi/2 for starting at minimal radius)
+ integer :: idr = 1
+ real    :: wss = 1.0 ! Fraction of the tangential and radial distance between particles in the initial setup
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
@@ -77,19 +88,22 @@ subroutine set_default_options_inject(flag)
  integer, optional, intent(in) :: flag
 
  iboundary_spheres = 10
- n_shells_total = 100
+ n_shells_total = 50
  n_profile_points = 10000
- iwind_resolution = 8
+ iwind_resolution = 30
  r_min_on_rstar = 0.9
  dtpulsation = huge(0.)
  atmos_mass_fraction = 0.005
- surface_pressure = 600.0
+ surface_pressure = 200.0
  surface_density = 3e-9
+!  surface_temperature = 3000.0
  iwind = 1
  pulsation_period_days = 300.0
  piston_velocity_km_s = 5.0
  pulsation_timestep = 0.02
  phi0 = -3.1415926536d0/2.0
+ idr = 1
+ wss = 1.0
 
 end subroutine set_default_options_inject
 
@@ -103,13 +117,13 @@ subroutine init_inject(ierr)
  use physcon,       only:pi,days,au,solarm,km
  use icosahedron,   only:compute_matrices,compute_corners
  use eos,           only:gmw,gamma
- use units,         only:utime,udist,umass,unit_velocity
+ use units,         only:utime,umass,unit_velocity
  use part,          only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff
- use injectutils,   only:get_parts_per_sphere
+ use injectutils,   only:get_parts_per_sphere, get_neighb_distance
  use wind_pulsating,only:setup_star,calc_stellar_profile
 
  integer, intent(out) :: ierr
- real :: Mstar_cgs, Rstar_cgs, Tstar
+ real :: Mstar_cgs, Rstar_cgs, Tstar, delta_r_tangential, delta_r_radial
 
  ierr = 0
 
@@ -151,12 +165,18 @@ subroutine init_inject(ierr)
  call compute_corners(geodesic_v)
  particles_per_sphere = get_parts_per_sphere(iresolution)
 
- ! Define radial range for atmosphere
- r_min = r_min_on_rstar * Rstar
- r_max = Rstar
+ if (idr == 2) then
+    delta_r_tangential = get_neighb_distance(iresolution)
+    delta_r_radial = wss * delta_r_tangential
+    r_min = r_min_on_rstar * Rstar
+    r_max = r_min + delta_r_radial * n_shells_total
+ else
+    r_min = r_min_on_rstar * Rstar
+    r_max = Rstar
+ endif
 
   ! Setup stellar structure calculation
- call setup_star(Msink * umass, Rstar_cgs, r_min_on_rstar, gmw, gamma, &
+ call setup_star(Msink * umass, r_max * au, r_min * au, gmw, gamma, &
                  n_shells_total,surface_pressure,surface_density, Matmos * umass)
  
  ! Calculate stellar profile for the atmosphere
@@ -186,7 +206,7 @@ end subroutine init_inject
 !+
 !-----------------------------------------------------------------------
 subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npart_old,npartoftype,dtinject)
- use part,        only:igas,iboundary,nptmass,iphase,iamtype
+ use part,        only:igas,iboundary,iamtype
 
  real,    intent(in)    :: time,dtlast
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
@@ -228,7 +248,6 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  use injectutils, only:inject_geodesic_sphere
  use wind_pulsating, only:interp_stellar_profile
  use physcon,     only:pi,km, au
- use units,       only:unit_velocity
 
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
  real,    intent(in)    :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
@@ -424,11 +443,14 @@ subroutine write_options_inject(iunit)
  call write_inopt(atmos_mass_fraction,'atmos_mass_fraction', 'atmospheric mass as fraction of total stellar mass',iunit)
  call write_inopt(surface_pressure,'surface_pressure', 'surface pressure (cgs)',iunit)
  call write_inopt(surface_density,'surface_density', 'surface density (cgs)',iunit)
+!  call write_inopt(surface_temperature,'surface_temperature', 'surface temperature (K)',iunit)
  call write_inopt(iwind,'iwind','wind type: 1=prescribed, 2=period from mass-radius relation',iunit)
  call write_inopt(pulsation_period_days,'pulsation_period','pulsation period (days) (if iwind == 2 this is overwritten)',iunit)
  call write_inopt(piston_velocity_km_s,'piston_velocity','piston velocity amplitude (km/s)',iunit)
  call write_inopt(pulsation_timestep,'pulsation_timestep','pulsation timestep as fraction of pulsation period',iunit)
  call write_inopt(phi0,'phi0','initial phase offset (radians)',iunit)
+ call write_inopt(idr,'idr','1: set r_max = Rstar; 2: set r_max based on n_shells_total and neighbor distance',iunit)
+ call write_inopt(wss,'wss','fraction of tangential and radial distance between particles in initial setup',iunit)
 
  
 end subroutine write_options_inject
@@ -445,7 +467,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 13
+ integer, parameter :: noptions = 14
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -491,6 +513,10 @@ case('surface_density')
     read(valstring,*,iostat=ierr) surface_density
     ngot = ngot + 1
     if (surface_density < 0.) call fatal(label,'surface_density must be >= 0')
+! case('surface_temperature')
+!     read(valstring,*,iostat=ierr) surface_temperature
+!     ngot = ngot + 1
+!     if (surface_temperature < 0.) call fatal(label,'surface_temperature must be >= 0')
 case('iwind')
     read(valstring,*,iostat=ierr) iwind
     ngot = ngot + 1
@@ -511,6 +537,14 @@ case('pulsation_period')
     read(valstring,*,iostat=ierr) phi0
     ngot = ngot + 1
     if (phi0 < -3.1415926536d0 .or. phi0 > 3.1415926536d0) call fatal(label,'phi0 must be in range (-pi,pi)')
+ case('idr')
+    read(valstring,*,iostat=ierr) idr
+    ngot = ngot + 1
+    if (idr /= 1 .and. idr /= 2) call fatal(label,'idr must be 1 or 2')
+ case('wss')
+    read(valstring,*,iostat=ierr) wss
+    ngot = ngot + 1
+    if (wss <= 0. .or. wss > 2.0) call fatal(label,'wss must be in range (0,2]')
  case default
     imatch = .false.
  end select

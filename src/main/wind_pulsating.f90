@@ -37,7 +37,8 @@ module wind_pulsating
 
 contains
 
-subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, surface_pressure, surface_density, M_env_in)
+subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, &
+                  surface_pressure, surface_density, M_env_in)
  use physcon, only:au, solarm
 !  use units,   only:umass,udist
 !  use eos,     only:gamma, gmw
@@ -47,12 +48,13 @@ subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, surface_pre
 
  Mstar_cgs  = Mstar_in
  Rstar_cgs  = Rstar_in
- r_inner    = r_min * Rstar_cgs  ! Location where the stellar atmosphere is assumed to be inverse quadratic (i.e. inner boundary)
+ r_inner    = r_min  ! Location where the stellar atmosphere is assumed to be inverse quadratic (i.e. inner boundary)
  Star_gamma = gamma_in
  Star_mu    = mu_in
  number_of_steps = n
  P0 = surface_pressure
  rho0 = surface_density
+!  T0 = surface_temperature
  Menv_cgs = M_env_in
 
  print *, "Setting up star with parameters:"
@@ -78,9 +80,17 @@ subroutine init_atmosphere(state)
  state%r      = Rstar_cgs
  state%Rstar  = Rstar_cgs
  state%P      = P0
+!  state%T      = T0
+!  state%u      = state%T * kboltz / mass_proton_cgs / (Star_mu * (Star_gamma - 1.))
+!  state%rho    = P0 / (state%u * (Star_gamma - 1.) * Star_mu * mass_proton_cgs)
  state%rho    = rho0
  state%u      = state%P / (state%rho * (Star_gamma - 1.))
  state%T      = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
+ print *, ""
+ print *, "Initial stellar surface conditions:"
+ print *, " mu:", Star_mu
+ print *, " gamma:", Star_gamma
+ print *, ""
  state%nsteps = 1
  state%error  = .false.
 
@@ -102,7 +112,7 @@ subroutine stellar_step(state, r_new)
  r_mid = 0.5 * (state%r + r_new)
 
  ! Get density and enclosed mass at midpoint
- C_rho = Mstar_cgs / (4.*pi * Rstar_cgs)
+ C_rho = Menv_cgs / (4.*pi * (Rstar_cgs - r_inner))
  rho_mid = C_rho / r_mid**rho_power
  mr_mid = Mstar_cgs + Menv_cgs * ( r_mid - r_inner) / (Rstar_cgs - r_inner)
 
