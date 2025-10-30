@@ -32,7 +32,7 @@ module inject
 ! :Dependencies: dim, eos, icosahedron, infile_utils, injectutils, io,
 !   part, partinject, physcon, units, set_star
 !
-
+ use io,            only:fatal
  implicit none
  character(len=*), parameter, public :: inject_type = 'atmosphere'
 
@@ -218,7 +218,8 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
  dtinject = pulsation_timestep * pulsation_period
 
  if (npart > 0 .and. .not. atmosphere_setup_complete) then
-    call fatal(label,'atmosphere not yet setup but particles already exist')
+    atmosphere_setup_complete = .true.
+ endif
 
  ! Initial setup: create all shells
  if (.not. atmosphere_setup_complete) then
