@@ -37,13 +37,12 @@ module wind_pulsating
 
 contains
 
-subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, &
-                  surface_pressure, surface_density, M_env_in)
+subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, surface_pressure, M_env_in)
  use physcon, only:au, solarm
 !  use units,   only:umass,udist
 !  use eos,     only:gamma, gmw
 
- real, intent(in)    :: Mstar_in, Rstar_in, r_min, mu_in, gamma_in, surface_pressure, surface_density, M_env_in
+ real, intent(in)    :: Mstar_in, Rstar_in, r_min, mu_in, gamma_in, surface_pressure, M_env_in
  integer, intent(in) :: n
 
  Mstar_cgs  = Mstar_in
@@ -53,8 +52,6 @@ subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, &
  Star_mu    = mu_in
  number_of_steps = n
  P0 = surface_pressure
- rho0 = surface_density
-!  T0 = surface_temperature
  Menv_cgs = M_env_in
 
  print *, "Setting up star with parameters:"
@@ -74,15 +71,15 @@ subroutine init_atmosphere(state)
 ! all quantities in cgs
  use physcon, only:pi, Rg, kboltz, mass_proton_cgs
  type(stellar_state), intent(out) :: state
+ real :: C_rho
 
  ! Initialize at stellar surface
  state%r0     = Rstar_cgs
  state%r      = Rstar_cgs
  state%Rstar  = Rstar_cgs
  state%P      = P0
-!  state%T      = T0
-!  state%u      = state%T * kboltz / mass_proton_cgs / (Star_mu * (Star_gamma - 1.))
-!  state%rho    = P0 / (state%u * (Star_gamma - 1.) * Star_mu * mass_proton_cgs)
+ C_rho        = Menv_cgs / (4.*pi * (Rstar_cgs - r_inner))
+ rho0         = C_rho / Rstar_cgs**rho_power 
  state%rho    = rho0
  state%u      = state%P / (state%rho * (Star_gamma - 1.))
  state%T      = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
