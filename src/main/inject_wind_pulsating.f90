@@ -217,6 +217,9 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
  ! Set timestep constraint for pulsation
  dtinject = pulsation_timestep * pulsation_period
 
+ if (npart > 0 .and. .not. atmosphere_setup_complete) then
+    call fatal(label,'atmosphere not yet setup but particles already exist')
+
  ! Initial setup: create all shells
  if (.not. atmosphere_setup_complete) then
     print *, 'Setting up stellar atmosphere with ', n_shells_total, ' shells.'
@@ -248,6 +251,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  use injectutils, only:inject_geodesic_sphere
  use wind_pulsating, only:interp_stellar_profile
  use physcon,     only:pi,km, au
+!  use units,       only:udist, unit_density, unit_ergg, unit_pressure
 
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
  real,    intent(in)    :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
@@ -280,7 +284,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
     ! Get stellar properties at this radius from 1D stellar profile
     ! This interpolates on the stellar_1D array calculated by set_star
     call interp_stellar_profile(r, rho, P, u, T)
-    
+
    !  v_radial = piston_velocity
     v_radial = 0.0
     
@@ -414,8 +418,8 @@ subroutine calculate_period(M, R, pulsation_period_days)
  real, intent(out) :: pulsation_period_days
 
  print *, 'Calculating pulsation period from mass-radius relation:'
- print *, ' Stellar mass (Msun): ', M
- print *, ' Stellar radius (Rsun): ', R
+ print *, 'Stellar mass (Msun): ', M
+ print *, 'Stellar radius (Rsun): ', R
 
  logM = log10(M)
  logR = log10(R * 215.032)
