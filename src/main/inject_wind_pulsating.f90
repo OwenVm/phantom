@@ -49,14 +49,14 @@ module inject
  real    :: r_min_on_rstar = 0.9
  real    :: dtpulsation = huge(0.)
  real    :: pulsation_period_days = 300.0  ! Pulsation period in days
- real    :: piston_velocity_km_s = 0.0     ! Piston velocity (in km/s)
+ real    :: piston_velocity_km_s = 4.0     ! Piston velocity (in km/s)
  real    :: atmos_mass_fraction = 0.005  ! Atmosphere mass as fraction of total mass
- real    :: surface_pressure = 200.0  ! Surface pressure in cgs units
+ real    :: surface_pressure = 0.001  ! Surface pressure in cgs units
  integer :: iwind = 1  ! Wind type: 1=prescribed, 2=period from mass-radius relation
  real    :: pulsation_timestep = 0.02
  real    :: phi0 = -3.1415926536d0/2.0  ! Initial phase offset (-pi/2 for starting at minimal radius)
- integer :: idr = 2
- real    :: wss = 1.0 ! Fraction of the tangential and radial distance between particles in the initial setup
+ integer :: idr = 1
+ real    :: wss = 2.0 ! Fraction of the tangential and radial distance between particles in the initial setup
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
@@ -91,14 +91,14 @@ subroutine set_default_options_inject(flag)
  r_min_on_rstar = 0.9
  dtpulsation = huge(0.)
  atmos_mass_fraction = 0.005
- surface_pressure = 200.0
+ surface_pressure = 0.001
  iwind = 1
  pulsation_period_days = 300.0
- piston_velocity_km_s = 0.0
+ piston_velocity_km_s = 4.0
  pulsation_timestep = 0.02
  phi0 = -3.1415926536d0/2.0
- idr = 2
- wss = 1.0
+ idr = 1
+ wss = 2.0
 
 end subroutine set_default_options_inject
 
@@ -439,8 +439,8 @@ subroutine write_options_inject(iunit)
  call write_inopt(piston_velocity_km_s,'piston_velocity','piston velocity amplitude (km/s)',iunit)
  call write_inopt(pulsation_timestep,'pulsation_timestep','pulsation timestep as fraction of pulsation period',iunit)
  call write_inopt(phi0,'phi0','initial phase offset (radians)',iunit)
- call write_inopt(idr,'idr','1: set r_max = Rstar; 2: set r_max based on n_shells_total and neighbor distance',iunit)
- call write_inopt(wss,'wss','fraction of tangential and radial distance between particles in initial setup',iunit)
+ call write_inopt(idr,'idr','1: set r_max based on n_shells_total and neighbor distance; 2: set r_max = Rstar;',iunit)
+ call write_inopt(wss,'wss','fraction of radial to tangential distance between particles in initial setup',iunit)
 
  
 end subroutine write_options_inject
@@ -526,7 +526,7 @@ case('pulsation_period')
  case('wss')
     read(valstring,*,iostat=ierr) wss
     ngot = ngot + 1
-    if (wss <= 0. .or. wss > 2.0) call fatal(label,'wss must be in range (0,2]')
+    if (wss <= 0. .or. wss > 10.0) call fatal(label,'wss must be in range (0,10]')
  case default
     imatch = .false.
  end select
