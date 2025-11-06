@@ -160,7 +160,7 @@ subroutine init_inject(ierr)
  call compute_corners(geodesic_v)
  particles_per_sphere = get_parts_per_sphere(iresolution)
 
- if (idr == 2) then
+ if (idr == 1) then
     delta_r_tangential = get_neighb_distance(iresolution)
     delta_r_radial = wss * delta_r_tangential
     r_min = r_min_on_rstar * Rstar
