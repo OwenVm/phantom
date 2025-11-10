@@ -201,6 +201,7 @@ subroutine interp_stellar_profile(r, rho, P, u, T)
  r_cgs = r * udist
 
  if (r_cgs <= stellar_1D(1,1)) then
+    print *, 'Warning: r_cgs < stellar_1D(1,1). Extrapolating...'
     rho = stellar_1D(2, 1) / unit_density
     P   = stellar_1D(3, 1) / unit_pressure
     u   = stellar_1D(4, 1) / unit_ergg
