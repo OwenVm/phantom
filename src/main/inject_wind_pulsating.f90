@@ -7,6 +7,7 @@
 module inject
 !
 ! Handles initial setup of stellar atmosphere with pulsating boundary layers
+! Extended to support non-radial pulsations via spherical harmonics
 !
 ! :References: None
 !
@@ -26,6 +27,11 @@ module inject
 !   - pulsation_timestep : *pulsation timestep as fraction of pulsation period*
 !   - phi0               : *initial phase offset (radians) (best taken to be -pi/2 to start at minimum radius)*
 !   - wss                : *fraction of tangential and radial distance between particles in initial atmosphere setup*
+!   - enable_nonradial   : *enable non-radial pulsations (0=off, 1=on)*
+!   - l_mode             : *spherical harmonic degree l*
+!   - m_mode             : *spherical harmonic order m*
+!   - nonradial_amplitude: *amplitude of non-radial mode as fraction of radial amplitude*
+!   - nonradial_phase    : *phase offset for non-radial mode (radians)*
 !
 ! :Dependencies: dim, eos, icosahedron, infile_utils, injectutils, io,
 !   part, partinject, physcon, units, set_star
@@ -56,6 +62,13 @@ module inject
  real    :: phi0 = -3.1415926536d0/2.0  ! Initial phase offset (-pi/2 for starting at minimal radius)
  real    :: wss = 2.0 ! Fraction of the tangential and radial distance between particles in the initial setup
 
+ ! Non-radial pulsation parameters
+ integer :: enable_nonradial = 0  ! 0=disabled, 1=enabled
+ integer :: l_mode = 2  ! Spherical harmonic degree
+ integer :: m_mode = 0  ! Spherical harmonic order
+ real    :: nonradial_amplitude = 0.1  ! Amplitude relative to radial pulsation
+ real    :: nonradial_phase = 0.0  ! Phase offset for non-radial mode
+
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
  real :: geodesic_R(0:19,3,3), geodesic_v(0:11,3)
@@ -68,6 +81,7 @@ module inject
  
  ! Store boundary particle information
  real, allocatable    :: r_boundary_equilibrium(:)
+ real, allocatable    :: theta_boundary(:), phi_boundary(:)  ! Spherical coords
  integer, allocatable :: boundary_particle_ids(:)
  integer              :: n_boundary_particles
 
@@ -97,6 +111,13 @@ subroutine set_default_options_inject(flag)
  pulsation_timestep = 0.02
  phi0 = -3.1415926536d0/2.0
  wss = 2.0
+ 
+ ! Non-radial defaults
+ enable_nonradial = 0
+ l_mode = 2
+ m_mode = 0
+ nonradial_amplitude = 0.1
+ nonradial_phase = 0.0
 
 end subroutine set_default_options_inject
 
@@ -151,6 +172,17 @@ subroutine init_inject(ierr)
  print *, 'pulsation period: ', pulsation_period
  print *, 'piston velocity: ', piston_velocity
  print *, 'deltaR_osc: ', deltaR_osc
+ 
+ if (enable_nonradial == 1) then
+    print *, ''
+    print *, 'Non-radial pulsations ENABLED:'
+    print *, '  l mode: ', l_mode
+    print *, '  m mode: ', m_mode
+    print *, '  amplitude (fraction of radial): ', nonradial_amplitude
+    print *, '  phase offset: ', nonradial_phase
+ else
+    print *, 'Non-radial pulsations DISABLED'
+ endif
  print *, ''
  
  ! Setup geodesic sphere parameters
@@ -231,8 +263,11 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
  endif
 
  ! Every subsequent call, move the boundary particles
- call apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
-!  call apply_pulsation_new(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
+ if (enable_nonradial == 1) then
+    call apply_pulsation_nonradial(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
+ else
+    call apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
+ endif
 
 end subroutine inject_particles
 
@@ -255,6 +290,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
 
  integer :: i,j,first_particle,ipart_type,nboundary
  real    :: r,dr(n_shells_total),rho,u,T,P,x0(3),v0(3),GM,v_radial, r_previous
+ real    :: theta, phi_angle, x_rel, y_rel, z_rel
  logical :: is_boundary
 
  ! Get sink particle position
@@ -263,7 +299,6 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  GM = xyzmh_ptmass(4,wind_emitting_sink)
 
  ! Shell spacing
-!  dr = (r_max - r_min) / real(n_shells_total - 1)
  dr = delta_r_radial
  print *, 'Shell spacing dr:', dr
 
@@ -274,7 +309,6 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  do i = 1, n_shells_total
 
     ! Calculate radius for this shell
-   !  r = (r_min + (i-1)*dr)
     r = (r_previous + delta_r_radial(i))
     r_previous = r
 
@@ -282,14 +316,11 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
     is_boundary = (i <= iboundary_spheres)
     
     ! Get stellar properties at this radius from 1D stellar profile
-    ! This interpolates on the stellar_1D array calculated by set_star
     call interp_stellar_profile(r, rho, P, u, T)
 
-   !  v_radial = piston_velocity
     v_radial = 0.0
     
-    ! Set particle type - this tagging ensures forces are handled correctly
-    ! (see partinject.f90 where boundary particles get special treatment)
+    ! Set particle type
     if (is_boundary) then
        ipart_type = iboundary
     else
@@ -312,9 +343,11 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  
  if (nboundary > 0) then
     allocate(r_boundary_equilibrium(nboundary))
+    allocate(theta_boundary(nboundary))
+    allocate(phi_boundary(nboundary))
     allocate(boundary_particle_ids(nboundary))
     
-    ! Store equilibrium radii and IDs of boundary particles
+    ! Store equilibrium radii, IDs, and spherical coordinates of boundary particles
     j = 0
     do i = 1, npart
        if (j >= nboundary) then
@@ -322,10 +355,21 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
        elseif (iamtype(iphase(i)) == iboundary) then
           j = j + 1
           boundary_particle_ids(j) = i
-          r_boundary_equilibrium(j) = sqrt( (xyzh(1,i)-x0(1))**2 + &
-                                            (xyzh(2,i)-x0(2))**2 + &
-                                            (xyzh(3,i)-x0(3))**2 ) &
-                                            - deltaR_osc * sin(phi0)  !*omega_pulsation 
+          
+          ! Calculate relative position
+          x_rel = xyzh(1,i) - x0(1)
+          y_rel = xyzh(2,i) - x0(2)
+          z_rel = xyzh(3,i) - x0(3)
+          
+          r_boundary_equilibrium(j) = sqrt(x_rel**2 + y_rel**2 + z_rel**2) &
+                                            - deltaR_osc * sin(phi0)
+          
+          ! Calculate spherical coordinates (theta, phi)
+          theta = acos(z_rel / sqrt(x_rel**2 + y_rel**2 + z_rel**2))
+          phi_angle = atan2(y_rel, x_rel)
+          
+          theta_boundary(j) = theta
+          phi_boundary(j) = phi_angle
        endif
     enddo
  endif
@@ -334,7 +378,7 @@ end subroutine setup_initial_atmosphere
 
 !-----------------------------------------------------------------------
 !+
-!  Apply radial pulsation to boundary particles
+!  Apply radial pulsation to boundary particles (original version)
 !+
 !-----------------------------------------------------------------------
 subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
@@ -349,6 +393,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  real    :: x_hat(3),r_dot
  real    :: x0(3),v0(3),GM
  real    :: x, y, z
+ 
  if (.not. allocated(boundary_particle_ids)) return
  if (n_boundary_particles == 0) return
 
@@ -360,8 +405,6 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  phase = omega_pulsation * time + phi0
  
  ! Pulsation amplitude and velocity
- ! R(t) = R0 + U_amp (P/2pi) * sin(omega t)
- ! dR/dt = U_amp * cos(omega t)
  r_dot = piston_velocity * cos(phase)
 
  ! Update each boundary particle
@@ -390,8 +433,6 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     xyzh(3,ipart) = r_new * x_hat(3) + x0(3)
 
     ! Update velocity (radial pulsation velocity)
-    ! Scale velocity by ratio to equilibrium radius
-    ! Add the orbital velocity of the sink
     vxyzu(1,ipart) = r_dot * x_hat(1) + v0(1)
     vxyzu(2,ipart) = r_dot * x_hat(2) + v0(2)
     vxyzu(3,ipart) = r_dot * x_hat(3) + v0(3)
@@ -399,23 +440,27 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
 
 end subroutine apply_pulsation
 
-subroutine apply_pulsation_new(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
- use part,        only:igas,iboundary,iphase,iamtype
- use injectutils, only:inject_geodesic_sphere
- use wind_pulsating, only:interp_stellar_profile
+!-----------------------------------------------------------------------
+!+
+!  Apply radial + non-radial pulsation to boundary particles
+!+
+!-----------------------------------------------------------------------
+subroutine apply_pulsation_nonradial(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  use physcon, only:pi
 
  real,    intent(in)    :: time
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
- integer, intent(inout) :: npart
- integer, intent(inout) :: npartoftype(:)
+ integer, intent(in)    :: npart
 
- integer :: i,ipart,ipart_type,first_particle
+ integer :: i,ipart
  real    :: r_eq,r_new,r_current,phase
- real    :: x_hat(3),r_dot,rho,u,T,P
+ real    :: x_hat(3),r_dot
  real    :: x0(3),v0(3),GM
  real    :: x, y, z
-
+ real    :: theta, phi_angle
+ real    :: Y_lm, dY_lm_dt
+ real    :: delta_r_nonradial, v_nonradial
+ 
  if (.not. allocated(boundary_particle_ids)) return
  if (n_boundary_particles == 0) return
 
@@ -426,29 +471,174 @@ subroutine apply_pulsation_new(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,np
 
  phase = omega_pulsation * time + phi0
  
- ! Pulsation amplitude and velocity
- ! R(t) = R0 + U_amp (P/2pi) * sin(omega t)
- ! dR/dt = U_amp * cos(omega t)
+ ! Radial pulsation amplitude and velocity
  r_dot = piston_velocity * cos(phase)
 
- do i = 1, iboundary_spheres
-   first_particle = (i-1) * particles_per_sphere + 1
+ ! Update each boundary particle
+ do i = 1, n_boundary_particles
+    ipart = boundary_particle_ids(i)
+    
+    ! Equilibrium radius for this particle
+    r_eq = r_boundary_equilibrium(i)
+    
+    ! Get spherical coordinates for this particle
+    theta = theta_boundary(i)
+    phi_angle = phi_boundary(i)
+    
+    ! Calculate spherical harmonic for this position
+    call spherical_harmonic(l_mode, m_mode, theta, phi_angle, Y_lm)
+    
+    ! Non-radial perturbation
+    ! delta_r = A * Y_lm * sin(omega*t + phi_nr)
+    delta_r_nonradial = nonradial_amplitude * deltaR_osc * Y_lm * &
+                        sin(omega_pulsation * time + nonradial_phase)
+    
+    ! Time derivative for velocity
+    v_nonradial = nonradial_amplitude * piston_velocity * Y_lm * &
+                  cos(omega_pulsation * time + nonradial_phase)
+    
+    ! Combined radius: radial + non-radial
+    r_new = r_eq + deltaR_osc * sin(phase) + delta_r_nonradial
 
-   r_eq = r_boundary_equilibrium(first_particle)
-   r_new = r_eq + deltaR_osc * sin(phase)
+    x = xyzh(1,ipart) - x0(1)
+    y = xyzh(2,ipart) - x0(2)
+    z = xyzh(3,ipart) - x0(3)
 
-   call interp_stellar_profile(r_new, rho, P, u, T)   
+    r_current = sqrt(x**2 + y**2 + z**2)
+    
+    ! Radial unit vector
+    x_hat(1) = x / r_current
+    x_hat(2) = y / r_current
+    x_hat(3) = z / r_current
 
-   ipart_type = iboundary
+    ! Update position with combined pulsation
+    xyzh(1,ipart) = r_new * x_hat(1) + x0(1)
+    xyzh(2,ipart) = r_new * x_hat(2) + x0(2)
+    xyzh(3,ipart) = r_new * x_hat(3) + x0(3)
 
-   call inject_geodesic_sphere(i, first_particle, iresolution, r_new, r_dot, u, rho, &
-                                geodesic_R, geodesic_V, npart, npartoftype, &
-                                xyzh, vxyzu, ipart_type, x0, v0)
-
+    ! Update velocity with combined pulsation velocity
+    vxyzu(1,ipart) = (r_dot + v_nonradial) * x_hat(1) + v0(1)
+    vxyzu(2,ipart) = (r_dot + v_nonradial) * x_hat(2) + v0(2)
+    vxyzu(3,ipart) = (r_dot + v_nonradial) * x_hat(3) + v0(3)
  enddo
 
-end subroutine apply_pulsation_new
+end subroutine apply_pulsation_nonradial
 
+!-----------------------------------------------------------------------
+!+
+!  Calculate real spherical harmonic Y_l^m(theta, phi)
+!  Uses simplified formulas for common modes
+!+
+!-----------------------------------------------------------------------
+subroutine spherical_harmonic(l, m, theta, phi, Y_lm)
+ use physcon, only:pi
+ integer, intent(in) :: l, m
+ real, intent(in)    :: theta, phi
+ real, intent(out)   :: Y_lm
+ 
+ real :: cos_theta, sin_theta, P_lm
+ real :: norm
+ 
+ cos_theta = cos(theta)
+ sin_theta = sin(theta)
+ 
+ ! Calculate associated Legendre polynomial
+ call associated_legendre(l, abs(m), cos_theta, P_lm)
+ 
+ ! Normalization factor
+ norm = legendre_normalization(l, abs(m))
+ 
+ ! Combine with azimuthal part
+ if (m > 0) then
+    Y_lm = norm * P_lm * cos(m * phi)
+ elseif (m < 0) then
+    Y_lm = norm * P_lm * sin(abs(m) * phi)
+ else
+    Y_lm = norm * P_lm
+ endif
+
+end subroutine spherical_harmonic
+
+!-----------------------------------------------------------------------
+!+
+!  Calculate associated Legendre polynomial P_l^m(x)
+!  Using recurrence relations for efficiency
+!+
+!-----------------------------------------------------------------------
+subroutine associated_legendre(l, m, x, P_lm)
+ integer, intent(in) :: l, m
+ real, intent(in)    :: x
+ real, intent(out)   :: P_lm
+ 
+ real :: P_mm, P_mm1, P_ll
+ integer :: i, ll
+ real :: somx2
+ 
+ if (m < 0 .or. m > l .or. abs(x) > 1.0) then
+    P_lm = 0.0
+    return
+ endif
+ 
+ ! Calculate P_m^m
+ P_mm = 1.0
+ if (m > 0) then
+    somx2 = sqrt((1.0 - x) * (1.0 + x))
+    do i = 1, m
+       P_mm = P_mm * (-1.0) * (2.0*i - 1.0) * somx2
+    enddo
+ endif
+ 
+ if (l == m) then
+    P_lm = P_mm
+    return
+ endif
+ 
+ ! Calculate P_m^(m+1)
+ P_mm1 = x * (2.0*m + 1.0) * P_mm
+ 
+ if (l == m + 1) then
+    P_lm = P_mm1
+    return
+ endif
+ 
+ ! Use recurrence for P_l^m with l > m+1
+ do ll = m + 2, l
+    P_ll = (x * (2.0*ll - 1.0) * P_mm1 - (ll + m - 1.0) * P_mm) / real(ll - m)
+    P_mm = P_mm1
+    P_mm1 = P_ll
+ enddo
+ 
+ P_lm = P_mm1
+
+end subroutine associated_legendre
+
+!-----------------------------------------------------------------------
+!+
+!  Calculate normalization factor for spherical harmonics
+!+
+!-----------------------------------------------------------------------
+function legendre_normalization(l, m) result(norm)
+ use physcon, only:pi
+ integer, intent(in) :: l, m
+ real :: norm
+ integer :: i
+ real :: factor
+ 
+ ! Calculate (l-m)! / (l+m)!
+ factor = 1.0
+ do i = l - m + 1, l + m
+    factor = factor / real(i)
+ enddo
+ 
+ ! Full normalization: sqrt((2l+1)/(4*pi) * (l-m)!/(l+m)!)
+ norm = sqrt((2.0*l + 1.0) / (4.0 * pi) * factor)
+ 
+ ! For real spherical harmonics, add factor of sqrt(2) for m != 0
+ if (m /= 0) then
+    norm = norm * sqrt(2.0)
+ endif
+
+end function legendre_normalization
 
 subroutine update_injected_par
  ! -- placeholder function
@@ -459,8 +649,7 @@ end subroutine update_injected_par
 !  Calculate pulsation period based on stellar mass and radius
 !  Using empirical relation from Ostlie & Cox (1986)
 !+
-!+-----------------------------------------------------------------------
-
+!-----------------------------------------------------------------------
 subroutine calculate_period(M, R, pulsation_period_days)
  real, intent(in)  :: M, R
  real              :: logP, logM, logR
@@ -501,8 +690,14 @@ subroutine write_options_inject(iunit)
  call write_inopt(pulsation_timestep,'pulsation_timestep','pulsation timestep as fraction of pulsation period',iunit)
  call write_inopt(phi0,'phi0','initial phase offset (radians)',iunit)
  call write_inopt(wss,'wss','fraction of radial to tangential distance between particles in initial setup',iunit)
-
  
+ ! Non-radial options
+ call write_inopt(enable_nonradial,'enable_nonradial','enable non-radial pulsations (0=off, 1=on)',iunit)
+ call write_inopt(l_mode,'l_mode','spherical harmonic degree l',iunit)
+ call write_inopt(m_mode,'m_mode','spherical harmonic order m',iunit)
+ call write_inopt(nonradial_amplitude,'nonradial_amplitude','amplitude of non-radial mode as fraction of radial amplitude',iunit)
+ call write_inopt(nonradial_phase,'nonradial_phase','phase offset for non-radial mode (radians)',iunit)
+
 end subroutine write_options_inject
 
 !-----------------------------------------------------------------------
@@ -517,7 +712,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 12
+ integer, parameter :: noptions = 17  ! Updated from 12
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -555,15 +750,15 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     ngot = ngot + 1
     if (atmos_mass_fraction <= 0. .or. atmos_mass_fraction >= 1.0) &
        call fatal(label,'atmos_mass_fraction must be in range (0,1)')
-case('surface_pressure')
+ case('surface_pressure')
     read(valstring,*,iostat=ierr) surface_pressure
     ngot = ngot + 1
     if (surface_pressure < 0.) call fatal(label,'surface_pressure must be >= 0')
-case('iwind')
+ case('iwind')
     read(valstring,*,iostat=ierr) iwind
     ngot = ngot + 1
     if (iwind /= 1 .and. iwind /= 2) call fatal(label,'iwind must be 1 or 2')
-case('pulsation_period')
+ case('pulsation_period')
     read(valstring,*,iostat=ierr) pulsation_period_days
     ngot = ngot + 1
     if (pulsation_period_days < 0.) call fatal(label,'pulsation_period must be >= 0')
@@ -583,6 +778,30 @@ case('pulsation_period')
     read(valstring,*,iostat=ierr) wss
     ngot = ngot + 1
     if (wss <= 0. .or. wss > 10.0) call fatal(label,'wss must be in range (0,10]')
+ ! Non-radial options
+ case('enable_nonradial')
+    read(valstring,*,iostat=ierr) enable_nonradial
+    ngot = ngot + 1
+    if (enable_nonradial /= 0 .and. enable_nonradial /= 1) &
+       call fatal(label,'enable_nonradial must be 0 or 1')
+ case('l_mode')
+    read(valstring,*,iostat=ierr) l_mode
+    ngot = ngot + 1
+    if (l_mode < 0) call fatal(label,'l_mode must be >= 0')
+ case('m_mode')
+    read(valstring,*,iostat=ierr) m_mode
+    ngot = ngot + 1
+    if (abs(m_mode) > l_mode) call fatal(label,'|m_mode| must be <= l_mode')
+ case('nonradial_amplitude')
+    read(valstring,*,iostat=ierr) nonradial_amplitude
+    ngot = ngot + 1
+    if (nonradial_amplitude < 0. .or. nonradial_amplitude > 5.0) &
+       call fatal(label,'nonradial_amplitude must be in range [0,5]')
+ case('nonradial_phase')
+    read(valstring,*,iostat=ierr) nonradial_phase
+    ngot = ngot + 1
+    if (nonradial_phase < -3.1415926536d0 .or. nonradial_phase > 3.1415926536d0) &
+       call fatal(label,'nonradial_phase must be in range (-pi,pi)')
  case default
     imatch = .false.
  end select
