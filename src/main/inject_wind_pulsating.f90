@@ -62,10 +62,10 @@ module inject
  integer :: iwind = 1  ! Wind type: 1=prescribed, 2=period from mass-radius relation
  real    :: pulsation_timestep = 0.02
  real    :: phi0 = -3.1415926536d0/2.0  ! Initial phase offset (-pi/2 for starting at minimal radius)
- real    :: wss = 2.0 ! Fraction of the tangential and radial distance between particles in the initial setup
+ real    :: wss = 1.0 ! Fraction of the tangential and radial distance between particles in the initial setup
 
  ! Multi-mode non-radial pulsation parameters
- integer, parameter :: max_modes = 10  ! Maximum number of modes
+ integer, parameter :: max_modes = 15  ! Maximum number of modes
  integer :: enable_nonradial = 0  ! 0=disabled, 1=enabled
  integer :: n_modes = 1  ! Number of non-radial modes
  integer :: l_modes(max_modes) = 2  ! Spherical harmonic degrees
@@ -120,12 +120,12 @@ subroutine set_default_options_inject(flag)
  piston_velocity_km_s = 4.0
  pulsation_timestep = 0.02
  phi0 = -3.1415926536d0/2.0
- wss = 2.0
+ wss = 1.0
  
  ! Multi-mode defaults
  enable_nonradial = 0
- n_modes = 1
- l_modes = 2
+ n_modes = 0
+ l_modes = 0
  m_modes = 0
  mode_amplitudes = 0.1
  mode_periods_days = 0.0  ! 0 means use radial period
@@ -756,20 +756,22 @@ subroutine write_options_inject(iunit)
  call write_inopt(n_modes,'n_modes','number of non-radial modes',iunit)
  
  ! Write arrays as comma-separated strings
- write(str_temp,'(*(I0,:,","))') (l_modes(i), i=1,n_modes)
- write(iunit,"(a)") 'l_modes = '//trim(adjustl(str_temp))//'  ! spherical harmonic degrees l'
- 
+ write (str_temp,'(*(I0,:,","))') (l_modes(i), i=1,n_modes)
+!  write(iunit,"(a20,' = ',a11,4x,'! ',a)") 'l_modes', trim(adjustl(str_temp)), 'spherical harmonic degrees l'
+ write(iunit,"(a20,' = ',a,'  ! ',a)") 'l_modes', trim(adjustl(str_temp)), 'spherical harmonic degrees l'
+
  write(str_temp,'(*(I0,:,","))') (m_modes(i), i=1,n_modes)
- write(iunit,"(a)") 'm_modes = '//trim(adjustl(str_temp))//'  ! spherical harmonic orders m'
+!  write(iunit,"(a20,' = ',a11,4x,'! ',a)") 'm_modes', trim(adjustl(str_temp)), 'spherical harmonic orders m'
+ write(iunit,"(a20,' = ',a,'  ! ',a)") 'm_modes', trim(adjustl(str_temp)), 'spherical harmonic orders m'
  
  write(str_temp,'(*(ES12.5,:,","))') (mode_amplitudes(i), i=1,n_modes)
- write(iunit,"(a)") 'mode_amplitudes = '//trim(adjustl(str_temp))//'  ! amplitudes (fraction of radial)'
+ write(iunit,"(a20,' = ',a,'  ! ',a)") 'mode_amplitudes', trim(adjustl(str_temp)), 'amplitudes (fraction of radial)'
  
  write(str_temp,'(*(ES12.5,:,","))') (mode_periods_days(i), i=1,n_modes)
- write(iunit,"(a)") 'mode_periods_days = '//trim(adjustl(str_temp))//'  ! periods (days, 0=use radial period)'
+ write(iunit,"(a20,' = ',a,'  ! ',a)") 'mode_periods_days', trim(adjustl(str_temp)), 'periods (days, 0=use radial period)'
  
  write(str_temp,'(*(ES12.5,:,","))') (mode_phases(i), i=1,n_modes)
- write(iunit,"(a)") 'mode_phases = '//trim(adjustl(str_temp))//'  ! phase offsets (radians)'
+ write(iunit,"(a20,' = ',a,'  ! ',a)") 'mode_phases', trim(adjustl(str_temp)), 'phase offsets (radians)'
 
 end subroutine write_options_inject
 
