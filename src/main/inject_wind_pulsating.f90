@@ -7,7 +7,7 @@
 module inject
 !
 ! Handles initial setup of stellar atmosphere with pulsating boundary layers
-! Extended to support non-radial pulsations via spherical harmonics
+! Extended to support multiple non-radial pulsations via spherical harmonics
 !
 ! :References: None
 !
@@ -28,10 +28,12 @@ module inject
 !   - phi0               : *initial phase offset (radians) (best taken to be -pi/2 to start at minimum radius)*
 !   - wss                : *fraction of tangential and radial distance between particles in initial atmosphere setup*
 !   - enable_nonradial   : *enable non-radial pulsations (0=off, 1=on)*
-!   - l_mode             : *spherical harmonic degree l*
-!   - m_mode             : *spherical harmonic order m*
-!   - nonradial_amplitude: *amplitude of non-radial mode as fraction of radial amplitude*
-!   - nonradial_phase    : *phase offset for non-radial mode (radians)*
+!   - n_modes            : *number of non-radial modes*
+!   - l_modes            : *comma-separated list of spherical harmonic degrees l*
+!   - m_modes            : *comma-separated list of spherical harmonic orders m*
+!   - mode_amplitudes    : *comma-separated list of amplitudes (fraction of radial amplitude)*
+!   - mode_periods       : *comma-separated list of periods (days, 0=same as radial)*
+!   - mode_phases        : *comma-separated list of phase offsets (radians)*
 !
 ! :Dependencies: dim, eos, icosahedron, infile_utils, injectutils, io,
 !   part, partinject, physcon, units, set_star
@@ -62,12 +64,15 @@ module inject
  real    :: phi0 = -3.1415926536d0/2.0  ! Initial phase offset (-pi/2 for starting at minimal radius)
  real    :: wss = 2.0 ! Fraction of the tangential and radial distance between particles in the initial setup
 
- ! Non-radial pulsation parameters
+ ! Multi-mode non-radial pulsation parameters
+ integer, parameter :: max_modes = 10  ! Maximum number of modes
  integer :: enable_nonradial = 0  ! 0=disabled, 1=enabled
- integer :: l_mode = 2  ! Spherical harmonic degree
- integer :: m_mode = 0  ! Spherical harmonic order
- real    :: nonradial_amplitude = 0.1  ! Amplitude relative to radial pulsation
- real    :: nonradial_phase = 0.0  ! Phase offset for non-radial mode
+ integer :: n_modes = 1  ! Number of non-radial modes
+ integer :: l_modes(max_modes) = 2  ! Spherical harmonic degrees
+ integer :: m_modes(max_modes) = 0  ! Spherical harmonic orders
+ real    :: mode_amplitudes(max_modes) = 0.1  ! Amplitudes relative to radial pulsation
+ real    :: mode_periods_days(max_modes) = 0.0  ! Periods in days (0 = same as radial)
+ real    :: mode_phases(max_modes) = 0.0  ! Phase offsets
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
@@ -84,6 +89,11 @@ module inject
  real, allocatable    :: theta_boundary(:), phi_boundary(:)  ! Spherical coords
  integer, allocatable :: boundary_particle_ids(:)
  integer              :: n_boundary_particles
+ 
+ ! Multi-mode parameters (computed from inputs)
+ real :: mode_omegas(max_modes)  ! Angular frequencies for each mode
+ real :: mode_deltaR(max_modes)  ! Displacement amplitudes for each mode
+ real :: mode_velocities(max_modes)  ! Velocity amplitudes for each mode
 
  character(len=*), parameter :: label = 'inject_atmosphere'
 
@@ -112,12 +122,14 @@ subroutine set_default_options_inject(flag)
  phi0 = -3.1415926536d0/2.0
  wss = 2.0
  
- ! Non-radial defaults
+ ! Multi-mode defaults
  enable_nonradial = 0
- l_mode = 2
- m_mode = 0
- nonradial_amplitude = 0.1
- nonradial_phase = 0.0
+ n_modes = 1
+ l_modes = 2
+ m_modes = 0
+ mode_amplitudes = 0.1
+ mode_periods_days = 0.0  ! 0 means use radial period
+ mode_phases = 0.0
 
 end subroutine set_default_options_inject
 
@@ -138,7 +150,8 @@ subroutine init_inject(ierr)
 
  integer, intent(out) :: ierr
  real :: Mstar_cgs, Rstar_cgs, Tstar, delta_r_tangential, current_radius
- integer :: i 
+ integer :: i, imode
+ real :: period_temp
 
  ierr = 0
 
@@ -161,7 +174,7 @@ subroutine init_inject(ierr)
     call calculate_period(Mtotal, Rstar, pulsation_period_days)
  endif
 
- ! Setup pulsation parameters
+ ! Setup radial pulsation parameters
  pulsation_period = pulsation_period_days * (days / utime)
  omega_pulsation = 2.0*pi / pulsation_period
  piston_velocity = piston_velocity_km_s * (km / unit_velocity)
@@ -169,17 +182,51 @@ subroutine init_inject(ierr)
 
  print *, ''
  print *, 'Initializing pulsating atmosphere injection:'
- print *, 'pulsation period: ', pulsation_period
- print *, 'piston velocity: ', piston_velocity
+ print *, 'Radial pulsation period (days): ', pulsation_period_days
+ print *, 'Radial pulsation period (code): ', pulsation_period
+ print *, 'Piston velocity: ', piston_velocity
  print *, 'deltaR_osc: ', deltaR_osc
  
+ ! Setup non-radial mode parameters
  if (enable_nonradial == 1) then
     print *, ''
     print *, 'Non-radial pulsations ENABLED:'
-    print *, '  l mode: ', l_mode
-    print *, '  m mode: ', m_mode
-    print *, '  amplitude (fraction of radial): ', nonradial_amplitude
-    print *, '  phase offset: ', nonradial_phase
+    print *, 'Number of modes: ', n_modes
+    
+    if (n_modes > max_modes) then
+       call fatal(label,'n_modes exceeds max_modes')
+    endif
+    
+    do imode = 1, n_modes
+       ! Check mode validity
+       if (abs(m_modes(imode)) > l_modes(imode)) then
+          call fatal(label,'|m| must be <= l for all modes')
+       endif
+       
+       ! Set up period/frequency for this mode
+       if (mode_periods_days(imode) <= 0.0) then
+          ! Use radial period
+          mode_omegas(imode) = omega_pulsation
+          period_temp = pulsation_period_days
+       else
+          ! Use specified period
+          period_temp = mode_periods_days(imode)
+          mode_omegas(imode) = 2.0*pi / (period_temp * days / utime)
+       endif
+       
+       ! Calculate displacement and velocity amplitudes
+       mode_deltaR(imode) = mode_amplitudes(imode) * deltaR_osc
+       mode_velocities(imode) = mode_omegas(imode) * mode_deltaR(imode)
+       
+       print *, ''
+       print *, '  Mode ', imode, ':'
+       print *, '    l = ', l_modes(imode), ', m = ', m_modes(imode)
+       print *, '    Period (days): ', period_temp
+       print *, '    Amplitude (fraction of radial): ', mode_amplitudes(imode)
+       print *, '    Phase offset (rad): ', mode_phases(imode)
+       print *, '    deltaR: ', mode_deltaR(imode)
+       print *, '    Velocity amplitude: ', mode_velocities(imode)
+    enddo
  else
     print *, 'Non-radial pulsations DISABLED'
  endif
@@ -214,7 +261,6 @@ subroutine init_inject(ierr)
  call calc_stellar_profile(n_profile_points)
 
  ! Calculate particle mass from atmospheric mass
- ! Total atmospheric mass distributed over all particles
  mass_of_particles = Matmos / real(n_shells_total * particles_per_sphere)
 
  print *, ''
@@ -264,7 +310,7 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
 
  ! Every subsequent call, move the boundary particles
  if (enable_nonradial == 1) then
-    call apply_pulsation_nonradial(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
+    call apply_pulsation_multimode(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  else
     call apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  endif
@@ -442,24 +488,25 @@ end subroutine apply_pulsation
 
 !-----------------------------------------------------------------------
 !+
-!  Apply radial + non-radial pulsation to boundary particles
+!  Apply radial + multiple non-radial pulsations to boundary particles
 !+
 !-----------------------------------------------------------------------
-subroutine apply_pulsation_nonradial(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
+subroutine apply_pulsation_multimode(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  use physcon, only:pi
 
  real,    intent(in)    :: time
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(in)    :: npart
 
- integer :: i,ipart
+ integer :: i,ipart,imode
  real    :: r_eq,r_new,r_current,phase
  real    :: x_hat(3),r_dot
  real    :: x0(3),v0(3),GM
  real    :: x, y, z
  real    :: theta, phi_angle
- real    :: Y_lm, dY_lm_dt
+ real    :: Y_lm, phase_mode
  real    :: delta_r_nonradial, v_nonradial
+ real    :: delta_r_total, v_total
  
  if (.not. allocated(boundary_particle_ids)) return
  if (n_boundary_particles == 0) return
@@ -485,20 +532,31 @@ subroutine apply_pulsation_nonradial(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptm
     theta = theta_boundary(i)
     phi_angle = phi_boundary(i)
     
-    ! Calculate spherical harmonic for this position
-    call spherical_harmonic(l_mode, m_mode, theta, phi_angle, Y_lm)
+    ! Initialize total non-radial contribution
+    delta_r_total = 0.0
+    v_total = 0.0
     
-    ! Non-radial perturbation
-    ! delta_r = A * Y_lm * sin(omega*t + phi_nr)
-    delta_r_nonradial = nonradial_amplitude * deltaR_osc * Y_lm * &
-                        sin(omega_pulsation * time + nonradial_phase)
+    ! Sum contributions from all non-radial modes
+    do imode = 1, n_modes
+       ! Calculate spherical harmonic for this mode and position
+       call spherical_harmonic(l_modes(imode), m_modes(imode), theta, phi_angle, Y_lm)
+       
+       ! Phase for this mode
+       phase_mode = mode_omegas(imode) * time + mode_phases(imode)
+       
+       ! Non-radial perturbation for this mode
+       delta_r_nonradial = mode_deltaR(imode) * Y_lm * sin(phase_mode)
+       
+       ! Velocity for this mode
+       v_nonradial = mode_velocities(imode) * Y_lm * cos(phase_mode)
+       
+       ! Add to totals
+       delta_r_total = delta_r_total + delta_r_nonradial
+       v_total = v_total + v_nonradial
+    enddo
     
-    ! Time derivative for velocity
-    v_nonradial = nonradial_amplitude * piston_velocity * Y_lm * &
-                  cos(omega_pulsation * time + nonradial_phase)
-    
-    ! Combined radius: radial + non-radial
-    r_new = r_eq + deltaR_osc * sin(phase) + delta_r_nonradial
+    ! Combined radius: radial + sum of all non-radial modes
+    r_new = r_eq + deltaR_osc * sin(phase) + delta_r_total
 
     x = xyzh(1,ipart) - x0(1)
     y = xyzh(2,ipart) - x0(2)
@@ -517,12 +575,12 @@ subroutine apply_pulsation_nonradial(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptm
     xyzh(3,ipart) = r_new * x_hat(3) + x0(3)
 
     ! Update velocity with combined pulsation velocity
-    vxyzu(1,ipart) = (r_dot + v_nonradial) * x_hat(1) + v0(1)
-    vxyzu(2,ipart) = (r_dot + v_nonradial) * x_hat(2) + v0(2)
-    vxyzu(3,ipart) = (r_dot + v_nonradial) * x_hat(3) + v0(3)
+    vxyzu(1,ipart) = (r_dot + v_total) * x_hat(1) + v0(1)
+    vxyzu(2,ipart) = (r_dot + v_total) * x_hat(2) + v0(2)
+    vxyzu(3,ipart) = (r_dot + v_total) * x_hat(3) + v0(3)
  enddo
 
-end subroutine apply_pulsation_nonradial
+end subroutine apply_pulsation_multimode
 
 !-----------------------------------------------------------------------
 !+
@@ -676,6 +734,8 @@ end subroutine calculate_period
 subroutine write_options_inject(iunit)
  use infile_utils, only:write_inopt
  integer, intent(in) :: iunit
+ integer :: i
+ character(len=200) :: str_temp
 
  call write_inopt(n_profile_points,'n_profile_points', 'number of points in stellar profile',iunit)
  call write_inopt(n_shells_total,'n_shells_total', 'total number of atmospheric shells',iunit)
@@ -691,12 +751,25 @@ subroutine write_options_inject(iunit)
  call write_inopt(phi0,'phi0','initial phase offset (radians)',iunit)
  call write_inopt(wss,'wss','fraction of radial to tangential distance between particles in initial setup',iunit)
  
- ! Non-radial options
+ ! Multi-mode non-radial options
  call write_inopt(enable_nonradial,'enable_nonradial','enable non-radial pulsations (0=off, 1=on)',iunit)
- call write_inopt(l_mode,'l_mode','spherical harmonic degree l',iunit)
- call write_inopt(m_mode,'m_mode','spherical harmonic order m',iunit)
- call write_inopt(nonradial_amplitude,'nonradial_amplitude','amplitude of non-radial mode as fraction of radial amplitude',iunit)
- call write_inopt(nonradial_phase,'nonradial_phase','phase offset for non-radial mode (radians)',iunit)
+ call write_inopt(n_modes,'n_modes','number of non-radial modes',iunit)
+ 
+ ! Write arrays as comma-separated strings
+ write(str_temp,'(*(I0,:,","))') (l_modes(i), i=1,n_modes)
+ write(iunit,"(a)") 'l_modes = '//trim(adjustl(str_temp))//'  ! spherical harmonic degrees l'
+ 
+ write(str_temp,'(*(I0,:,","))') (m_modes(i), i=1,n_modes)
+ write(iunit,"(a)") 'm_modes = '//trim(adjustl(str_temp))//'  ! spherical harmonic orders m'
+ 
+ write(str_temp,'(*(ES12.5,:,","))') (mode_amplitudes(i), i=1,n_modes)
+ write(iunit,"(a)") 'mode_amplitudes = '//trim(adjustl(str_temp))//'  ! amplitudes (fraction of radial)'
+ 
+ write(str_temp,'(*(ES12.5,:,","))') (mode_periods_days(i), i=1,n_modes)
+ write(iunit,"(a)") 'mode_periods_days = '//trim(adjustl(str_temp))//'  ! periods (days, 0=use radial period)'
+ 
+ write(str_temp,'(*(ES12.5,:,","))') (mode_phases(i), i=1,n_modes)
+ write(iunit,"(a)") 'mode_phases = '//trim(adjustl(str_temp))//'  ! phase offsets (radians)'
 
 end subroutine write_options_inject
 
@@ -712,8 +785,9 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 17  ! Updated from 12
+ integer, parameter :: noptions = 18  ! Updated count
  logical :: init_opt = .false.
+ integer :: i
 
  if (.not. init_opt) then
     init_opt = .true.
@@ -778,30 +852,38 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) wss
     ngot = ngot + 1
     if (wss <= 0. .or. wss > 10.0) call fatal(label,'wss must be in range (0,10]')
- ! Non-radial options
+ ! Multi-mode non-radial options
  case('enable_nonradial')
     read(valstring,*,iostat=ierr) enable_nonradial
     ngot = ngot + 1
     if (enable_nonradial /= 0 .and. enable_nonradial /= 1) &
        call fatal(label,'enable_nonradial must be 0 or 1')
- case('l_mode')
-    read(valstring,*,iostat=ierr) l_mode
+ case('n_modes')
+    read(valstring,*,iostat=ierr) n_modes
     ngot = ngot + 1
-    if (l_mode < 0) call fatal(label,'l_mode must be >= 0')
- case('m_mode')
-    read(valstring,*,iostat=ierr) m_mode
+    if (n_modes < 1) call fatal(label,'n_modes must be >= 1')
+    if (n_modes > max_modes) call fatal(label,'n_modes exceeds max_modes')
+ case('l_modes')
+    call parse_int_array(valstring, l_modes, n_modes, ierr)
     ngot = ngot + 1
-    if (abs(m_mode) > l_mode) call fatal(label,'|m_mode| must be <= l_mode')
- case('nonradial_amplitude')
-    read(valstring,*,iostat=ierr) nonradial_amplitude
+    do i = 1, n_modes
+       if (l_modes(i) < 0) call fatal(label,'all l_modes must be >= 0')
+    enddo
+ case('m_modes')
+    call parse_int_array(valstring, m_modes, n_modes, ierr)
     ngot = ngot + 1
-    if (nonradial_amplitude < 0. .or. nonradial_amplitude > 5.0) &
-       call fatal(label,'nonradial_amplitude must be in range [0,5]')
- case('nonradial_phase')
-    read(valstring,*,iostat=ierr) nonradial_phase
+ case('mode_amplitudes')
+    call parse_real_array(valstring, mode_amplitudes, n_modes, ierr)
     ngot = ngot + 1
-    if (nonradial_phase < -3.1415926536d0 .or. nonradial_phase > 3.1415926536d0) &
-       call fatal(label,'nonradial_phase must be in range (-pi,pi)')
+    do i = 1, n_modes
+       if (mode_amplitudes(i) < 0.) call fatal(label,'all mode_amplitudes must be >= 0')
+    enddo
+ case('mode_periods_days')
+    call parse_real_array(valstring, mode_periods_days, n_modes, ierr)
+    ngot = ngot + 1
+ case('mode_phases')
+    call parse_real_array(valstring, mode_phases, n_modes, ierr)
+    ngot = ngot + 1
  case default
     imatch = .false.
  end select
@@ -809,5 +891,71 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  igotall = (ngot >= noptions)
 
 end subroutine read_options_inject
+
+!-----------------------------------------------------------------------
+!+
+!  Parse comma-separated integer array from string
+!+
+!-----------------------------------------------------------------------
+subroutine parse_int_array(str, array, n, ierr)
+ character(len=*), intent(in) :: str
+ integer, intent(out) :: array(:)
+ integer, intent(in) :: n
+ integer, intent(out) :: ierr
+ 
+ integer :: i, pos, nextpos
+ character(len=len(str)) :: temp
+ 
+ ierr = 0
+ temp = trim(adjustl(str))
+ pos = 1
+ 
+ do i = 1, n
+    nextpos = index(temp(pos:), ',')
+    if (nextpos == 0) then
+       ! Last element
+       read(temp(pos:), *, iostat=ierr) array(i)
+       return
+    else
+       read(temp(pos:pos+nextpos-2), *, iostat=ierr) array(i)
+       if (ierr /= 0) return
+       pos = pos + nextpos
+    endif
+ enddo
+
+end subroutine parse_int_array
+
+!-----------------------------------------------------------------------
+!+
+!  Parse comma-separated real array from string
+!+
+!-----------------------------------------------------------------------
+subroutine parse_real_array(str, array, n, ierr)
+ character(len=*), intent(in) :: str
+ real, intent(out) :: array(:)
+ integer, intent(in) :: n
+ integer, intent(out) :: ierr
+ 
+ integer :: i, pos, nextpos
+ character(len=len(str)) :: temp
+ 
+ ierr = 0
+ temp = trim(adjustl(str))
+ pos = 1
+ 
+ do i = 1, n
+    nextpos = index(temp(pos:), ',')
+    if (nextpos == 0) then
+       ! Last element
+       read(temp(pos:), *, iostat=ierr) array(i)
+       return
+    else
+       read(temp(pos:pos+nextpos-2), *, iostat=ierr) array(i)
+       if (ierr /= 0) return
+       pos = pos + nextpos
+    endif
+ enddo
+
+end subroutine parse_real_array
 
 end module inject
