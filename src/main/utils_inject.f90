@@ -6,7 +6,7 @@
 !--------------------------------------------------------------------------!
 module injectutils
 !
-! Utility routines for geodesic sphere injection
+! Utility routines for geodesic sphere injection and Fibonacci lattice
 !
 ! :References: None
 !
@@ -75,7 +75,42 @@ end function get_neighb_distance
 
 !-----------------------------------------------------------------------
 !+
-!  Inject a quasi-spherical distribution of particles.
+!  Get approximate particle spacing on Fibonacci sphere
+!  Returns the distance between neighbors in units of sphere radius
+!+
+!-----------------------------------------------------------------------
+real function get_fibonacci_spacing(n_particles)
+ integer, intent(in) :: n_particles
+ real :: surface_area_per_particle
+ 
+ ! Each particle occupies approximately equal surface area
+ ! Surface area of unit sphere = 4π, so area per particle = 4π/N
+ ! Approximate spacing = sqrt(area) = sqrt(4π/N) = 2*sqrt(π/N)
+ surface_area_per_particle = 4.0 * pi / real(n_particles)
+ get_fibonacci_spacing = sqrt(surface_area_per_particle)
+ 
+end function get_fibonacci_spacing
+
+!-----------------------------------------------------------------------
+!+
+!  Get number of particles needed for a given spacing on sphere
+!  Inverse of get_fibonacci_spacing
+!+
+!-----------------------------------------------------------------------
+integer function get_fibonacci_nparticles(desired_spacing)
+ real, intent(in) :: desired_spacing
+ real :: n_particles_real
+ 
+ ! From spacing = 2*sqrt(π/N), solve for N:
+ ! N = 4π / spacing^2
+ n_particles_real = 4.0 * pi / (desired_spacing**2)
+ get_fibonacci_nparticles = max(nint(n_particles_real), 3)
+ 
+end function get_fibonacci_nparticles
+
+!-----------------------------------------------------------------------
+!+
+!  Inject a quasi-spherical distribution of particles using geodesic
 !+
 !-----------------------------------------------------------------------
 subroutine inject_geodesic_sphere(sphere_number, first_particle, ires, r, v, u, rho, &
@@ -141,6 +176,80 @@ subroutine inject_geodesic_sphere(sphere_number, first_particle, ires, r, v, u, 
  enddo
 
 end subroutine inject_geodesic_sphere
+
+!-----------------------------------------------------------------------
+!+
+!  Inject particles on a sphere using Fibonacci lattice
+!  This allows any number of particles to be placed uniformly
+!+
+!-----------------------------------------------------------------------
+subroutine inject_fibonacci_sphere(sphere_number, first_particle, n_particles, r, v, u, rho, &
+           npart, npartoftype, xyzh, vxyzu, itype, x0, v0, JKmuS)
+ use partinject,  only:add_or_update_particle
+ use part,        only:hrho
+ integer, intent(in) :: sphere_number, first_particle, n_particles, itype
+ real,    intent(in) :: r, v, u, rho, x0(3), v0(3)
+ real,    intent(in), optional :: JKmuS(:)
+ integer, intent(inout) :: npart, npartoftype(:)
+ real,    intent(inout) :: xyzh(:,:), vxyzu(:,:)
+
+ real :: golden_ratio, i_float, phi_angle
+ real :: y, radius_at_y, h_sim
+ real :: radial_unit_vector(3), rotation_angles(3), rotmat(3,3)
+ real :: radial_unit_vector_rotated(3)
+ real :: particle_position(3), particle_velocity(3)
+ integer :: i
+
+ ! Golden ratio
+ golden_ratio = (1.0 + sqrt(5.0)) / 2.0
+ 
+ ! Rotation angles to vary sphere orientation based on sphere number
+ ! (helps prevent alignment between consecutive spheres)
+ rotation_angles = (/ 1.28693610288783, 2.97863087745917, 1.03952835451832 /) * sphere_number
+ call make_rotation_matrix(rotation_angles, rotmat)
+ 
+ ! Smoothing length in simulation units
+ h_sim = hrho(rho)
+
+ ! Place particles using Fibonacci lattice
+ do i = 0, n_particles-1
+    i_float = real(i)
+    
+    ! Latitude: uniformly distributed from -1 to 1
+    y = 1.0 - (2.0 * i_float) / real(n_particles - 1)
+    
+    ! Radius at this latitude
+    radius_at_y = sqrt(1.0 - y*y)
+    
+    ! Longitude: golden angle spiral
+    phi_angle = 2.0 * pi * i_float / golden_ratio
+    
+    ! Construct unit vector on sphere
+    radial_unit_vector(1) = cos(phi_angle) * radius_at_y
+    radial_unit_vector(2) = sin(phi_angle) * radius_at_y
+    radial_unit_vector(3) = y
+    
+    ! Apply rotation to avoid alignment between spheres
+    radial_unit_vector_rotated(1) = radial_unit_vector(1)*rotmat(1,1) &
+                                  + radial_unit_vector(2)*rotmat(1,2) &
+                                  + radial_unit_vector(3)*rotmat(1,3)
+    radial_unit_vector_rotated(2) = radial_unit_vector(1)*rotmat(2,1) &
+                                  + radial_unit_vector(2)*rotmat(2,2) &
+                                  + radial_unit_vector(3)*rotmat(2,3)
+    radial_unit_vector_rotated(3) = radial_unit_vector(1)*rotmat(3,1) &
+                                  + radial_unit_vector(2)*rotmat(3,2) &
+                                  + radial_unit_vector(3)*rotmat(3,3)
+    
+    ! Scale to desired radius and add center position/velocity
+    particle_position = r * radial_unit_vector_rotated + x0
+    particle_velocity = v * radial_unit_vector_rotated + v0
+    
+    ! Add particle to arrays
+    call add_or_update_particle(itype, particle_position, particle_velocity, &
+         h_sim, u, first_particle+i, npart, npartoftype, xyzh, vxyzu, JKmuS)
+ enddo
+
+end subroutine inject_fibonacci_sphere
 
 !-----------------------------------------------------------------------
 !+
