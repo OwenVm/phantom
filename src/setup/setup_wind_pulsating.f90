@@ -85,6 +85,8 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use wind_pulsating, only: setup_star, calc_stellar_profile, save_stellarprofile
  use setbinary, only: set_binary
  use io,        only: master
+ use options, only  : nfulldump, ieos
+ use timestep,       only:tmax,dtmax
  
  integer,           intent(in)    :: id
  integer,           intent(inout) :: npart
@@ -98,6 +100,11 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  character(len=len(fileprefix)+6) :: filename
  integer :: ierr,k
  logical :: iexist
+
+ tmax = 30
+ dtmax = 0.1
+ nfulldump = 1
+ ieos = 5
  
  call set_units(mass=solarm,dist=au,G=1.)
  call set_default_parameters_wind()
