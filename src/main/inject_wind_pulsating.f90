@@ -244,6 +244,11 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
     return
  endif
 
+ ! Reconstruct boundary particle info if resuming from dump
+ if (atmosphere_setup_complete .and. .not. allocated(boundary_particle_ids)) then
+    call reconstruct_boundary_info(xyzh,npart,xyzmh_ptmass)
+ endif
+
  ! Every subsequent call, move the boundary particles
  call apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
 !  call apply_pulsation_new(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
@@ -350,6 +355,48 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  endif
 
 end subroutine setup_initial_atmosphere
+
+!-----------------------------------------------------------------------
+!+
+!  Reconstruct boundary particle information when resuming from dump
+!+
+!-----------------------------------------------------------------------
+subroutine reconstruct_boundary_info(xyzh,npart,xyzmh_ptmass)
+ use part, only:iboundary,iphase,iamtype
+ real,    intent(in) :: xyzh(:,:),xyzmh_ptmass(:,:)
+ integer, intent(in) :: npart
+ integer :: i,j
+ real :: x0(3)
+ 
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ 
+ ! Count boundary particles
+ n_boundary_particles = 0
+ do i = 1, npart
+    if (iamtype(iphase(i)) == iboundary) n_boundary_particles = n_boundary_particles + 1
+ enddo
+ 
+ if (n_boundary_particles > 0) then
+    allocate(r_boundary_equilibrium(n_boundary_particles))
+    allocate(boundary_particle_ids(n_boundary_particles))
+    
+    j = 0
+    do i = 1, npart
+       if (iamtype(iphase(i)) == iboundary) then
+          j = j + 1
+          boundary_particle_ids(j) = i
+          ! Store current radius as equilibrium (assumes restart at a similar phase)
+          r_boundary_equilibrium(j) = sqrt((xyzh(1,i)-x0(1))**2 + &
+                                           (xyzh(2,i)-x0(2))**2 + &
+                                           (xyzh(3,i)-x0(3))**2)
+       endif
+    enddo
+    
+    print *, 'Reconstructed boundary particle info from dump:'
+    print *, '  Number of boundary particles: ', n_boundary_particles
+ endif
+ 
+end subroutine reconstruct_boundary_info
 
 !-----------------------------------------------------------------------
 !+
