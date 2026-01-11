@@ -308,6 +308,11 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
     return
  endif
 
+  ! Reconstruct boundary particle info if resuming from dump
+ if (atmosphere_setup_complete .and. .not. allocated(boundary_particle_ids)) then
+    call reconstruct_boundary_info(xyzh,npart,xyzmh_ptmass)
+ endif
+
  ! Every subsequent call, move the boundary particles
  if (enable_nonradial == 1) then
     call apply_pulsation_multimode(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
@@ -421,6 +426,57 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  endif
 
 end subroutine setup_initial_atmosphere
+
+
+subroutine reconstruct_boundary_info(xyzh,npart,xyzmh_ptmass)
+ use part, only:iboundary,iphase,iamtype
+ real,    intent(in) :: xyzh(:,:),xyzmh_ptmass(:,:)
+ integer, intent(in) :: npart
+ integer :: i,j
+ real :: x0(3)
+ real :: x_rel, y_rel, z_rel, r_current
+ 
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ 
+ ! Count boundary particles
+ n_boundary_particles = 0
+ do i = 1, npart
+    if (iamtype(iphase(i)) == iboundary) n_boundary_particles = n_boundary_particles + 1
+ enddo
+ 
+ if (n_boundary_particles > 0) then
+    allocate(r_boundary_equilibrium(n_boundary_particles))
+    allocate(theta_boundary(n_boundary_particles))        ! ADD THIS
+    allocate(phi_boundary(n_boundary_particles))          ! ADD THIS
+    allocate(boundary_particle_ids(n_boundary_particles))
+    
+    j = 0
+    do i = 1, npart
+       if (iamtype(iphase(i)) == iboundary) then
+          j = j + 1
+          boundary_particle_ids(j) = i
+          
+          ! Calculate relative position
+          x_rel = xyzh(1,i) - x0(1)
+          y_rel = xyzh(2,i) - x0(2)
+          z_rel = xyzh(3,i) - x0(3)
+          
+          r_current = sqrt(x_rel**2 + y_rel**2 + z_rel**2)
+          
+          ! Store current radius as equilibrium (assumes restart at a similar phase)
+          r_boundary_equilibrium(j) = r_current - deltaR_osc * sin(phi0)
+          
+          ! Calculate and store spherical coordinates        ! ADD THIS
+          theta_boundary(j) = acos(z_rel / r_current)        ! ADD THIS
+          phi_boundary(j) = atan2(y_rel, x_rel)              ! ADD THIS
+       endif
+    enddo
+    
+    print *, 'Reconstructed boundary particle info from dump:'
+    print *, '  Number of boundary particles: ', n_boundary_particles
+ endif
+ 
+end subroutine reconstruct_boundary_info
 
 !-----------------------------------------------------------------------
 !+
