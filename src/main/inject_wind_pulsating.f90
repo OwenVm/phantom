@@ -7,6 +7,7 @@
 module inject
 !
 ! Handles initial setup of stellar atmosphere with pulsating boundary layers
+! and dynamic reinjection when mass drops below thresholds
 !
 ! :References: None
 !
@@ -26,6 +27,8 @@ module inject
 !   - pulsation_timestep : *pulsation timestep as fraction of pulsation period*
 !   - phi0               : *initial phase offset (radians) (best taken to be -pi/2 to start at minimum radius)*
 !   - wss                : *fraction of tangential and radial distance between particles in initial atmosphere setup*
+!   - reinject_enabled   : *enable dynamic reinjection (logical)*
+!   - mass_loss_fraction : *fraction of initial atmospheric mass loss before reinjection*
 !
 ! :Dependencies: dim, eos, icosahedron, infile_utils, injectutils, io,
 !   part, partinject, physcon, units, set_star
@@ -42,11 +45,11 @@ module inject
 !
 ! Read from input file
  integer :: iboundary_spheres = 5
- integer :: n_shells_total = 50
+ integer :: n_shells_total = 30
  integer :: n_profile_points = 10000
  integer :: iwind_resolution = 30
- integer :: N_particles = 15000
- logical :: use_fibonacci = .false.
+ integer :: N_particles = 10000
+ logical :: use_fibonacci = .true.
  real    :: r_min_on_rstar = 0.9
  real    :: dtpulsation = huge(0.)
  real    :: pulsation_period_days = 300.0  ! Pulsation period in days
@@ -57,6 +60,11 @@ module inject
  real    :: pulsation_timestep = 0.02
  real    :: phi0 = -3.1415926536d0/2.0  ! Initial phase offset (-pi/2 for starting at minimal radius)
  real    :: wss = 1.0 ! Fraction of the tangential and radial distance between particles in the initial setup
+ 
+ ! Reinjection parameters
+ logical :: reinject_enabled = .true.
+ real    :: mass_loss_fraction = 0.1  ! Reinject when 10% of initial mass is lost
+ real    :: mass_check_radius = -1.0  ! Radius to check for mass loss (negative = use r_max)
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
@@ -64,6 +72,7 @@ module inject
  real :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity
  real :: Rstar, r_min, r_max, mass_of_particles
  real :: Mtotal, Matmos, Msink  ! Total, atmosphere, and sink masses
+ real :: Matmos_initial  ! Initial atmospheric mass for tracking
  real, allocatable :: delta_r_radial(:)
  integer :: particles_per_sphere, iresolution
  logical :: atmosphere_setup_complete = .false.
@@ -72,6 +81,9 @@ module inject
  real, allocatable    :: r_boundary_equilibrium(:)
  integer, allocatable :: boundary_particle_ids(:)
  integer              :: n_boundary_particles
+ integer              :: active_boundary_spheres  ! Current number of active boundary spheres
+ logical              :: reinjection_needed = .false.  ! Flag to track if reinjection should happen
+ real                 :: last_phase = 0.0  ! Track last phase to detect maxima
 
  character(len=*), parameter :: label = 'inject_atmosphere'
 
@@ -86,11 +98,11 @@ subroutine set_default_options_inject(flag)
  integer, optional, intent(in) :: flag
 
  iboundary_spheres = 5
- n_shells_total = 50
+ n_shells_total = 30
  n_profile_points = 10000
  iwind_resolution = 30
- N_particles = 15000
- use_fibonacci = .false.
+ N_particles = 10000
+ use_fibonacci = .true.
  r_min_on_rstar = 0.9
  dtpulsation = huge(0.)
  atmos_mass_fraction = 0.005
@@ -101,6 +113,9 @@ subroutine set_default_options_inject(flag)
  pulsation_timestep = 0.02
  phi0 = -3.1415926536d0/2.0
  wss = 1.0
+ reinject_enabled = .true.
+ mass_loss_fraction = 0.1
+ mass_check_radius = -1.0
 
 end subroutine set_default_options_inject
 
@@ -139,6 +154,12 @@ subroutine init_inject(ierr)
  ! Calculate mass distribution
  Matmos = atmos_mass_fraction * Mtotal
  Msink  = Mtotal - Matmos
+ 
+ ! Note: Matmos_initial will be set after atmosphere setup
+ ! to account for the actual mass within the check radius
+
+ ! Initialize active boundary spheres
+ active_boundary_spheres = iboundary_spheres
 
  if (iwind == 2) then
     call calculate_period(Mtotal, Rstar, pulsation_period_days)
@@ -155,6 +176,9 @@ subroutine init_inject(ierr)
  print *, 'pulsation period: ', pulsation_period
  print *, 'piston velocity: ', piston_velocity
  print *, 'deltaR_osc: ', deltaR_osc
+ if (reinject_enabled) then
+    print *, 'Reinjection enabled: will reinject when mass drops by', mass_loss_fraction*100., '%'
+ endif
  print *, ''
  
  ! Setup sphere parameters
@@ -215,7 +239,7 @@ end subroutine init_inject
 !-----------------------------------------------------------------------
 !+
 !  Main routine: called at the start to setup atmosphere,
-!  then called each timestep to handle pulsation
+!  then called each timestep to handle pulsation and reinjection
 !+
 !-----------------------------------------------------------------------
 subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npart_old,npartoftype,dtinject)
@@ -240,6 +264,12 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
     print *, 'Setting up stellar atmosphere with ', n_shells_total, ' shells.'
     call setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
     atmosphere_setup_complete = .true.
+    
+    ! Initialize Matmos_initial based on actual mass within check radius
+    if (reinject_enabled) then
+       call initialize_atmospheric_mass(xyzh,npart,xyzmh_ptmass)
+    endif
+    
     print *, 'Stellar atmosphere setup complete.'
     return
  endif
@@ -249,11 +279,303 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
     call reconstruct_boundary_info(xyzh,npart,xyzmh_ptmass)
  endif
 
+ ! Check if reinjection is needed
+ if (reinject_enabled) then
+    call check_and_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
+    
+    ! If reinjection is needed, perform it immediately
+    if (reinjection_needed) then
+       call perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
+       
+       ! CRITICAL: Reset the flag after reinjection to prevent continuous reinjection
+       reinjection_needed = .false.
+       
+       ! Recalculate Matmos_initial after reinjection to include new particles
+       call initialize_atmospheric_mass(xyzh,npart,xyzmh_ptmass)
+    endif
+ endif
+
  ! Every subsequent call, move the boundary particles
  call apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
-!  call apply_pulsation_new(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
 
 end subroutine inject_particles
+
+!-----------------------------------------------------------------------
+!+
+!  Check atmospheric mass and trigger reinjection if needed
+!+
+!-----------------------------------------------------------------------
+subroutine check_and_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
+ use part, only:igas,iboundary,iphase,iamtype,maxvxyzu,massoftype
+ 
+ real,    intent(in)    :: time
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ integer, intent(inout) :: npart
+ integer, intent(inout) :: npartoftype(:)
+ 
+ real :: current_atmos_mass, mass_loss, r_check, r2_check
+ real :: x0(3), dx, dy, dz, r2
+ integer :: i, itype, n_counted
+ integer, save :: ncalls = 0
+ logical, save :: first_call = .true.
+ 
+ ncalls = ncalls + 1
+ 
+ ! Radius within which to check for atmospheric mass (in code units)
+ ! If mass_check_radius is negative, use r_max (outer edge of initial atmosphere)
+ if (mass_check_radius < 0.0) then
+    r_check = r_max
+ else
+    r_check = mass_check_radius
+ endif
+ r2_check = r_check**2
+ 
+ ! Get sink particle position
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ 
+ ! Calculate current atmospheric mass within r_check
+ current_atmos_mass = 0.0
+ n_counted = 0
+ do i = 1, npart
+    ! Get particle type
+    itype = iamtype(iphase(i))
+    
+    ! Only count gas and boundary particles (not accreted particles, etc.)
+    if (itype == igas .or. itype == iboundary) then
+       ! Calculate distance from sink
+       dx = xyzh(1,i) - x0(1)
+       dy = xyzh(2,i) - x0(2)
+       dz = xyzh(3,i) - x0(3)
+       r2 = dx*dx + dy*dy + dz*dz
+       
+       ! If within r_check, add to atmospheric mass
+       if (r2 < r2_check) then
+          current_atmos_mass = current_atmos_mass + massoftype(itype)
+          n_counted = n_counted + 1
+       endif
+    endif
+ enddo
+ 
+ ! Calculate mass loss
+ mass_loss = Matmos_initial - current_atmos_mass
+ 
+ ! Print diagnostic info on first call or every 100 calls
+ if (first_call .or. mod(ncalls, 100) == 0) then
+    print *, ''
+    print *, '========================================='
+    if (first_call) then
+       print *, 'REINJECTION MASS CHECK (first call)'
+    else
+       print *, 'REINJECTION MASS CHECK (call #', ncalls, ')'
+    endif
+    print *, 'Time: ', time
+    print *, 'Check radius: ', r_check
+    print *, 'Initial atmospheric mass: ', Matmos_initial
+    print *, 'Current atmospheric mass: ', current_atmos_mass
+    print *, 'Particles counted: ', n_counted
+    print *, 'Mass lost: ', mass_loss
+    print *, 'Mass loss fraction: ', mass_loss / Matmos_initial
+    print *, 'Trigger threshold: ', mass_loss_fraction
+    print *, 'Reinjection enabled: ', reinject_enabled
+    if (mass_loss >= mass_loss_fraction * Matmos_initial) then
+       print *, 'THRESHOLD MET - will trigger reinjection'
+    else
+       print *, 'THRESHOLD NOT MET - need to lose ', &
+                mass_loss_fraction * Matmos_initial - mass_loss, ' more mass'
+    endif
+    print *, '========================================='
+    print *, ''
+    first_call = .false.
+ endif
+ 
+ ! Check if we've lost enough mass to trigger reinjection
+ if (mass_loss >= mass_loss_fraction * Matmos_initial) then
+    if (.not. reinjection_needed) then
+       print *, ''
+       print *, '========================================='
+       print *, 'REINJECTION THRESHOLD MET'
+       print *, 'Time: ', time
+       print *, 'Check radius: ', r_check
+       print *, 'Initial atmospheric mass: ', Matmos_initial
+       print *, 'Current atmospheric mass: ', current_atmos_mass
+       print *, 'Particles counted: ', n_counted
+       print *, 'Mass lost: ', mass_loss
+       print *, 'Mass loss fraction: ', mass_loss / Matmos_initial
+       print *, '========================================='
+       print *, ''
+    endif
+    
+    ! Set flag - actual reinjection will happen at next pulsation maximum
+    reinjection_needed = .true.
+ endif
+ 
+end subroutine check_and_reinject
+
+!-----------------------------------------------------------------------
+!+
+!  Initialize Matmos_initial based on actual mass within check radius
+!+
+!-----------------------------------------------------------------------
+subroutine initialize_atmospheric_mass(xyzh,npart,xyzmh_ptmass)
+ use part, only:igas,iboundary,iphase,iamtype,massoftype
+ 
+ real,    intent(in) :: xyzh(:,:), xyzmh_ptmass(:,:)
+ integer, intent(in) :: npart
+ 
+ real :: r_check, r2_check, r2
+ real :: x0(3), dx, dy, dz
+ integer :: i, itype, n_counted
+ 
+ ! Determine check radius
+ if (mass_check_radius < 0.0) then
+    r_check = r_max
+ else
+    r_check = mass_check_radius
+ endif
+ r2_check = r_check**2
+ 
+ ! Get sink particle position
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ 
+ ! Calculate atmospheric mass within check radius
+ Matmos_initial = 0.0
+ n_counted = 0
+ do i = 1, npart
+    itype = iamtype(iphase(i))
+    
+    if (itype == igas .or. itype == iboundary) then
+       dx = xyzh(1,i) - x0(1)
+       dy = xyzh(2,i) - x0(2)
+       dz = xyzh(3,i) - x0(3)
+       r2 = dx*dx + dy*dy + dz*dz
+       
+       if (r2 < r2_check) then
+          Matmos_initial = Matmos_initial + massoftype(itype)
+          n_counted = n_counted + 1
+       endif
+    endif
+ enddo
+ 
+ print *, ''
+ print *, '========================================='
+ print *, 'REINJECTION: Initialized atmospheric mass'
+ print *, 'Check radius: ', r_check
+ print *, 'Particles within radius: ', n_counted, ' / ', npart
+ print *, 'Matmos_initial: ', Matmos_initial
+ print *, '========================================='
+ print *, ''
+ 
+end subroutine initialize_atmospheric_mass
+
+
+!-----------------------------------------------------------------------
+!+
+!  Perform reinjection: inject new gas particles to replenish lost mass
+!+
+!-----------------------------------------------------------------------
+subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
+ use part,        only:igas,iboundary,iphase,iamtype,set_particle_type
+ use injectutils, only:inject_geodesic_sphere, inject_fibonacci_sphere
+ use wind_pulsating, only:interp_stellar_profile
+ use physcon,     only:pi
+ 
+ real,    intent(in)    :: time
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ integer, intent(inout) :: npart
+ integer, intent(inout) :: npartoftype(:)
+ 
+ integer :: old_npart, i
+ real    :: r_inject, phase, r_dot, rho, u, T, P
+ real    :: x0(3), v0(3)
+ real    :: total_mass_before, total_mass_after, particle_mass_before, sink_mass_before
+ real    :: mass_injected
+ 
+ ! Store total mass before reinjection for verification
+ sink_mass_before = xyzmh_ptmass(4, wind_emitting_sink)
+ particle_mass_before = npartoftype(igas) * mass_of_particles + &
+                        npartoftype(iboundary) * mass_of_particles
+ total_mass_before = sink_mass_before + particle_mass_before
+ 
+ ! Get sink particle position
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ v0 = vxyz_ptmass(1:3,wind_emitting_sink)
+ 
+ ! Get current phase for pulsation
+ phase = omega_pulsation * time + phi0
+ r_dot = piston_velocity * cos(phase)
+ 
+ ! Inject new gas particles at the position of the original first gas layer
+ ! This is just outside the outermost boundary sphere
+ ! Calculate radius: r_min + sum of boundary shell spacings
+ r_inject = r_min
+ do i = 1, iboundary_spheres
+    r_inject = r_inject + delta_r_radial(i)
+ enddo
+ 
+ ! Add the pulsation offset to match current phase
+ r_inject = r_inject + deltaR_osc * sin(phase)
+ 
+ ! Get stellar properties at injection radius
+ call interp_stellar_profile(r_inject, rho, P, u, T)
+ 
+ ! Store npart before injection
+ old_npart = npart
+
+ print *, ''
+ print *, '========================================='
+ print *, 'REINJECTION: Adding new gas particles'
+ print *, 'Time: ', time
+ print *, 'Boundary spheres (unchanged): ', active_boundary_spheres
+ print *, 'Injecting new gas shell at radius: ', r_inject
+ print *, 'Phase: ', phase
+ print *, 'Pulsation offset: ', deltaR_osc * sin(phase)
+ print *, 'Outermost boundary equilibrium radius: ', r_boundary_equilibrium(n_boundary_particles)
+ print *, '========================================='
+ print *, ''
+ 
+ ! Inject new gas shell
+ if (use_fibonacci) then
+    call inject_fibonacci_sphere(n_shells_total + 1, npart + 1, particles_per_sphere, &
+                                r_inject, r_dot, u, rho, &
+                                npart, npartoftype, xyzh, vxyzu, igas, x0, v0)
+ else
+    call inject_geodesic_sphere(n_shells_total + 1, npart + 1, iresolution, &
+                                r_inject, r_dot, u, rho, &
+                                geodesic_R, geodesic_V, npart, npartoftype, &
+                                xyzh, vxyzu, igas, x0, v0)
+ endif
+ 
+ ! Calculate mass injected
+ mass_injected = (npart - old_npart) * mass_of_particles
+ 
+ ! Subtract this mass from the central sink particle to conserve mass
+ xyzmh_ptmass(4, wind_emitting_sink) = xyzmh_ptmass(4, wind_emitting_sink) - mass_injected
+ 
+ print *, 'Injected ', npart - old_npart, ' new gas particles'
+ print *, 'Mass injected: ', mass_injected
+ print *, 'Sink mass before: ', sink_mass_before
+ print *, 'Sink mass after: ', xyzmh_ptmass(4, wind_emitting_sink)
+ print *, 'Reinjection complete.'
+ 
+ ! Verify mass conservation
+ total_mass_after = xyzmh_ptmass(4, wind_emitting_sink) + &
+                    (npartoftype(igas) * mass_of_particles + &
+                     npartoftype(iboundary) * mass_of_particles)
+ 
+ print *, ''
+ print *, 'Mass conservation check:'
+ print *, 'Total mass before: ', total_mass_before
+ print *, 'Total mass after:  ', total_mass_after
+ print *, 'Mass difference:   ', abs(total_mass_after - total_mass_before)
+ if (abs(total_mass_after - total_mass_before) > 1.0e-10) then
+    print *, 'WARNING: Mass not conserved in reinjection!'
+ else
+    print *, 'Mass conserved successfully.'
+ endif
+ print *, ''
+ 
+end subroutine perform_reinjection
+
 
 !-----------------------------------------------------------------------
 !+
@@ -282,7 +604,6 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  GM = xyzmh_ptmass(4,wind_emitting_sink)
 
  ! Shell spacing
-!  dr = (r_max - r_min) / real(n_shells_total - 1)
  dr = delta_r_radial
  print *, 'Shell spacing dr:', dr
 
@@ -293,7 +614,6 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  do i = 1, n_shells_total
 
     ! Calculate radius for this shell
-   !  r = (r_min + (i-1)*dr)
     r = (r_previous + delta_r_radial(i))
     r_previous = r
 
@@ -301,21 +621,18 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
     is_boundary = (i <= iboundary_spheres)
     
     ! Get stellar properties at this radius from 1D stellar profile
-    ! This interpolates on the stellar_1D array calculated by set_star
     call interp_stellar_profile(r, rho, P, u, T)
 
-   !  v_radial = piston_velocity
-    v_radial = 0.0
+    v_radial = 0.0  ! Boundary shells have zero initial velocity
     
-    ! Set particle type - this tagging ensures forces are handled correctly
-    ! (see partinject.f90 where boundary particles get special treatment)
+    ! Set particle type
     if (is_boundary) then
        ipart_type = iboundary
     else
        ipart_type = igas
     endif
     
-    ! Inject this shell using geodesic sphere
+    ! Inject this shell
     first_particle = npart + 1
     if (use_fibonacci) then
         call inject_fibonacci_sphere(i, first_particle, particles_per_sphere, r, v_radial, u, rho, &
@@ -349,7 +666,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
           r_boundary_equilibrium(j) = sqrt( (xyzh(1,i)-x0(1))**2 + &
                                             (xyzh(2,i)-x0(2))**2 + &
                                             (xyzh(3,i)-x0(3))**2 ) &
-                                            - deltaR_osc * sin(phi0)  !*omega_pulsation 
+                                            - deltaR_osc * sin(phi0)
        endif
     enddo
  endif
@@ -415,6 +732,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  real    :: x_hat(3),r_dot
  real    :: x0(3),v0(3),GM
  real    :: x, y, z
+ 
  if (.not. allocated(boundary_particle_ids)) return
  if (n_boundary_particles == 0) return
 
@@ -425,9 +743,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
 
  phase = omega_pulsation * time + phi0
  
- ! Pulsation amplitude and velocity
- ! R(t) = R0 + U_amp (P/2pi) * sin(omega t)
- ! dR/dt = U_amp * cos(omega t)
+ ! Pulsation velocity
  r_dot = piston_velocity * cos(phase)
 
  ! Update each boundary particle
@@ -455,66 +771,13 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     xyzh(2,ipart) = r_new * x_hat(2) + x0(2)
     xyzh(3,ipart) = r_new * x_hat(3) + x0(3)
 
-    ! Update velocity (radial pulsation velocity)
-    ! Scale velocity by ratio to equilibrium radius
-    ! Add the orbital velocity of the sink
+    ! Update velocity (radial pulsation velocity + orbital velocity of sink)
     vxyzu(1,ipart) = r_dot * x_hat(1) + v0(1)
     vxyzu(2,ipart) = r_dot * x_hat(2) + v0(2)
     vxyzu(3,ipart) = r_dot * x_hat(3) + v0(3)
  enddo
 
 end subroutine apply_pulsation
-
-subroutine apply_pulsation_new(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
- use part,        only:igas,iboundary,iphase,iamtype
- use injectutils, only:inject_geodesic_sphere
- use wind_pulsating, only:interp_stellar_profile
- use physcon, only:pi
-
- real,    intent(in)    :: time
- real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
- integer, intent(inout) :: npart
- integer, intent(inout) :: npartoftype(:)
-
- integer :: i,ipart,ipart_type,first_particle
- real    :: r_eq,r_new,r_current,phase
- real    :: x_hat(3),r_dot,rho,u,T,P
- real    :: x0(3),v0(3),GM
- real    :: x, y, z
-
- if (.not. allocated(boundary_particle_ids)) return
- if (n_boundary_particles == 0) return
-
- ! Get sink particle position
- x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
- v0 = vxyz_ptmass(1:3,wind_emitting_sink)
- GM = xyzmh_ptmass(4,wind_emitting_sink)
-
- phase = omega_pulsation * time + phi0
- 
- ! Pulsation amplitude and velocity
- ! R(t) = R0 + U_amp (P/2pi) * sin(omega t)
- ! dR/dt = U_amp * cos(omega t)
- r_dot = piston_velocity * cos(phase)
-
- do i = 1, iboundary_spheres
-   first_particle = (i-1) * particles_per_sphere + 1
-
-   r_eq = r_boundary_equilibrium(first_particle)
-   r_new = r_eq + deltaR_osc * sin(phase)
-
-   call interp_stellar_profile(r_new, rho, P, u, T)   
-
-   ipart_type = iboundary
-
-   call inject_geodesic_sphere(i, first_particle, iresolution, r_new, r_dot, u, rho, &
-                                geodesic_R, geodesic_V, npart, npartoftype, &
-                                xyzh, vxyzu, ipart_type, x0, v0)
-
- enddo
-
-end subroutine apply_pulsation_new
-
 
 subroutine update_injected_par
  ! -- placeholder function
@@ -523,10 +786,8 @@ end subroutine update_injected_par
 !-----------------------------------------------------------------------
 !+
 !  Calculate pulsation period based on stellar mass and radius
-!  Using empirical relation from Ostlie & Cox (1986)
 !+
-!+-----------------------------------------------------------------------
-
+!-----------------------------------------------------------------------
 subroutine calculate_period(M, R, pulsation_period_days)
  real, intent(in)  :: M, R
  real              :: logP, logM, logR
@@ -569,7 +830,9 @@ subroutine write_options_inject(iunit)
  call write_inopt(pulsation_timestep,'pulsation_timestep','pulsation timestep as fraction of pulsation period',iunit)
  call write_inopt(phi0,'phi0','initial phase offset (radians)',iunit)
  call write_inopt(wss,'wss','fraction of radial to tangential distance between particles in initial setup',iunit)
-
+ call write_inopt(reinject_enabled,'reinject_enabled','enable dynamic reinjection of boundary spheres (logical)',iunit)
+ call write_inopt(mass_loss_fraction,'mass_loss_fraction','fraction of atmospheric mass loss before reinjection',iunit)
+ call write_inopt(mass_check_radius,'mass_check_radius','radius to check for mass loss (-1 = r_max)',iunit)
  
 end subroutine write_options_inject
 
@@ -585,7 +848,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 14
+ integer, parameter :: noptions = 17
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -658,6 +921,17 @@ case('pulsation_period')
     read(valstring,*,iostat=ierr) wss
     ngot = ngot + 1
     if (wss <= 0. .or. wss > 10.0) call fatal(label,'wss must be in range (0,10]')
+ case('reinject_enabled')
+    read(valstring,*,iostat=ierr) reinject_enabled
+    ngot = ngot + 1
+ case('mass_loss_fraction')
+    read(valstring,*,iostat=ierr) mass_loss_fraction
+    ngot = ngot + 1
+    if (mass_loss_fraction <= 0. .or. mass_loss_fraction >= 1.0) &
+       call fatal(label,'mass_loss_fraction must be in range (0,1)')
+ case('mass_check_radius')
+    read(valstring,*,iostat=ierr) mass_check_radius
+    ngot = ngot + 1
  case default
     imatch = .false.
  end select
