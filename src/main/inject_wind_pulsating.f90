@@ -41,17 +41,17 @@ module inject
 !--runtime settings for this module
 !
 ! Read from input file
- integer :: iboundary_spheres = 5
- integer :: n_shells_total = 30
- integer :: n_profile_points = 10000
- integer :: iwind_resolution = 30
- integer :: N_particles = 10000
- logical :: use_fibonacci = .true.
- real    :: r_min_on_rstar = 0.9
+ integer :: iboundary_spheres = 5 ! Number of boundary spheres 
+ integer :: n_shells_total = 30 ! Total number of atmospheric shells
+ integer :: n_profile_points = 10000 ! Number of points in stellar profile calculation
+ integer :: iwind_resolution = 30 ! Geodesic sphere resolution 
+ integer :: N_particles = 10000 ! Number of particles per sphere (if using Fibonacci lattice)
+ logical :: use_fibonacci = .true. ! Use Fibonacci lattice for sphere injection instead of geodesic sphere
+ real    :: r_min_on_rstar = 0.9 ! Inner radius (R_eq, not R_min) as fraction of Rstar
  real    :: dtpulsation = huge(0.)
  real    :: pulsation_period_days = 300.0  ! Pulsation period in days
  real    :: piston_velocity_km_s = 4.0     ! Piston velocity (in km/s)
- real    :: atmos_mass_fraction = 0.005  ! Atmosphere mass as fraction of total mass
+ real    :: atmos_mass_fraction = 5e-5  ! Atmosphere mass as fraction of total mass
  real    :: surface_pressure = 0.001  ! Surface pressure in cgs units
  integer :: iwind = 1  ! Wind type: 1=prescribed, 2=period from mass-radius relation
  real    :: pulsation_timestep = 0.02
@@ -93,7 +93,7 @@ subroutine set_default_options_inject(flag)
  use_fibonacci = .true.
  r_min_on_rstar = 0.9
  dtpulsation = huge(0.)
- atmos_mass_fraction = 0.005
+ atmos_mass_fraction = 5e-5
  surface_pressure = 0.001
  iwind = 1
  pulsation_period_days = 300.0
@@ -176,6 +176,7 @@ subroutine init_inject(ierr)
  r_min = r_min_on_rstar * Rstar
  current_radius = r_min
  
+ ! Calculate radial shell spacings using tangential distance on spheres
  do i = 1, n_shells_total
     if (use_fibonacci) then
        delta_r_tangential = current_radius * get_fibonacci_spacing(N_particles)
@@ -251,7 +252,6 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
 
  ! Every subsequent call, move the boundary particles
  call apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
-!  call apply_pulsation_new(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
 
 end subroutine inject_particles
 
@@ -282,7 +282,6 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  GM = xyzmh_ptmass(4,wind_emitting_sink)
 
  ! Shell spacing
-!  dr = (r_max - r_min) / real(n_shells_total - 1)
  dr = delta_r_radial
 !  print *, 'Shell spacing dr:', dr
 
@@ -292,8 +291,6 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  npart = 0
  do i = 1, n_shells_total
 
-    ! Calculate radius for this shell
-   !  r = (r_min + (i-1)*dr)
     r = (r_previous + delta_r_radial(i))
     r_previous = r
 
@@ -304,18 +301,15 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
     ! This interpolates on the stellar_1D array calculated by set_star
     call interp_stellar_profile(r, rho, P, u, T)
 
-   !  v_radial = piston_velocity
-    v_radial = 0.0
+    v_radial = piston_velocity * cos(phi0)  ! Initial radial velocity at t=0
     
     ! Set particle type - this tagging ensures forces are handled correctly
-    ! (see partinject.f90 where boundary particles get special treatment)
     if (is_boundary) then
        ipart_type = iboundary
     else
        ipart_type = igas
     endif
     
-    ! Inject this shell using geodesic sphere
     first_particle = npart + 1
     if (use_fibonacci) then
         call inject_fibonacci_sphere(i, first_particle, particles_per_sphere, r, v_radial, u, rho, &
@@ -349,7 +343,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
           r_boundary_equilibrium(j) = sqrt( (xyzh(1,i)-x0(1))**2 + &
                                             (xyzh(2,i)-x0(2))**2 + &
                                             (xyzh(3,i)-x0(3))**2 ) &
-                                            - deltaR_osc * sin(phi0)  !*omega_pulsation 
+                                            - deltaR_osc * sin(phi0)  
        endif
     enddo
  endif
@@ -404,6 +398,12 @@ subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
  endif
  
 end subroutine reconstruct_boundary_info
+
+!-----------------------------------------------------------------------
+!+
+!  Apply pulsation to boundary particles
+!+
+!-----------------------------------------------------------------------
 
 subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  use physcon, only:pi
@@ -463,6 +463,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     vxyzu(2,ipart) = r_dot * x_hat(2) + v0(2)
     vxyzu(3,ipart) = r_dot * x_hat(3) + v0(3)
     
+    ! Update thermodynamic variables based on new radius
     call interp_stellar_profile(r_new, rho, P, u, T)
     vxyzu(4,ipart) = u
     xyzh(4,ipart) = (mass_of_particles / rho)**(1./3.)
