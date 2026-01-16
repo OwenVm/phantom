@@ -29,6 +29,9 @@ module inject
 !   - wss                : *fraction of tangential and radial distance between particles in initial atmosphere setup*
 !   - reinject_enabled   : *enable dynamic reinjection (logical)*
 !   - mass_loss_fraction : *fraction of initial atmospheric mass loss before reinjection*
+!   - continuous_reinject: *enable continuous reinjection at constant rate (logical)*
+!   - reinject_period_days: *period between reinjections in days (for continuous mode)*
+!   - max_atmos_mass_frac: *maximum atmospheric mass fraction before stopping reinjection*
 !
 ! :Dependencies: dim, eos, icosahedron, infile_utils, injectutils, io,
 !   part, partinject, physcon, units, set_star
@@ -63,8 +66,11 @@ module inject
  
  ! Reinjection parameters
  logical :: reinject_enabled = .true.
- real    :: mass_loss_fraction = 0.1  ! Reinject when 10% of initial mass is lost
- real    :: mass_check_radius = -1.0  ! Radius to check for mass loss (negative = use r_max)
+ real    :: mass_loss_fraction = 0.1  ! Reinject when 10% of initial mass is lost (initial trigger)
+ real    :: mass_check_radius = 3.0  ! Radius to check for mass loss (negative = use r_max)
+ logical :: continuous_reinject = .false.  ! Enable continuous reinjection mode
+ real    :: reinject_period_days = 50.0  ! Period between reinjections (days)
+ real    :: max_atmos_mass_frac = 1.0  ! Stop reinjecting when atmosphere reaches this fraction of total mass
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
@@ -84,6 +90,11 @@ module inject
  integer              :: active_boundary_spheres  ! Current number of active boundary spheres
  logical              :: reinjection_needed = .false.  ! Flag to track if reinjection should happen
  real                 :: last_phase = 0.0  ! Track last phase to detect maxima
+ 
+ ! Continuous reinjection tracking
+ real    :: time_last_reinject = -huge(0.)  ! Time of last reinjection
+ real    :: reinject_period  ! Period in code units
+ logical :: continuous_mode_active = .false.  ! Has continuous mode been triggered?
 
  character(len=*), parameter :: label = 'inject_atmosphere'
 
@@ -115,7 +126,10 @@ subroutine set_default_options_inject(flag)
  wss = 1.0
  reinject_enabled = .true.
  mass_loss_fraction = 0.1
- mass_check_radius = -1.0
+ mass_check_radius = 3.0
+ continuous_reinject = .false.
+ reinject_period_days = 50.0
+ max_atmos_mass_frac = 1.0
 
 end subroutine set_default_options_inject
 
@@ -170,6 +184,11 @@ subroutine init_inject(ierr)
  omega_pulsation = 2.0*pi / pulsation_period
  piston_velocity = piston_velocity_km_s * (km / unit_velocity)
  deltaR_osc = pulsation_period * piston_velocity / (2.0*pi)
+ 
+ ! Setup continuous reinjection period
+ if (continuous_reinject) then
+    reinject_period = reinject_period_days * (days / utime)
+ endif
 
  print *, ''
  print *, 'Initializing pulsating atmosphere injection:'
@@ -178,6 +197,11 @@ subroutine init_inject(ierr)
  print *, 'deltaR_osc: ', deltaR_osc
  if (reinject_enabled) then
     print *, 'Reinjection enabled: will reinject when mass drops by', mass_loss_fraction*100., '%'
+    if (continuous_reinject) then
+       print *, 'Continuous reinjection mode enabled'
+       print *, '  Reinjection period (days): ', reinject_period_days
+       print *, '  Maximum atmos mass fraction: ', max_atmos_mass_fraction
+    endif
  endif
  print *, ''
  
@@ -281,17 +305,37 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
 
  ! Check if reinjection is needed
  if (reinject_enabled) then
-    call check_and_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
+    if (continuous_reinject .and. continuous_mode_active) then
+       ! Continuous reinjection mode: check time-based trigger
+       call check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
+    else
+       ! Standard mode or waiting for initial trigger
+       call check_and_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
+    endif
     
     ! If reinjection is needed, perform it immediately
     if (reinjection_needed) then
        call perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
+       
+       ! Update last reinjection time
+       time_last_reinject = time
        
        ! CRITICAL: Reset the flag after reinjection to prevent continuous reinjection
        reinjection_needed = .false.
        
        ! Recalculate Matmos_initial after reinjection to include new particles
        call initialize_atmospheric_mass(xyzh,npart,xyzmh_ptmass)
+       
+       ! If this was the first reinjection in continuous mode, activate continuous mode
+       if (continuous_reinject .and. .not. continuous_mode_active) then
+          continuous_mode_active = .true.
+          print *, ''
+          print *, '========================================='
+          print *, 'CONTINUOUS REINJECTION MODE ACTIVATED'
+          print *, 'Will now reinject every ', reinject_period_days, ' days'
+          print *, '========================================='
+          print *, ''
+       endif
     endif
  endif
 
@@ -299,6 +343,89 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
  call apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
 
 end subroutine inject_particles
+
+!-----------------------------------------------------------------------
+!+
+!  Check if it's time for continuous reinjection (time-based)
+!+
+!-----------------------------------------------------------------------
+subroutine check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
+ use part, only:igas,iboundary,iphase,iamtype,massoftype
+ 
+ real,    intent(in)    :: time
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ integer, intent(inout) :: npart
+ integer, intent(inout) :: npartoftype(:)
+ 
+ real :: current_atmos_mass, max_atmos_mass
+ real :: r_check, r2_check
+ real :: x0(3), dx, dy, dz, r2
+ integer :: i, itype, n_counted
+ 
+ ! Check if enough time has passed since last reinjection
+ if (time - time_last_reinject < reinject_period) then
+    return
+ endif
+ 
+ ! Calculate current atmospheric mass to check if we've exceeded the limit
+ if (mass_check_radius < 0.0) then
+    r_check = r_max
+ else
+    r_check = mass_check_radius
+ endif
+ r2_check = r_check**2
+ 
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ 
+ current_atmos_mass = 0.0
+ n_counted = 0
+ do i = 1, npart
+    itype = iamtype(iphase(i))
+    
+    if (itype == igas .or. itype == iboundary) then
+       dx = xyzh(1,i) - x0(1)
+       dy = xyzh(2,i) - x0(2)
+       dz = xyzh(3,i) - x0(3)
+       r2 = dx*dx + dy*dy + dz*dz
+       
+       if (r2 < r2_check) then
+          current_atmos_mass = current_atmos_mass + massoftype(itype)
+          n_counted = n_counted + 1
+       endif
+    endif
+ enddo
+ 
+ ! Check if we've reached the maximum atmospheric mass
+ max_atmos_mass = max_atmos_mass_fraction * Mtotal
+ 
+ if (current_atmos_mass >= max_atmos_mass) then
+    print *, ''
+    print *, '========================================='
+    print *, 'CONTINUOUS REINJECTION STOPPED'
+    print *, 'Maximum atmospheric mass reached'
+    print *, 'Time: ', time
+    print *, 'Current atmospheric mass: ', current_atmos_mass
+    print *, 'Maximum allowed: ', max_atmos_mass
+    print *, '========================================='
+    print *, ''
+    continuous_mode_active = .false.
+    return
+ endif
+ 
+ ! Time to reinject!
+ print *, ''
+ print *, '========================================='
+ print *, 'CONTINUOUS REINJECTION TRIGGERED (time-based)'
+ print *, 'Time: ', time
+ print *, 'Time since last reinject: ', time - time_last_reinject
+ print *, 'Current atmospheric mass: ', current_atmos_mass
+ print *, 'Maximum allowed: ', max_atmos_mass
+ print *, '========================================='
+ print *, ''
+ 
+ reinjection_needed = .true.
+ 
+end subroutine check_continuous_reinject
 
 !-----------------------------------------------------------------------
 !+
@@ -504,16 +631,23 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  phase = omega_pulsation * time + phi0
  r_dot = piston_velocity * cos(phase)
  
- ! Inject new gas particles at the position of the original first gas layer
- ! This is just outside the outermost boundary sphere
- ! Calculate radius: r_min + sum of boundary shell spacings
- r_inject = r_min
- do i = 1, iboundary_spheres
-    r_inject = r_inject + delta_r_radial(i)
- enddo
+ ! Inject new gas particles just outside the outermost boundary sphere
+ ! The outermost boundary sphere is at r_boundary_equilibrium(n_boundary_particles)
+ ! We need to add one shell spacing to place the gas layer outside
  
- ! Add the pulsation offset to match current phase
- r_inject = r_inject + deltaR_osc * sin(phase)
+ if (allocated(r_boundary_equilibrium) .and. n_boundary_particles > 0) then
+    ! Use the actual outermost boundary radius plus one shell spacing
+    r_inject = r_boundary_equilibrium(n_boundary_particles) + delta_r_radial(iboundary_spheres + 1)
+    ! Add the pulsation offset to match current phase
+    r_inject = r_inject + deltaR_osc * sin(phase)
+ else
+    ! Fallback: Calculate from r_min (shouldn't happen in normal operation)
+    r_inject = r_min
+    do i = 1, iboundary_spheres + 1
+       r_inject = r_inject + delta_r_radial(i)
+    enddo
+    r_inject = r_inject + deltaR_osc * sin(phase)
+ endif
  
  ! Get stellar properties at injection radius
  call interp_stellar_profile(r_inject, rho, P, u, T)
@@ -529,7 +663,9 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  print *, 'Injecting new gas shell at radius: ', r_inject
  print *, 'Phase: ', phase
  print *, 'Pulsation offset: ', deltaR_osc * sin(phase)
- print *, 'Outermost boundary equilibrium radius: ', r_boundary_equilibrium(n_boundary_particles)
+ if (allocated(r_boundary_equilibrium)) then
+    print *, 'Outermost boundary equilibrium radius: ', r_boundary_equilibrium(n_boundary_particles)
+ endif
  print *, '========================================='
  print *, ''
  
@@ -605,7 +741,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
 
  ! Shell spacing
  dr = delta_r_radial
- print *, 'Shell spacing dr:', dr
+!  print *, 'Shell spacing dr:', dr
 
  r_previous = r_min 
 
@@ -678,14 +814,19 @@ end subroutine setup_initial_atmosphere
 !  Reconstruct boundary particle information when resuming from dump
 !+
 !-----------------------------------------------------------------------
-subroutine reconstruct_boundary_info(xyzh,npart,xyzmh_ptmass)
+subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
  use part, only:iboundary,iphase,iamtype
+ use physcon, only:pi
+ real,    intent(in) :: time
  real,    intent(in) :: xyzh(:,:),xyzmh_ptmass(:,:)
  integer, intent(in) :: npart
  integer :: i,j
- real :: x0(3)
+ real :: x0(3), r_current, phase
  
  x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ 
+ ! Calculate current phase to remove pulsation displacement
+ phase = omega_pulsation * time + phi0
  
  ! Count boundary particles
  n_boundary_particles = 0
@@ -702,10 +843,13 @@ subroutine reconstruct_boundary_info(xyzh,npart,xyzmh_ptmass)
        if (iamtype(iphase(i)) == iboundary) then
           j = j + 1
           boundary_particle_ids(j) = i
-          ! Store current radius as equilibrium (assumes restart at a similar phase)
-          r_boundary_equilibrium(j) = sqrt((xyzh(1,i)-x0(1))**2 + &
-                                           (xyzh(2,i)-x0(2))**2 + &
-                                           (xyzh(3,i)-x0(3))**2)
+          ! Calculate current radius
+          r_current = sqrt((xyzh(1,i)-x0(1))**2 + &
+                          (xyzh(2,i)-x0(2))**2 + &
+                          (xyzh(3,i)-x0(3))**2)
+          ! Remove current pulsation displacement to get equilibrium radius
+          ! r_current = r_eq + deltaR_osc * sin(phase)
+          r_boundary_equilibrium(j) = r_current - deltaR_osc * sin(phase)
        endif
     enddo
     
@@ -833,6 +977,10 @@ subroutine write_options_inject(iunit)
  call write_inopt(reinject_enabled,'reinject_enabled','enable dynamic reinjection of boundary spheres (logical)',iunit)
  call write_inopt(mass_loss_fraction,'mass_loss_fraction','fraction of atmospheric mass loss before reinjection',iunit)
  call write_inopt(mass_check_radius,'mass_check_radius','radius to check for mass loss (-1 = r_max)',iunit)
+ call write_inopt(continuous_reinject,'continuous_reinject','enable continuous reinjection at constant rate (logical)',iunit)
+ call write_inopt(reinject_period_days,'reinject_period_days','period between reinjections in days (for continuous mode)',iunit)
+ call write_inopt(max_atmos_mass_fraction,'max_atmos_mass_fraction',&
+                                          'maximum atmospheric mass fraction before stopping reinjection',iunit)
  
 end subroutine write_options_inject
 
@@ -848,7 +996,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 17
+ integer, parameter :: noptions = 20
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -932,6 +1080,18 @@ case('pulsation_period')
  case('mass_check_radius')
     read(valstring,*,iostat=ierr) mass_check_radius
     ngot = ngot + 1
+ case('continuous_reinject')
+    read(valstring,*,iostat=ierr) continuous_reinject
+    ngot = ngot + 1
+ case('reinject_period_days')
+    read(valstring,*,iostat=ierr) reinject_period_days
+    ngot = ngot + 1
+    if (reinject_period_days <= 0.) call fatal(label,'reinject_period_days must be > 0')
+ case('max_atmos_mass_fraction')
+    read(valstring,*,iostat=ierr) max_atmos_mass_fraction
+    ngot = ngot + 1
+    if (max_atmos_mass_fraction <= 0. .or. max_atmos_mass_fraction >= 1.0) &
+       call fatal(label,'max_atmos_mass_fraction must be in range (0,1)')
  case default
     imatch = .false.
  end select
