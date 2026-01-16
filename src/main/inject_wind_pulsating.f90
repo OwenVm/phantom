@@ -301,7 +301,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
     ! This interpolates on the stellar_1D array calculated by set_star
     call interp_stellar_profile(r, rho, P, u, T)
 
-    v_radial = piston_velocity * cos(phi0)  ! Initial radial velocity at t=0
+    v_radial = 0  ! Initial radial velocity at t=0
     
     ! Set particle type - this tagging ensures forces are handled correctly
     if (is_boundary) then
