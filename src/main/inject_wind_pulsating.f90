@@ -42,11 +42,11 @@ module inject
 !
 ! Read from input file
  integer :: iboundary_spheres = 5
- integer :: n_shells_total = 50
+ integer :: n_shells_total = 30
  integer :: n_profile_points = 10000
  integer :: iwind_resolution = 30
- integer :: N_particles = 15000
- logical :: use_fibonacci = .false.
+ integer :: N_particles = 10000
+ logical :: use_fibonacci = .true.
  real    :: r_min_on_rstar = 0.9
  real    :: dtpulsation = huge(0.)
  real    :: pulsation_period_days = 300.0  ! Pulsation period in days
@@ -86,11 +86,11 @@ subroutine set_default_options_inject(flag)
  integer, optional, intent(in) :: flag
 
  iboundary_spheres = 5
- n_shells_total = 50
+ n_shells_total = 30
  n_profile_points = 10000
  iwind_resolution = 30
- N_particles = 15000
- use_fibonacci = .false.
+ N_particles = 10000
+ use_fibonacci = .true.
  r_min_on_rstar = 0.9
  dtpulsation = huge(0.)
  atmos_mass_fraction = 0.005
@@ -246,7 +246,7 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
 
  ! Reconstruct boundary particle info if resuming from dump
  if (atmosphere_setup_complete .and. .not. allocated(boundary_particle_ids)) then
-    call reconstruct_boundary_info(xyzh,npart,xyzmh_ptmass)
+    call reconstruct_boundary_info(time, xyzh,npart,xyzmh_ptmass)
  endif
 
  ! Every subsequent call, move the boundary particles
@@ -284,7 +284,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  ! Shell spacing
 !  dr = (r_max - r_min) / real(n_shells_total - 1)
  dr = delta_r_radial
- print *, 'Shell spacing dr:', dr
+!  print *, 'Shell spacing dr:', dr
 
  r_previous = r_min 
 
@@ -355,20 +355,24 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  endif
 
 end subroutine setup_initial_atmosphere
-
 !-----------------------------------------------------------------------
 !+
 !  Reconstruct boundary particle information when resuming from dump
 !+
 !-----------------------------------------------------------------------
-subroutine reconstruct_boundary_info(xyzh,npart,xyzmh_ptmass)
+subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
  use part, only:iboundary,iphase,iamtype
+ use physcon, only:pi
+ real,    intent(in) :: time
  real,    intent(in) :: xyzh(:,:),xyzmh_ptmass(:,:)
  integer, intent(in) :: npart
  integer :: i,j
- real :: x0(3)
+ real :: x0(3), r_current, phase
  
  x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ 
+ ! Calculate current phase to remove pulsation displacement
+ phase = omega_pulsation * time + phi0
  
  ! Count boundary particles
  n_boundary_particles = 0
@@ -385,10 +389,14 @@ subroutine reconstruct_boundary_info(xyzh,npart,xyzmh_ptmass)
        if (iamtype(iphase(i)) == iboundary) then
           j = j + 1
           boundary_particle_ids(j) = i
-          ! Store current radius as equilibrium (assumes restart at a similar phase)
-          r_boundary_equilibrium(j) = sqrt((xyzh(1,i)-x0(1))**2 + &
-                                           (xyzh(2,i)-x0(2))**2 + &
-                                           (xyzh(3,i)-x0(3))**2)
+          ! Calculate current radius
+          r_current = sqrt((xyzh(1,i)-x0(1))**2 + &
+                          (xyzh(2,i)-x0(2))**2 + &
+                          (xyzh(3,i)-x0(3))**2)
+          ! Remove current pulsation displacement to get equilibrium radius
+          ! r_current = r_eq + deltaR_osc * sin(phase)
+          ! Therefore: r_eq = r_current - deltaR_osc * sin(phase)
+          r_boundary_equilibrium(j) = r_current - deltaR_osc * sin(phase)
        endif
     enddo
     
