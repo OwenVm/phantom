@@ -395,7 +395,6 @@ subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
                           (xyzh(3,i)-x0(3))**2)
           ! Remove current pulsation displacement to get equilibrium radius
           ! r_current = r_eq + deltaR_osc * sin(phase)
-          ! Therefore: r_eq = r_current - deltaR_osc * sin(phase)
           r_boundary_equilibrium(j) = r_current - deltaR_osc * sin(phase)
        endif
     enddo
@@ -464,67 +463,13 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     vxyzu(2,ipart) = r_dot * x_hat(2) + v0(2)
     vxyzu(3,ipart) = r_dot * x_hat(3) + v0(3)
     
-    ! **NEW: Update thermodynamic properties at new radius**
     call interp_stellar_profile(r_new, rho, P, u, T)
     vxyzu(4,ipart) = u
-    
-    ! h = (m/rho)^(1/3) * constant
-    ! For boundary particles, recalculate h to maintain density
     xyzh(4,ipart) = (mass_of_particles / rho)**(1./3.)
+
  enddo
 
 end subroutine apply_pulsation
-
-subroutine apply_pulsation_new(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
- use part,        only:igas,iboundary,iphase,iamtype
- use injectutils, only:inject_geodesic_sphere
- use wind_pulsating, only:interp_stellar_profile
- use physcon, only:pi
-
- real,    intent(in)    :: time
- real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
- integer, intent(inout) :: npart
- integer, intent(inout) :: npartoftype(:)
-
- integer :: i,ipart,ipart_type,first_particle
- real    :: r_eq,r_new,r_current,phase
- real    :: x_hat(3),r_dot,rho,u,T,P
- real    :: x0(3),v0(3),GM
- real    :: x, y, z
-
- if (.not. allocated(boundary_particle_ids)) return
- if (n_boundary_particles == 0) return
-
- ! Get sink particle position
- x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
- v0 = vxyz_ptmass(1:3,wind_emitting_sink)
- GM = xyzmh_ptmass(4,wind_emitting_sink)
-
- phase = omega_pulsation * time + phi0
- 
- ! Pulsation amplitude and velocity
- ! R(t) = R0 + U_amp (P/2pi) * sin(omega t)
- ! dR/dt = U_amp * cos(omega t)
- r_dot = piston_velocity * cos(phase)
-
- do i = 1, iboundary_spheres
-   first_particle = (i-1) * particles_per_sphere + 1
-
-   r_eq = r_boundary_equilibrium(first_particle)
-   r_new = r_eq + deltaR_osc * sin(phase)
-
-   call interp_stellar_profile(r_new, rho, P, u, T)   
-
-   ipart_type = iboundary
-
-   call inject_geodesic_sphere(i, first_particle, iresolution, r_new, r_dot, u, rho, &
-                                geodesic_R, geodesic_V, npart, npartoftype, &
-                                xyzh, vxyzu, ipart_type, x0, v0)
-
- enddo
-
-end subroutine apply_pulsation_new
-
 
 subroutine update_injected_par
  ! -- placeholder function
