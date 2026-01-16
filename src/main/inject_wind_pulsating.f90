@@ -406,13 +406,9 @@ subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
  
 end subroutine reconstruct_boundary_info
 
-!-----------------------------------------------------------------------
-!+
-!  Apply radial pulsation to boundary particles
-!+
-!-----------------------------------------------------------------------
 subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  use physcon, only:pi
+ use wind_pulsating, only:interp_stellar_profile
 
  real,    intent(in)    :: time
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
@@ -423,6 +419,8 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  real    :: x_hat(3),r_dot
  real    :: x0(3),v0(3),GM
  real    :: x, y, z
+ real    :: rho,u,T,P  ! Add thermodynamic variables
+ 
  if (.not. allocated(boundary_particle_ids)) return
  if (n_boundary_particles == 0) return
 
@@ -434,8 +432,6 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  phase = omega_pulsation * time + phi0
  
  ! Pulsation amplitude and velocity
- ! R(t) = R0 + U_amp (P/2pi) * sin(omega t)
- ! dR/dt = U_amp * cos(omega t)
  r_dot = piston_velocity * cos(phase)
 
  ! Update each boundary particle
@@ -464,11 +460,17 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     xyzh(3,ipart) = r_new * x_hat(3) + x0(3)
 
     ! Update velocity (radial pulsation velocity)
-    ! Scale velocity by ratio to equilibrium radius
-    ! Add the orbital velocity of the sink
     vxyzu(1,ipart) = r_dot * x_hat(1) + v0(1)
     vxyzu(2,ipart) = r_dot * x_hat(2) + v0(2)
     vxyzu(3,ipart) = r_dot * x_hat(3) + v0(3)
+    
+    ! **NEW: Update thermodynamic properties at new radius**
+    call interp_stellar_profile(r_new, rho, P, u, T)
+    vxyzu(4,ipart) = u
+    
+    ! h = (m/rho)^(1/3) * constant
+    ! For boundary particles, recalculate h to maintain density
+    xyzh(4,ipart) = (mass_of_particles / rho)**(1./3.)
  enddo
 
 end subroutine apply_pulsation
