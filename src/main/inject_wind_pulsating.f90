@@ -63,10 +63,12 @@ module inject
  real    :: pulsation_timestep = 0.02
  real    :: phi0 = -3.1415926536d0/2.0  ! Initial phase offset (-pi/2 for starting at minimal radius)
  real    :: wss = 1.0 ! Fraction of the tangential and radial distance between particles in the initial setup
- 
+
  ! Reinjection parameters
  logical :: reinject_enabled = .true.
  real    :: reinject_period_days = 150.0  ! Period between reinjections (days)
+ real    :: injection_fraction = 0.1 ! Number of particles on injection sphere / total particles per sphere
+
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
@@ -90,6 +92,7 @@ module inject
  real    :: time_last_reinject = 0.0  ! Time of last reinjection
  real    :: reinject_period  ! Period in code units
  logical :: continuous_mode_active = .true.  ! Has continuous mode been triggered?
+ integer :: n_reinjections = 0  ! Number of reinjections performed so far
 
  character(len=*), parameter :: label = 'inject_atmosphere'
 
@@ -120,7 +123,8 @@ subroutine set_default_options_inject(flag)
  phi0 = -3.1415926536d0/2.0
  wss = 1.0
  reinject_enabled = .true.
- reinject_period_days = 50.0
+ reinject_period_days = 150.0
+ injection_fraction = 0.1
 
 end subroutine set_default_options_inject
 
@@ -481,6 +485,7 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real    :: x0(3), v0(3)
  real    :: total_mass_before, particle_mass_before, sink_mass_before
  real    :: mass_injected
+ integer :: particles_per_injection, shell_number
  
  sink_mass_before = xyzmh_ptmass(4, wind_emitting_sink)
  particle_mass_before = npartoftype(igas) * mass_of_particles + npartoftype(iboundary) * mass_of_particles
@@ -519,14 +524,20 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  
  ! Store npart before injection
  old_npart = npart
+
+ ! Calculate number of particles to inject using fraction of particles_per_sphere
+ particles_per_injection = nint( real(particles_per_sphere) * injection_fraction )
+
+ ! Increase shell number for rotation purposes
+ n_reinjections = n_reinjections + 1
  
  ! Inject new gas shell
  if (use_fibonacci) then
-    call inject_fibonacci_sphere(n_shells_total + 1, npart + 1, particles_per_sphere, &
+    call inject_fibonacci_sphere(n_shells_total + n_reinjections, npart + 1, particles_per_injection, &
                                 r_inject, r_dot, u, rho, &
                                 npart, npartoftype, xyzh, vxyzu, igas, x0, v0)
  else
-    call inject_geodesic_sphere(n_shells_total + 1, npart + 1, iresolution, &
+    call inject_geodesic_sphere(n_shells_total + n_reinjections, npart + 1, iresolution - 1, &
                                 r_inject, r_dot, u, rho, &
                                 geodesic_R, geodesic_V, npart, npartoftype, &
                                 xyzh, vxyzu, igas, x0, v0)
@@ -813,7 +824,8 @@ subroutine write_options_inject(iunit)
  call write_inopt(wss,'wss','fraction of radial to tangential distance between particles in initial setup',iunit)
  call write_inopt(reinject_enabled,'reinject_enabled','enable dynamic reinjection of boundary spheres (logical)',iunit)
  call write_inopt(reinject_period_days,'reinject_period_days','period between reinjections in days (for continuous mode)',iunit)
- 
+ call write_inopt(injection_fraction,'injection_fraction','fraction of particles per sphere to inject during reinjection',iunit) 
+
 end subroutine write_options_inject
 
 !-----------------------------------------------------------------------
@@ -828,7 +840,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 17
+ integer, parameter :: noptions = 18
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -908,6 +920,10 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) reinject_period_days
     ngot = ngot + 1
     if (reinject_period_days <= 0.) call fatal(label,'reinject_period_days must be > 0')
+ case('injection_fraction')
+   read(valstring,*,iostat=ierr) injection_fraction
+   ngot = ngot + 1
+   if (injection_fraction <= 0. .or. injection_fraction > 1.0) call fatal(label,'injection_fraction must be in range (0,1]')
  case default
     imatch = .false.
  end select
