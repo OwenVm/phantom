@@ -66,7 +66,7 @@ module inject
 
  ! Reinjection parameters
  logical :: reinject_enabled = .true.
- real    :: reinject_period_days = 150.0  ! Period between reinjections (days)
+ real    :: reinject_period_days = 10.0  ! Period between reinjections (days)
  real    :: injection_fraction = 0.1 ! Number of particles on injection sphere / total particles per sphere
 
 
@@ -123,7 +123,7 @@ subroutine set_default_options_inject(flag)
  phi0 = -3.1415926536d0/2.0
  wss = 1.0
  reinject_enabled = .true.
- reinject_period_days = 150.0
+ reinject_period_days = 10.0
  injection_fraction = 0.1
 
 end subroutine set_default_options_inject
@@ -279,11 +279,6 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
     call setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
     atmosphere_setup_complete = .true.
     
-    ! Initialize Matmos_initial based on actual mass within check radius
-    if (reinject_enabled) then
-       call initialize_atmospheric_mass(xyzh,npart,xyzmh_ptmass)
-    endif
-    
     print *, 'Stellar atmosphere setup complete.'
     return
  endif
@@ -308,9 +303,6 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
        
        ! Reset the flag after reinjection to prevent continuous reinjection
        reinjection_needed = .false.
-       
-       ! Recalculate Matmos_initial after reinjection to include new particles
-       call initialize_atmospheric_mass(xyzh,npart,xyzmh_ptmass)
        
     endif
  endif
@@ -356,113 +348,7 @@ subroutine check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,np
  reinjection_needed = .true.
  
 end subroutine check_continuous_reinject
-
-!-----------------------------------------------------------------------
-!+
-!  Initialize Matmos_initial based on actual mass within check radius
-!+
-!-----------------------------------------------------------------------
-subroutine initialize_atmospheric_mass(xyzh,npart,xyzmh_ptmass)
- use part, only:igas,iboundary,iphase,iamtype,massoftype
  
- real,    intent(in) :: xyzh(:,:), xyzmh_ptmass(:,:)
- integer, intent(in) :: npart
- 
- real :: r_check, r2_check, r2
- real :: x0(3), dx, dy, dz
- integer :: i, itype, n_counted
- 
- r_check = r_max
- r2_check = r_check**2
- 
- ! Get sink particle position
- x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
- 
- ! Calculate atmospheric mass within check radius
- Matmos_initial = 0.0
- n_counted = 0
- do i = 1, npart
-    itype = iamtype(iphase(i))
-    
-    if (itype == igas .or. itype == iboundary) then
-       dx = xyzh(1,i) - x0(1)
-       dy = xyzh(2,i) - x0(2)
-       dz = xyzh(3,i) - x0(3)
-       r2 = dx*dx + dy*dy + dz*dz
-       
-       if (r2 < r2_check) then
-          Matmos_initial = Matmos_initial + massoftype(itype)
-          n_counted = n_counted + 1
-       endif
-    endif
- enddo
- 
-!  print *, ''
-!  print *, '========================================='
-!  print *, 'REINJECTION: Initialized atmospheric mass'
-!  print *, 'Check radius: ', r_check
-!  print *, 'Particles within radius: ', n_counted, ' / ', npart
-!  print *, 'Matmos_initial: ', Matmos_initial
-!  print *, '========================================='
-!  print *, ''
- 
-end subroutine initialize_atmospheric_mass
-
-!-----------------------------------------------------------------------
-!+
-!  Get properties from the single innermost particle (closest to star)
-!+
-!-----------------------------------------------------------------------
-subroutine get_innermost_particle_properties(xyzh, vxyzu, npart, xyzmh_ptmass, &
-                                             rho_out, u_out, h_out)
- use part, only:igas,iboundary,iphase,iamtype,massoftype
- 
- real,    intent(in)  :: xyzh(:,:), vxyzu(:,:), xyzmh_ptmass(:,:)
- integer, intent(in)  :: npart
- real,    intent(out) :: rho_out, u_out, h_out
- 
- real    :: x0(3), dx, dy, dz, r_part, r_min_found
- integer :: i, itype, i_innermost
- 
- x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
- 
- ! Find the particle with minimum radius (innermost, closest to star)
- r_min_found = huge(0.)
- i_innermost = 0
- 
- do i = 1, npart
-    itype = iamtype(iphase(i))
-    if (itype == igas .or. itype == iboundary) then
-       dx = xyzh(1,i) - x0(1)
-       dy = xyzh(2,i) - x0(2)
-       dz = xyzh(3,i) - x0(3)
-       r_part = sqrt(dx*dx + dy*dy + dz*dz)
-       if (r_part < r_min_found) then
-          r_min_found = r_part
-          i_innermost = i
-       endif
-    endif
- enddo
- 
- ! Extract properties from the innermost particle
- if (i_innermost > 0) then
-    itype = iamtype(iphase(i_innermost))
-    rho_out = massoftype(itype) / (xyzh(4,i_innermost)**3)
-    u_out = vxyzu(4,i_innermost)
-    h_out = xyzh(4,i_innermost)
-    
-    print *, '  Found innermost particle at radius: ', r_min_found
-    print *, '  Particle ID: ', i_innermost
- else
-    ! Should never happen, but provide fallback
-    print *, 'WARNING: No innermost particle found!'
-    rho_out = 1.0d-10
-    u_out = 1.0
-    h_out = 0.01
- endif
- 
-end subroutine get_innermost_particle_properties
-
 
 !-----------------------------------------------------------------------
 !+
@@ -518,9 +404,10 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  endif
  
  ! Get stellar properties at injection radius
-!  call interp_stellar_profile(r_inject, rho, P, u, T)
+ call interp_stellar_profile(r_inject, rho, P, u, T)
  
- call get_innermost_particle_properties(xyzh, vxyzu, npart, xyzmh_ptmass, rho, u, h_inner)
+!  call get_innermost_particle_properties(xyzh, vxyzu, npart, xyzmh_ptmass, rho, u, h_inner)
+ 
  
  ! Store npart before injection
  old_npart = npart
@@ -549,7 +436,14 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  ! Subtract this mass from the central sink particle to conserve mass
  xyzmh_ptmass(4, wind_emitting_sink) = xyzmh_ptmass(4, wind_emitting_sink) - mass_injected
  
+ print *, ''
+ print *, 'Reinjection performed:'
+ print *, '  Number of particles injected: ', (npart - old_npart)
+ print *, '  Injection radius: ', r_inject
+ print *, '  New total particles: ', npart
+ print *, '  Relative to original particle count: ', real(npart)/real(particles_per_sphere * n_shells_total)
  print *, 'Reinjection complete.'
+ print *, ''
  
 end subroutine perform_reinjection
 
