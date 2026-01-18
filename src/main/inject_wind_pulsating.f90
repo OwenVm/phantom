@@ -61,6 +61,7 @@ module inject
  real    :: pulsation_timestep = 0.02
  real    :: phi0 = -3.1415926536d0/2.0  ! Initial phase offset (-pi/2 for starting at minimal radius)
  real    :: wss = 1.0 ! Fraction of the tangential and radial distance between particles in the initial setup
+ logical :: var_boundary = .false.
 
  ! Reinjection parameters
  logical :: reinject_enabled = .true.
@@ -118,6 +119,7 @@ subroutine set_default_options_inject(flag)
  pulsation_timestep = 0.02
  phi0 = -3.1415926536d0/2.0
  wss = 1.0
+ var_boundary = .false.
  reinject_enabled = .true.
  reinject_period_days = 10.0
  injection_fraction = 0.1
@@ -641,9 +643,11 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     vxyzu(3,ipart) = r_dot * x_hat(3) + v0(3)
     
     ! Update thermodynamic variables based on new radius
-    call interp_stellar_profile(r_new, rho, P, u, T)
-    vxyzu(4,ipart) = u
-    xyzh(4,ipart) = (mass_of_particles / rho)**(1./3.)
+    if (var_boundary) then
+       call interp_stellar_profile(r_new, rho, P, u, T)
+       vxyzu(4,ipart) = u
+       xyzh(4,ipart) = (mass_of_particles / rho)**(1./3.)
+    endif
 
  enddo
 
@@ -700,6 +704,7 @@ subroutine write_options_inject(iunit)
  call write_inopt(pulsation_timestep,'pulsation_timestep','pulsation timestep as fraction of pulsation period',iunit)
  call write_inopt(phi0,'phi0','initial phase offset (radians)',iunit)
  call write_inopt(wss,'wss','fraction of radial to tangential distance between particles in initial setup',iunit)
+ call write_inopt(var_boundary,'var_boundary','allow boundary particles to vary thermodynamic properties (logical)',iunit)
  call write_inopt(reinject_enabled,'reinject_enabled','enable dynamic reinjection of boundary spheres (logical)',iunit)
  call write_inopt(reinject_period_days,'reinject_period_days','period between reinjections in days (for continuous mode)',iunit)
  call write_inopt(injection_fraction,'injection_fraction','fraction of particles per sphere to inject during reinjection',iunit) 
@@ -718,7 +723,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 18
+ integer, parameter :: noptions = 19
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -791,6 +796,9 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) wss
     ngot = ngot + 1
     if (wss <= 0. .or. wss > 10.0) call fatal(label,'wss must be in range (0,10]')
+ case('var_boundary')
+    read(valstring,*,iostat=ierr) var_boundary
+    ngot = ngot + 1  
  case('reinject_enabled')
     read(valstring,*,iostat=ierr) reinject_enabled
     ngot = ngot + 1
