@@ -282,6 +282,7 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
  ! Reconstruct boundary particle info if resuming from dump
  if (atmosphere_setup_complete .and. .not. allocated(boundary_particle_ids)) then
     call reconstruct_boundary_info(time, xyzh,npart,xyzmh_ptmass)
+    time_last_reinject = time - mod(time, reinject_period)
  endif
 
  ! Check if reinjection is needed
