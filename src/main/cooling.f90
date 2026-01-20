@@ -140,14 +140,19 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  use cooling_koyamainutsuka, only:cooling_KoyamaInutsuka_explicit,&
                                   cooling_KoyamaInutsuka_implicit
  use cooling_radapprox,      only:radcool_update_du
+ use units,                  only:udist
+ use part,                   only:xyzmh_ptmass,nptmass
+ use physcon,                only:au
 
- real(kind=4), intent(in)   :: divv               ! in code units
- real, intent(in)           :: xi,yi,zi,ui,rho,dt                      ! in code units
- real, intent(in), optional :: Tdust_in,mu_in,gamma_in,K2_in,kappa_in   ! in cgs
+ real(kind=4), intent(in)   :: divv
+ real, intent(in)           :: xi,yi,zi,ui,rho,dt
+ real, intent(in), optional :: Tdust_in,mu_in,gamma_in,K2_in,kappa_in
  real, intent(in), optional :: abund_in(nabn),duhydro
  integer,intent(in),optional:: ipart
- real, intent(out)          :: dudt                                ! in code units
+ real, intent(out)          :: dudt
  real                       :: mui,gammai,Tgas,Tdust,K2,kappa
+ real                       :: r, r_min_cool  
+ real                       :: dx,dy,dz
  real :: abundi(nabn)
 
  dudt   = 0.
@@ -155,6 +160,23 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  gammai = gamma
  kappa  = 0.
  K2     = 0.
+ 
+ ! Calculate distance from origin (primary star at origin)
+ if (nptmass > 0) then
+    dx = xi - xyzmh_ptmass(1,1)
+    dy = yi - xyzmh_ptmass(2,1)
+    dz = zi - xyzmh_ptmass(3,1)
+    r = sqrt(dx**2 + dy**2 + dz**2)
+ else
+    ! Fallback: if no sink particles, use distance from origin
+    r = sqrt(xi**2 + yi**2 + zi**2)
+ endif
+ 
+ ! Set minimum cooling radius (e.g., 1.5 stellar radii)
+ ! You can make this a module variable and set it from your inject module
+ r_min_cool = 3 * au/ udist 
+ 
+ 
  if (present(gamma_in)) gammai = gamma_in
  if (present(mu_in))    mui        = mu_in
  if (present(K2_in))    K2        = K2_in
@@ -185,7 +207,8 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  case (9)
     call radcool_update_du(ipart,xi,yi,zi,rho,ui,duhydro,Tfloor)
  case default
-    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa)
+    ! Pass r and r_min_cool to the cooling solver
+    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,r,r_min_cool)
  end select
 
 end subroutine energ_cooling

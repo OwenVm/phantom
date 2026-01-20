@@ -46,7 +46,7 @@ module inject
 !
 ! Read from input file
  integer :: iboundary_spheres = 5 ! Number of boundary spheres 
- integer :: n_shells_total = 30 ! Total number of atmospheric shells
+ integer :: n_shells_total = 5 ! Total number of atmospheric shells
  integer :: n_profile_points = 10000 ! Number of points in stellar profile calculation
  integer :: iwind_resolution = 30 ! Geodesic sphere resolution 
  integer :: N_particles = 10000 ! Number of particles per sphere (if using Fibonacci lattice)
@@ -67,7 +67,6 @@ module inject
  logical :: reinject_enabled = .true.
  real    :: reinject_period_days = 10.0  ! Period between reinjections (days)
  real    :: injection_fraction = 0.1 ! Number of particles on injection sphere / total particles per sphere
-
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
@@ -104,7 +103,7 @@ subroutine set_default_options_inject(flag)
  integer, optional, intent(in) :: flag
 
  iboundary_spheres = 5
- n_shells_total = 30
+ n_shells_total = 5
  n_profile_points = 10000
  iwind_resolution = 30
  N_particles = 10000
@@ -123,7 +122,6 @@ subroutine set_default_options_inject(flag)
  reinject_enabled = .true.
  reinject_period_days = 10.0
  injection_fraction = 0.1
-
 end subroutine set_default_options_inject
 
 !-----------------------------------------------------------------------
@@ -353,7 +351,7 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  use part,        only:igas,iboundary,iamtype,set_particle_type
  use injectutils, only:inject_geodesic_sphere, inject_fibonacci_sphere
  use wind_pulsating, only:interp_stellar_profile
- use physcon,     only:pi
+ use physcon,     only:pi,mass_proton_cgs,kboltz
  
  real,    intent(in)    :: time
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
@@ -445,7 +443,8 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  use part,        only:igas,iboundary,iphase,iamtype
  use injectutils, only:inject_geodesic_sphere, inject_fibonacci_sphere
  use wind_pulsating, only:interp_stellar_profile
- use physcon,     only:pi,km, au
+ use physcon,     only:pi,km,au,mass_proton_cgs,kboltz
+ use eos,           only:gmw,gamma
 
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
  real,    intent(in)    :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
@@ -453,7 +452,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  integer, intent(inout) :: npartoftype(:)
 
  integer :: i,j,first_particle,ipart_type,nboundary
- real    :: r,dr(n_shells_total),rho,u,T,P,x0(3),v0(3),GM,v_radial, r_previous
+ real    :: r,dr(n_shells_total),rho,u,T,P,x0(3),v0(3),GM,v_radial,r_previous
  logical :: is_boundary
 
  ! Get sink particle position
@@ -707,8 +706,7 @@ subroutine write_options_inject(iunit)
  call write_inopt(var_boundary,'var_boundary','allow boundary particles to vary thermodynamic properties (logical)',iunit)
  call write_inopt(reinject_enabled,'reinject_enabled','enable dynamic reinjection of boundary spheres (logical)',iunit)
  call write_inopt(reinject_period_days,'reinject_period_days','period between reinjections in days (for continuous mode)',iunit)
- call write_inopt(injection_fraction,'injection_fraction','fraction of particles per sphere to inject during reinjection',iunit) 
-
+ call write_inopt(injection_fraction,'injection_fraction','fraction of particles per sphere to inject during reinjection',iunit)
 end subroutine write_options_inject
 
 !-----------------------------------------------------------------------

@@ -122,8 +122,8 @@ subroutine stellar_step(state, r_new)
  state%rho = C_rho / state%r**rho_power
 
  ! Calculate thermodynamic quantities
- state%u = state%P / (state%rho * (star_gamma - 1.))
- state%T = star_mu * mass_proton_cgs / kboltz * (star_gamma - 1.) * state%u
+ state%u = state%P / (state%rho * (Star_gamma - 1.))
+ state%T = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
 
  state%nsteps = state%nsteps + 1
 
