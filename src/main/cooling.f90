@@ -23,9 +23,10 @@ module cooling
 ! :Owner: Lionel Siess
 !
 ! :Runtime parameters:
-!   - C_cool   : *factor controlling cooling timestep*
-!   - Tfloor   : *temperature floor (K); on if > 0*
-!   - icooling : *cooling function (0=off, 1=library (step), 2=library (force),*
+!   - C_cool     : *factor controlling cooling timestep*
+!   - Tfloor     : *temperature floor (K); on if > 0*
+!   - r_min_cool : *minimum cooling radius (AU); cooling off if r < r_min_cool*
+!   - icooling   : *cooling function (0=off, 1=library (step), 2=library (force),*
 !
 ! :Dependencies: chem, cooling_gammie, cooling_gammie_PL, cooling_ism,
 !   cooling_koyamainutsuka, cooling_molecular, cooling_radapprox,
@@ -48,6 +49,7 @@ module cooling
  !--Minimum temperature (failsafe to prevent u < 0); optional for ALL cooling options
  real,    public :: Tfloor = 0.                     ! [K]; set in .in file.  On if Tfloor > 0.
  real,    public :: ufloor = 0.                     ! [code units]; set in init_cooling
+ real,    public :: r_min_cool = 3.0                ! [AU]; minimum cooling radius (cooling off if r < r_min_cool)
  public :: T0_value,lambda_shock_cgs ! expose to public
 
  private
@@ -144,15 +146,16 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  use part,                   only:xyzmh_ptmass,nptmass
  use physcon,                only:au
 
- real(kind=4), intent(in)   :: divv
- real, intent(in)           :: xi,yi,zi,ui,rho,dt
- real, intent(in), optional :: Tdust_in,mu_in,gamma_in,K2_in,kappa_in
+ real(kind=4), intent(in)   :: divv               ! in code units
+ real, intent(in)           :: xi,yi,zi,ui,rho,dt                      ! in code units
+ real, intent(in), optional :: Tdust_in,mu_in,gamma_in,K2_in,kappa_in   ! in cgs
  real, intent(in), optional :: abund_in(nabn),duhydro
  integer,intent(in),optional:: ipart
- real, intent(out)          :: dudt
+ real, intent(out)          :: dudt                                ! in code units
  real                       :: mui,gammai,Tgas,Tdust,K2,kappa
- real                       :: r, r_min_cool  
+ real                       :: r, r_min_cool_code
  real                       :: dx,dy,dz
+ integer, parameter         :: iprimary = 1  ! Index of primary star in ptmass array
  real :: abundi(nabn)
 
  dudt   = 0.
@@ -161,21 +164,19 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  kappa  = 0.
  K2     = 0.
  
- ! Calculate distance from origin (primary star at origin)
+ ! Calculate distance from PRIMARY STAR (not origin)
  if (nptmass > 0) then
-    dx = xi - xyzmh_ptmass(1,1)
-    dy = yi - xyzmh_ptmass(2,1)
-    dz = zi - xyzmh_ptmass(3,1)
+    dx = xi - xyzmh_ptmass(1,iprimary)
+    dy = yi - xyzmh_ptmass(2,iprimary)
+    dz = zi - xyzmh_ptmass(3,iprimary)
     r = sqrt(dx**2 + dy**2 + dz**2)
  else
     ! Fallback: if no sink particles, use distance from origin
     r = sqrt(xi**2 + yi**2 + zi**2)
  endif
  
- ! Set minimum cooling radius (e.g., 1.5 stellar radii)
- ! You can make this a module variable and set it from your inject module
- r_min_cool = 3 * au/ udist 
- 
+ ! Convert r_min_cool from AU to code units
+ r_min_cool_code = r_min_cool * au / udist
  
  if (present(gamma_in)) gammai = gamma_in
  if (present(mu_in))    mui        = mu_in
@@ -207,8 +208,8 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  case (9)
     call radcool_update_du(ipart,xi,yi,zi,rho,ui,duhydro,Tfloor)
  case default
-    ! Pass r and r_min_cool to the cooling solver
-    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,r,r_min_cool)
+    ! Pass r and r_min_cool_code to the cooling solver
+    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,r,r_min_cool_code)
  end select
 
 end subroutine energ_cooling
@@ -246,7 +247,10 @@ subroutine write_options_cooling(iunit)
  case default
     call write_options_cooling_solver(iunit)
  end select
- if (icooling > 0) call write_inopt(Tfloor,'Tfloor','temperature floor (K); on if > 0',iunit)
+ if (icooling > 0) then
+    call write_inopt(Tfloor,'Tfloor','temperature floor (K); on if > 0',iunit)
+    call write_inopt(r_min_cool,'r_min_cool','minimum cooling radius (AU); cooling off if r < r_min_cool',iunit)
+ endif
 
 end subroutine write_options_cooling
 
@@ -287,6 +291,9 @@ subroutine read_options_cooling(name,valstring,imatch,igotall,ierr)
  case('Tfloor')
     ! not compulsory to read in
     read(valstring,*,iostat=ierr) Tfloor
+ case('r_min_cool')
+    ! not compulsory to read in
+    read(valstring,*,iostat=ierr) r_min_cool
  case default
     imatch = .false.
     select case(icooling)

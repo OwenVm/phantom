@@ -46,7 +46,7 @@ module inject
 !
 ! Read from input file
  integer :: iboundary_spheres = 5 ! Number of boundary spheres 
- integer :: n_shells_total = 5 ! Total number of atmospheric shells
+ integer :: n_shells_total = 25 ! Total number of atmospheric shells
  integer :: n_profile_points = 10000 ! Number of points in stellar profile calculation
  integer :: iwind_resolution = 30 ! Geodesic sphere resolution 
  integer :: N_particles = 10000 ! Number of particles per sphere (if using Fibonacci lattice)
@@ -103,7 +103,7 @@ subroutine set_default_options_inject(flag)
  integer, optional, intent(in) :: flag
 
  iboundary_spheres = 5
- n_shells_total = 5
+ n_shells_total = 25
  n_profile_points = 10000
  iwind_resolution = 30
  N_particles = 10000
