@@ -49,7 +49,7 @@ module cooling
  !--Minimum temperature (failsafe to prevent u < 0); optional for ALL cooling options
  real,    public :: Tfloor = 0.                     ! [K]; set in .in file.  On if Tfloor > 0.
  real,    public :: ufloor = 0.                     ! [code units]; set in init_cooling
- real,    public :: r_min_cool = 3.0                ! [AU]; minimum cooling radius (cooling off if r < r_min_cool)
+ real,    public :: r_min_cool = 3.0, delta_r = 0.1                ! [AU]; minimum cooling radius (cooling off if r < r_min_cool)
  public :: T0_value,lambda_shock_cgs ! expose to public
 
  private
@@ -153,7 +153,7 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  integer,intent(in),optional:: ipart
  real, intent(out)          :: dudt                                ! in code units
  real                       :: mui,gammai,Tgas,Tdust,K2,kappa
- real                       :: r, r_min_cool_code
+ real                       :: r, r_min_cool_code, r_delta_code
  real                       :: dx,dy,dz
  integer, parameter         :: iprimary = 1  ! Index of primary star in ptmass array
  real :: abundi(nabn)
@@ -177,6 +177,9 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  
  ! Convert r_min_cool from AU to code units
  r_min_cool_code = r_min_cool * au / udist
+ r_delta_code    = delta_r  * au / udist
+
+!  print *, 'Cooling at r (code units)=', r, ' r_min_cool_code=', r_min_cool_code, ' r_delta_code=', r_delta_code
  
  if (present(gamma_in)) gammai = gamma_in
  if (present(mu_in))    mui        = mu_in
@@ -209,7 +212,7 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
     call radcool_update_du(ipart,xi,yi,zi,rho,ui,duhydro,Tfloor)
  case default
     ! Pass r and r_min_cool_code to the cooling solver
-    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,r,r_min_cool_code)
+    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,r,r_min_cool_code,r_delta_code)
  end select
 
 end subroutine energ_cooling
@@ -250,6 +253,7 @@ subroutine write_options_cooling(iunit)
  if (icooling > 0) then
     call write_inopt(Tfloor,'Tfloor','temperature floor (K); on if > 0',iunit)
     call write_inopt(r_min_cool,'r_min_cool','minimum cooling radius (AU); cooling off if r < r_min_cool',iunit)
+    call write_inopt(delta_r,'delta_r','radial smoothing length over which cooling is switched on (AU)',iunit)
  endif
 
 end subroutine write_options_cooling
@@ -294,6 +298,9 @@ subroutine read_options_cooling(name,valstring,imatch,igotall,ierr)
  case('r_min_cool')
     ! not compulsory to read in
     read(valstring,*,iostat=ierr) r_min_cool
+ case('delta_r')
+    ! not compulsory to read in
+    read(valstring,*,iostat=ierr) delta_r
  case default
     imatch = .false.
     select case(icooling)
