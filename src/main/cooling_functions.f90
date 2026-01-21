@@ -142,11 +142,12 @@ end subroutine cooling_radiative_relaxation
 !  Cooling due to electron excitation of neutral H (Spitzer 1978)
 !+
 !-----------------------------------------------------------------------
-subroutine cooling_neutral_hydrogen(T, rho_cgs, r, r_min_cool, delta_r, Q_cgs, dlnQ_dlnT)
+subroutine cooling_neutral_hydrogen(T, rho_cgs, r, r_min_cool, delta_r, cool_loc, Q_cgs, dlnQ_dlnT)
 
  use physcon, only: mass_proton_cgs
 
  real, intent(in)  :: T, rho_cgs, r, r_min_cool, delta_r
+ integer, intent(in) :: cool_loc 
  real, intent(out) :: Q_cgs,dlnQ_dlnT
 
  real, parameter   :: f = 1.0d0
@@ -156,8 +157,14 @@ subroutine cooling_neutral_hydrogen(T, rho_cgs, r, r_min_cool, delta_r, Q_cgs, d
 
  ! Only activate cooling if T > 3000 AND beyond r_min_cool from primary star
  if (T > 3000.) then
-   !  print *, "Cooling neutral H active at r=", r, " cm
-    factor = 1 / (1 + exp(( r_min_cool - r ) / delta_r))
+    !  print *, "Cooling neutral H active at r=", r, " cm"
+    if (cool_loc == 1) then
+        factor = 1 / (1 + exp(( r_min_cool - r ) / delta_r))
+    elseif (cool_loc == 2) then
+        factor = 1 / (1 + exp(-( r_min_cool - r ) / delta_r))
+    else
+          factor = 1.0
+    endif
    !  print *, "Cooling neutral H active at r=", r, " cm, factor=", factor
     nH = rho_cgs/(1.4*mass_proton_cgs)
     ne = calc_eps_e(T)*nH

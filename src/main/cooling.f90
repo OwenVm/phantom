@@ -50,6 +50,7 @@ module cooling
  real,    public :: Tfloor = 0.                     ! [K]; set in .in file.  On if Tfloor > 0.
  real,    public :: ufloor = 0.                     ! [code units]; set in init_cooling
  real,    public :: r_min_cool = 3.0, delta_r = 0.1                ! [AU]; minimum cooling radius (cooling off if r < r_min_cool)
+ integer, public :: cool_loc = 1                ! flag to indicate whether cooling is active around the companion of AGB
  public :: T0_value,lambda_shock_cgs ! expose to public
 
  private
@@ -156,6 +157,7 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  real                       :: r, r_min_cool_code, r_delta_code
  real                       :: dx,dy,dz
  integer, parameter         :: iprimary = 1  ! Index of primary star in ptmass array
+ integer, parameter         :: icompanion = 2 
  real :: abundi(nabn)
 
  dudt   = 0.
@@ -165,10 +167,16 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  K2     = 0.
  
  ! Calculate distance from PRIMARY STAR (not origin)
- if (nptmass > 0) then
+ if (nptmass > 0 .and. cool_loc == 1) then
     dx = xi - xyzmh_ptmass(1,iprimary)
     dy = yi - xyzmh_ptmass(2,iprimary)
     dz = zi - xyzmh_ptmass(3,iprimary)
+    r = sqrt(dx**2 + dy**2 + dz**2)
+ elseif (nptmass > 0 .and. cool_loc == 2) then
+    ! Distance from COMPANION STAR
+    dx = xi - xyzmh_ptmass(1,icompanion)
+    dy = yi - xyzmh_ptmass(2,icompanion)
+    dz = zi - xyzmh_ptmass(3,icompanion)
     r = sqrt(dx**2 + dy**2 + dz**2)
  else
     ! Fallback: if no sink particles, use distance from origin
@@ -212,7 +220,7 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
     call radcool_update_du(ipart,xi,yi,zi,rho,ui,duhydro,Tfloor)
  case default
     ! Pass r and r_min_cool_code to the cooling solver
-    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,r,r_min_cool_code,r_delta_code)
+    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,r,r_min_cool_code,r_delta_code,cool_loc)
  end select
 
 end subroutine energ_cooling
@@ -254,6 +262,8 @@ subroutine write_options_cooling(iunit)
     call write_inopt(Tfloor,'Tfloor','temperature floor (K); on if > 0',iunit)
     call write_inopt(r_min_cool,'r_min_cool','minimum cooling radius (AU); cooling off if r < r_min_cool',iunit)
     call write_inopt(delta_r,'delta_r','radial smoothing length over which cooling is switched on (AU)',iunit)
+    call write_inopt(cool_loc,'cool_loc','flag to indicate whether cooling is active around the companion or the AGB'// & 
+                              ' (1=primary, 2=companion)',iunit)
  endif
 
 end subroutine write_options_cooling
@@ -301,6 +311,9 @@ subroutine read_options_cooling(name,valstring,imatch,igotall,ierr)
  case('delta_r')
     ! not compulsory to read in
     read(valstring,*,iostat=ierr) delta_r
+ case('cool_loc')
+    ! not compulsory to read in
+    read(valstring,*,iostat=ierr) cool_loc 
  case default
     imatch = .false.
     select case(icooling)
