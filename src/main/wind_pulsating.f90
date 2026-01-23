@@ -37,20 +37,18 @@ module wind_pulsating
 
 contains
 
-subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, n, surface_pressure, M_env_in)
+subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, surface_pressure, M_env_in)
  use physcon, only:au, solarm
 !  use units,   only:umass,udist
 !  use eos,     only:gamma, gmw
 
  real, intent(in)    :: Mstar_in, Rstar_in, r_min, mu_in, gamma_in, surface_pressure, M_env_in
- integer, intent(in) :: n
 
  Mstar_cgs  = Mstar_in
  Rstar_cgs  = Rstar_in
  r_inner    = r_min  ! Location where the stellar atmosphere is assumed to be inverse quadratic (i.e. inner boundary)
  Star_gamma = gamma_in
  Star_mu    = mu_in
- number_of_steps = n
  P0 = surface_pressure
  Menv_cgs = M_env_in
 
