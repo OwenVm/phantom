@@ -14,6 +14,9 @@ module inject
 !
 ! :Runtime parameters:
 !   - iboundary_spheres  : *number of boundary spheres (integer)*
+!   - n_profile_points   : *number of points in stellar profile calculation (integer)*
+!   - n_particles        : *total number of particles (integer, not used if n_shells > 0)*
+!   - n_shells          : *total number of shells (integer, if <0 determined automatically from n_particles)*
 !   - r_min_on_rstar     : *inner radius as fraction of R_star*
 !   - r_max_on_rstar     : *outer radius as fraction of R_star*
 !   - pulsation_period   : *pulsation period (days)*
@@ -46,9 +49,10 @@ module inject
 ! Read from input file
  integer :: iboundary_spheres = 5 ! Number of boundary spheres 
  integer :: n_profile_points = 10000 ! Number of points in stellar profile calculation
- integer :: N_particles = 10000 ! Total number of particles
+ integer :: n_particles = 500000 ! Total number of particles (not used if n_shells > 0)
+ integer :: n_shells = -1 ! Total number of shells (if <0 determined automatically from n_particles)
  real    :: r_min_on_rstar = 0.9 ! Inner radius (R_eq, not R_min) as fraction of Rstar
- real    :: r_max_on_rstar = 1.0 ! Outer radius as fraction of Rstar
+ real    :: r_max_on_rstar = 1.4 ! Outer radius as fraction of Rstar
  real    :: dtpulsation = huge(0.)
  real    :: pulsation_period_days = 300.0  ! Pulsation period in days
  real    :: piston_velocity_km_s = 4.0     ! Piston velocity (in km/s)
@@ -103,9 +107,10 @@ subroutine set_default_options_inject(flag)
 
  iboundary_spheres = 5
  n_profile_points = 10000
- N_particles = 10000
+ n_particles = 500000
+ n_shells = -1
  r_min_on_rstar = 0.9
- r_max_on_rstar = 1.0
+ r_max_on_rstar = 1.4
  dtpulsation = huge(0.)
  atmos_mass_fraction = 5e-5
  surface_pressure = 0.001
@@ -139,7 +144,7 @@ subroutine init_inject(ierr)
 
  integer, intent(out) :: ierr
  real :: Mstar_cgs, Rstar_cgs, Tstar, delta_r_tangential, current_radius
- integer :: i, shell_index, iteration, particles_per_shell, distributed_particles, max_shells
+ integer :: i, shell_index, iteration, particles_per_shell, distributed_particles, max_shells, temp_particles
  logical :: converged
 
  ierr = 0
@@ -178,7 +183,6 @@ subroutine init_inject(ierr)
  ! Setup continuous reinjection period
  reinject_period = reinject_period_days * (days / utime)
  
-
  print *, ''
  print *, 'Initializing pulsating atmosphere injection:'
  print *, 'pulsation period: ', pulsation_period
@@ -189,7 +193,11 @@ subroutine init_inject(ierr)
  endif
  print *, ''
 
- max_shells = 200
+ if (n_shells > 0) then
+    max_shells = n_shells
+ else
+    max_shells = 200
+ endif
 
  ! Setup stellar structure calculation
  call setup_star(Msink * umass, r_max_on_rstar * Rstar * au, r_min_on_rstar * Rstar * au, gmw, gamma,&
@@ -205,28 +213,59 @@ subroutine init_inject(ierr)
  r_min = r_min_on_rstar * Rstar
  current_radius = r_min
 
- particles_per_shell = nint(real(N_particles) / real(max_shells))
-
- converged = .false.
-
- do while (.not. converged)
-   current_radius = r_min
-   particles_per_shell = particles_per_shell + 10
-   shell_index = 0 
-
-   do while (current_radius < r_max_on_rstar * Rstar)
-      shell_index = shell_index + 1
-      delta_r_tangential = current_radius * get_fibonacci_spacing(particles_per_shell)
-      delta_r_radial(shell_index) = wss * delta_r_tangential
-      current_radius = current_radius + delta_r_radial(shell_index)
-   end do
+ if (n_shells < 0) then
    
-   distributed_particles = shell_index * particles_per_shell
+   temp_particles = n_particles
 
-   if (distributed_particles >= N_particles) then
-      converged = .true.
-   endif
- end do 
+   particles_per_shell = nint(real(temp_particles) / real(max_shells))
+
+   converged = .false.
+
+   do while (.not. converged)
+      current_radius = r_min
+      particles_per_shell = particles_per_shell + 10
+      shell_index = 0 
+
+      do while (current_radius < r_max_on_rstar * Rstar)
+         shell_index = shell_index + 1
+         delta_r_tangential = current_radius * get_fibonacci_spacing(particles_per_shell)
+         delta_r_radial(shell_index) = wss * delta_r_tangential
+         current_radius = current_radius + delta_r_radial(shell_index)
+      end do
+      
+      distributed_particles = shell_index * particles_per_shell
+
+      if (distributed_particles >= temp_particles) then
+         converged = .true.
+      endif
+   end do 
+ else
+   temp_particles = 100
+
+   particles_per_shell = nint(real(temp_particles) / real(max_shells))
+
+   converged = .false.
+
+   do while (.not. converged)
+      current_radius = r_min
+      particles_per_shell = particles_per_shell + 10
+      shell_index = 0 
+
+      do while (current_radius < r_max_on_rstar * Rstar)
+         shell_index = shell_index + 1
+         delta_r_tangential = current_radius * get_fibonacci_spacing(particles_per_shell)
+         delta_r_radial(shell_index) = wss * delta_r_tangential
+         current_radius = current_radius + delta_r_radial(shell_index)
+      end do
+      
+      distributed_particles = shell_index * particles_per_shell
+
+      if (shell_index >= max_shells) then
+         converged = .true.
+      endif
+   end do 
+
+ endif
 
  n_shells_total = shell_index
  particles_per_sphere = particles_per_shell
@@ -682,7 +721,8 @@ subroutine write_options_inject(iunit)
 
  call write_inopt(n_profile_points,'n_profile_points', 'number of points in stellar profile',iunit)
  call write_inopt(iboundary_spheres,'iboundary_spheres', 'number of boundary spheres (inner layers)',iunit)
- call write_inopt(N_particles,'N_particles', 'number of particles per sphere (if using Fibonacci lattice)',iunit)
+ call write_inopt(n_particles,'n_particles', 'number of particles per sphere (if using Fibonacci lattice)',iunit)
+ call write_inopt(n_shells,'n_shells', 'number of shells (if <0 determined from n_particles)',iunit)
  call write_inopt(r_min_on_rstar,'r_min_on_rstar', 'inner radius as fraction of R_star',iunit)
  call write_inopt(r_max_on_rstar,'r_max_on_rstar', 'outer radius as fraction of R_star',iunit)
  call write_inopt(atmos_mass_fraction,'atmos_mass_fraction', 'atmospheric mass as fraction of total stellar mass',iunit)
@@ -712,7 +752,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 17
+ integer, parameter :: noptions = 18
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -730,10 +770,14 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) iboundary_spheres
     ngot = ngot + 1
     if (iboundary_spheres < 0) call fatal(label,'iboundary_spheres must be >= 0')
- case('N_particles')
-    read(valstring,*,iostat=ierr) N_particles
+ case('n_particles')
+    read(valstring,*,iostat=ierr) n_particles
     ngot = ngot + 1
-    if (N_particles < 1) call fatal(label,'N_particles must be >= 1')
+    if (n_particles < 1) call fatal(label,'n_particles must be >= 1')
+ case('n_shells')
+    read(valstring,*,iostat=ierr) n_shells
+    ngot = ngot + 1
+    if (n_shells < -10) call fatal(label,'n_shells must be >= -10')
  case('r_min_on_rstar')
     read(valstring,*,iostat=ierr) r_min_on_rstar
     ngot = ngot + 1
