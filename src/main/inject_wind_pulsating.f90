@@ -56,6 +56,7 @@ module inject
  real    :: dtpulsation = huge(0.)
  real    :: pulsation_period_days = 300.0  ! Pulsation period in days
  real    :: piston_velocity_km_s = 4.0     ! Piston velocity (in km/s)
+ real    :: time_puls = -1.0 ! Time for the piston to accelerate from 0 to max velocity (in periods)
  real    :: atmos_mass_fraction = 5e-5  ! Atmosphere mass as fraction of total mass
  real    :: surface_pressure = 0.001  ! Surface pressure in cgs units
  integer :: iwind = 1  ! Wind type: 1=prescribed, 2=period from mass-radius relation
@@ -73,13 +74,13 @@ module inject
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
  real :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity
- real :: Rstar, r_min, r_max, mass_of_particles
+ real :: Rstar, r_min, mass_of_particles
  real :: Mtotal, Matmos, Msink  ! Total, atmosphere, and sink masses
  real, allocatable :: delta_r_radial(:)
- integer :: particles_per_sphere, iresolution
+ integer :: particles_per_sphere
  logical :: atmosphere_setup_complete = .false.
  real, allocatable :: shell_radii(:)  ! Store radii for each shell
- integer :: n_shells_total, particles_per_shell 
+ integer :: n_shells_total
  
  ! Store boundary particle information
  real, allocatable    :: r_boundary_equilibrium(:)
@@ -117,6 +118,7 @@ subroutine set_default_options_inject(flag)
  iwind = 1
  pulsation_period_days = 300.0
  piston_velocity_km_s = 4.0
+ time_puls = -1.0
  pulsation_timestep = 0.02
  phi0 = -3.1415926536d0/2.0
  wss = 1.0
@@ -144,7 +146,7 @@ subroutine init_inject(ierr)
 
  integer, intent(out) :: ierr
  real :: Mstar_cgs, Rstar_cgs, Tstar, delta_r_tangential, current_radius
- integer :: i, shell_index, iteration, particles_per_shell, distributed_particles, max_shells, temp_particles
+ integer :: shell_index, particles_per_shell, distributed_particles, max_shells, temp_particles
  logical :: converged
 
  ierr = 0
@@ -623,7 +625,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  integer, intent(in)    :: npart
 
  integer :: i,ipart
- real    :: r_eq,r_new,r_current,phase
+ real    :: r_eq,r_new,r_current,phase,piston_velocity_n,deltaR_osc_n
  real    :: x_hat(3),r_dot
  real    :: x0(3),v0(3),GM
  real    :: x, y, z
@@ -639,8 +641,16 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
 
  phase = omega_pulsation * time + phi0
  
+ if (time < pulsation_period * time_puls .and. time_puls > 0) then
+     piston_velocity_n = time * (piston_velocity) / (pulsation_period * time_puls)
+ else
+     piston_velocity_n = piston_velocity
+ endif
+
+ deltaR_osc_n = pulsation_period * piston_velocity_n / (2.0*pi)
+ 
  ! Pulsation amplitude and velocity
- r_dot = piston_velocity * cos(phase)
+ r_dot = piston_velocity_n * cos(phase)
 
  ! Update each boundary particle
  do i = 1, n_boundary_particles
@@ -650,7 +660,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     r_eq = r_boundary_equilibrium(i)
     
     ! New radius with pulsation
-    r_new = r_eq + deltaR_osc * sin(phase)
+    r_new = r_eq + deltaR_osc_n * sin(phase)
 
     x = xyzh(1,ipart) - x0(1)
     y = xyzh(2,ipart) - x0(2)
@@ -730,8 +740,9 @@ subroutine write_options_inject(iunit)
  call write_inopt(iwind,'iwind','wind type: 1=prescribed, 2=period from mass-radius relation',iunit)
  call write_inopt(pulsation_period_days,'pulsation_period','pulsation period (days) (if iwind == 2 this is overwritten)',iunit)
  call write_inopt(piston_velocity_km_s,'piston_velocity','piston velocity amplitude (km/s)',iunit)
+ call write_inopt(time_puls,'time_puls','time for piston to accelerate from 0 to max velocity (in periods)',iunit)
  call write_inopt(pulsation_timestep,'pulsation_timestep','pulsation timestep as fraction of pulsation period',iunit)
- call write_inopt(phi0,'phi0','initial phase offset (radians)',iunit)
+ call write_inopt(phi0,'phi0','initial phase offset (radians) (set to 0. if time_puls > 0)',iunit)
  call write_inopt(wss,'wss','fraction of radial to tangential distance between particles in initial setup',iunit)
  call write_inopt(var_boundary,'var_boundary','allow boundary particles to vary thermodynamic properties (logical)',iunit)
  call write_inopt(reinject_enabled,'reinject_enabled','enable dynamic reinjection of boundary spheres (logical)',iunit)
@@ -752,7 +763,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 18
+ integer, parameter :: noptions = 19
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -809,6 +820,10 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) piston_velocity_km_s
     ngot = ngot + 1
     if (piston_velocity_km_s < 0.) call fatal(label,'piston_velocity must be >= 0')
+ case('time_puls')
+    read(valstring,*,iostat=ierr) time_puls
+    ngot = ngot + 1
+    if (time_puls < -1) call fatal(label,'time_puls must be >= -1')
  case('pulsation_timestep')
     read(valstring,*,iostat=ierr) pulsation_timestep
     ngot = ngot + 1
