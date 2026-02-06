@@ -7,6 +7,7 @@
 module inject
 !
 ! Handles initial setup of stellar atmosphere with pulsating boundary layers
+! Modified to calculate mass-loss rate at regular intervals and use mean for reinjection
 !
 ! :References: None
 !
@@ -29,9 +30,11 @@ module inject
 !   - phi0               : *initial phase offset (radians) (best taken to be -pi/2 to start at minimum radius)*
 !   - wss                : *fraction of tangential and radial distance between particles in initial atmosphere setup*
 !   - reinject_enabled   : *enable dynamic reinjection (logical)*
-!   - continuous_reinject: *enable continuous reinjection at constant rate (logical)*
 !   - reinject_period_days: *period between reinjections in days (for continuous mode)*
-!   - injection_fraction : *fraction of particles per sphere to inject during reinjection*
+!   - mass_loss_start: *start time for mass-loss calculation in years*
+!   - mass_loss_end: *end time for mass-loss calculation in years*
+!   - check_radius_au: *radius within which to count mass (AU)*
+!   - meas_int_days: *interval for mass measurements in days*
 !
 ! :Dependencies: dim, eos, icosahedron, infile_utils, injectutils, io,
 !   part, partinject, physcon, units, set_star
@@ -68,11 +71,15 @@ module inject
  ! Reinjection parameters
  logical :: reinject_enabled = .true.
  real    :: reinject_period_days = 10.0  ! Period between reinjections (days)
- real    :: injection_fraction = 0.1 ! Number of particles on injection sphere / total particles per sphere
+ real    :: mass_loss_start = 1.0  ! Start time for mass-loss calculation (years)
+ real    :: mass_loss_end = 2.0    ! End time for mass-loss calculation (years)
+ real    :: check_radius_au = 3.0  ! Radius within which to count mass (AU)
+ real    :: meas_int_days = 10.0  ! Interval for mass measurements (days)
 
 
 ! global variables
  integer, parameter :: wind_emitting_sink = 1
+ integer, parameter :: max_measurements = 10000  ! Maximum number of measurements to store
  real :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity
  real :: Rstar, r_min, mass_of_particles
  real :: Mtotal, Matmos, Msink  ! Total, atmosphere, and sink masses
@@ -93,6 +100,20 @@ module inject
  real    :: time_last_reinject = 0.0  ! Time of last reinjection
  real    :: reinject_period  ! Period in code units
  integer :: n_reinjections = 0  ! Number of reinjections performed so far
+ 
+ ! Mass-loss rate tracking with periodic measurements
+ real    :: mass_loss_start_time  ! Start time in code units
+ real    :: mass_loss_end_time    ! End time in code units
+ real    :: mass_loss_check_radius  ! Radius in code units
+ real    :: measurement_interval  ! Measurement interval in code units
+ real    :: time_next_measurement  ! Time for next mass measurement
+ real    :: mass_previous_measurement  ! Mass at previous measurement
+ real, allocatable :: mass_loss_rates(:)  ! Array to store individual mass-loss rates
+ integer :: n_measurements  ! Number of measurements taken
+ real    :: mean_mass_loss_rate = 0.0  ! Mean mass-loss rate in code units (Msun/time)
+ logical :: mass_loss_rate_calculated = .false.
+ logical :: measurement_active = .false.
+ integer :: particles_to_inject = 0  ! Number of particles to inject based on mass-loss rate
 
  character(len=*), parameter :: label = 'inject_atmosphere'
 
@@ -125,7 +146,10 @@ subroutine set_default_options_inject(flag)
  var_boundary = .false.
  reinject_enabled = .true.
  reinject_period_days = 10.0
- injection_fraction = 0.1
+ mass_loss_start = 1.0
+ mass_loss_end = 2.0
+ check_radius_au = 3.0
+ meas_int_days = 10.0
 
 end subroutine set_default_options_inject
 
@@ -136,7 +160,7 @@ end subroutine set_default_options_inject
 !-----------------------------------------------------------------------
 subroutine init_inject(ierr)
  use io,            only:fatal
- use physcon,       only:pi,days,au,solarm,km
+ use physcon,       only:pi,days,au,solarm,km,years
  use icosahedron,   only:compute_matrices,compute_corners
  use eos,           only:gmw,gamma
  use units,         only:utime,umass,unit_velocity
@@ -147,6 +171,7 @@ subroutine init_inject(ierr)
  integer, intent(out) :: ierr
  real :: Mstar_cgs, Rstar_cgs, Tstar, delta_r_tangential, current_radius
  integer :: shell_index, particles_per_shell, distributed_particles, max_shells, temp_particles
+ integer :: expected_measurements
  logical :: converged
 
  ierr = 0
@@ -165,9 +190,6 @@ subroutine init_inject(ierr)
  ! Calculate mass distribution
  Matmos = atmos_mass_fraction * Mtotal
  Msink  = Mtotal - Matmos
- 
- ! Note: Matmos_initial will be set after atmosphere setup
- ! to account for the actual mass within the check radius
 
  ! Initialize active boundary spheres
  active_boundary_spheres = iboundary_spheres
@@ -185,6 +207,20 @@ subroutine init_inject(ierr)
  ! Setup continuous reinjection period
  reinject_period = reinject_period_days * (days / utime)
  
+ ! Setup mass-loss calculation parameters
+ mass_loss_start_time = mass_loss_start * (years / utime)
+ mass_loss_end_time = mass_loss_end * (years / utime)
+ mass_loss_check_radius = check_radius_au  ! Already in code units (AU)
+ measurement_interval = meas_int_days * (days / utime)
+ time_next_measurement = mass_loss_start_time  ! First measurement at start time
+ n_measurements = 0
+ 
+ ! Allocate array for mass-loss rate measurements
+ ! Calculate expected number of measurements
+ expected_measurements = ceiling((mass_loss_end_time - mass_loss_start_time) / measurement_interval) + 1
+ allocate(mass_loss_rates(expected_measurements))
+ mass_loss_rates = 0.0
+ 
  print *, ''
  print *, 'Initializing pulsating atmosphere injection:'
  print *, 'pulsation period: ', pulsation_period
@@ -192,6 +228,13 @@ subroutine init_inject(ierr)
  print *, 'deltaR_osc: ', deltaR_osc
  if (reinject_enabled) then
      print *, '  Reinjection period (days): ', reinject_period_days
+     print *, '  Mass-loss calculation window:'
+     print *, '    Start time (years): ', mass_loss_start
+     print *, '    End time (years): ', mass_loss_end
+     print *, '    Check radius (AU): ', check_radius_au
+     print *, '    Measurement interval (days): ', meas_int_days
+     print *, '    Expected number of measurements: ', expected_measurements
+     print *, '  Will calculate mass-loss rate at regular intervals'
  endif
  print *, ''
 
@@ -326,14 +369,21 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
     return
  endif
 
- ! Reconstruct boundary particle info if resuming from dump
+ ! Reconstruct boundary particle info if resuming from dump and read injection parameters
  if (atmosphere_setup_complete .and. .not. allocated(boundary_particle_ids)) then
     call reconstruct_boundary_info(time, xyzh,npart,xyzmh_ptmass)
     time_last_reinject = time - mod(time, reinject_period)
+    ! Try to read mass-loss rate data from file if available
+    call read_mass_loss_data()
  endif
 
- ! Check if reinjection is needed
- if (reinject_enabled) then
+ ! Take periodic mass measurements if we're in the measurement period
+ if (reinject_enabled .and. .not. mass_loss_rate_calculated) then
+    call take_periodic_mass_measurements(time, xyzh, npart, xyzmh_ptmass, npartoftype)
+ endif
+
+ ! Check if reinjection is needed (only after mass-loss rate is calculated)
+ if (reinject_enabled .and. mass_loss_rate_calculated) then
     
     ! Continuous reinjection mode: check time-based trigger
     call check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
@@ -358,6 +408,156 @@ end subroutine inject_particles
 
 !-----------------------------------------------------------------------
 !+
+!  Take periodic mass measurements and calculate mean mass-loss rate
+!+
+!-----------------------------------------------------------------------
+subroutine take_periodic_mass_measurements(time, xyzh, npart, xyzmh_ptmass, npartoftype)
+ use part,   only:igas,iboundary,iphase,iamtype
+ use units,  only:utime,umass
+ use physcon,only:solarm,years,days
+ 
+ real,    intent(in) :: time
+ real,    intent(in) :: xyzh(:,:), xyzmh_ptmass(:,:)
+ integer, intent(in) :: npart
+ integer, intent(in) :: npartoftype(:)
+ 
+ real :: current_mass_within_radius, mass_lost, time_elapsed, rate_this_interval
+ real :: sink_mass, x0(3), dx, dy, dz, r
+ real :: sum_rates, std_dev, mean_rate
+ integer :: i
+ 
+ ! Start measurements at the start time
+ if (.not. measurement_active .and. time >= mass_loss_start_time) then
+    measurement_active = .true.
+    
+    ! Get sink position
+    x0 = xyzmh_ptmass(1:3, wind_emitting_sink)
+    sink_mass = xyzmh_ptmass(4, wind_emitting_sink)
+    
+    ! Count mass of particles within radius for first measurement
+    mass_previous_measurement = sink_mass  ! Start with sink mass
+    
+    do i = 1, npart
+       ! Calculate distance from sink
+       dx = xyzh(1,i) - x0(1)
+       dy = xyzh(2,i) - x0(2)
+       dz = xyzh(3,i) - x0(3)
+       r = sqrt(dx**2 + dy**2 + dz**2)
+       
+       ! Only count particles within the check radius
+       if (r <= mass_loss_check_radius) then
+          mass_previous_measurement = mass_previous_measurement + mass_of_particles
+       endif
+    enddo
+    
+    print *, ''
+    print *, '========================================='
+    print *, 'MASS-LOSS MEASUREMENTS - START'
+    print *, '========================================='
+    print *, 'Time (years): ', time * utime / years
+    print *, 'Mass within ', mass_loss_check_radius, ' AU: ', mass_previous_measurement, ' Msun'
+    print *, 'Sink mass: ', sink_mass, ' Msun'
+    print *, 'Will take measurements every ', meas_int_days, ' days'
+    print *, '========================================='
+    print *, ''
+    
+    ! Set time for next measurement
+    time_next_measurement = time + measurement_interval
+ endif
+ 
+ ! Take measurement if it's time
+ if (measurement_active .and. time >= time_next_measurement .and. time < mass_loss_end_time) then
+    
+    ! Get sink position
+    x0 = xyzmh_ptmass(1:3, wind_emitting_sink)
+    sink_mass = xyzmh_ptmass(4, wind_emitting_sink)
+    
+    ! Count mass of particles within radius
+    current_mass_within_radius = sink_mass  ! Start with sink mass
+    
+    do i = 1, npart
+       ! Calculate distance from sink
+       dx = xyzh(1,i) - x0(1)
+       dy = xyzh(2,i) - x0(2)
+       dz = xyzh(3,i) - x0(3)
+       r = sqrt(dx**2 + dy**2 + dz**2)
+       
+       ! Only count particles within the check radius
+       if (r <= mass_loss_check_radius) then
+          current_mass_within_radius = current_mass_within_radius + mass_of_particles
+       endif
+    enddo
+    
+    ! Calculate mass lost since last measurement
+    mass_lost = mass_previous_measurement - current_mass_within_radius
+    
+    ! Calculate instantaneous mass-loss rate for this interval
+    rate_this_interval = mass_lost / measurement_interval
+    
+    ! Store this rate
+    n_measurements = n_measurements + 1
+    mass_loss_rates(n_measurements) = rate_this_interval
+    
+    print *, 'Measurement #', n_measurements, ' at t = ', time * utime / years, ' years:'
+    print *, '  Mass: ', current_mass_within_radius, ' Msun'
+    print *, '  Mass lost since last: ', mass_lost, ' Msun'
+    print *, '  Instantaneous rate: ', rate_this_interval * utime / years, ' Msun/yr'
+    
+    ! Update for next interval
+    mass_previous_measurement = current_mass_within_radius
+    time_next_measurement = time + measurement_interval
+ endif
+ 
+ ! Calculate mean mass-loss rate at end time
+ if (measurement_active .and. .not. mass_loss_rate_calculated .and. time >= mass_loss_end_time) then
+    
+    if (n_measurements > 0) then
+       ! Calculate mean of all measurements
+       sum_rates = 0.0
+       do i = 1, n_measurements
+          sum_rates = sum_rates + mass_loss_rates(i)
+       enddo
+       mean_mass_loss_rate = sum_rates / real(n_measurements)
+        
+       ! Calculate number of particles to inject per reinjection event
+       particles_to_inject = nint((mean_mass_loss_rate * reinject_period) / mass_of_particles)
+       
+       ! Ensure at least 1 particle is injected
+       if (particles_to_inject < 1) particles_to_inject = 1
+       
+       ! Mark as calculated
+       mass_loss_rate_calculated = .true.
+       
+       print *, ''
+       print *, '========================================='
+       print *, 'MASS-LOSS RATE CALCULATION COMPLETE'
+       print *, '========================================='
+       print *, 'Measurement period:'
+       print *, '  Start time (years): ', mass_loss_start_time * utime / years
+       print *, '  End time (years): ', mass_loss_end_time * utime / years
+       print *, '  Duration (years): ', (mass_loss_end_time - mass_loss_start_time) * utime / years
+       print *, '  Check radius (AU): ', mass_loss_check_radius
+       print *, '  Number of measurements: ', n_measurements
+       print *, '  Mean mass-loss rate (Msun/yr): ', mean_mass_loss_rate * utime / years
+       print *, ''
+       print *, 'Reinjection parameters:'
+       print *, '  Reinjection period (days): ', reinject_period_days
+       print *, '  Particles to inject per event: ', particles_to_inject
+       print *, '  Mass injected per event (Msun): ', particles_to_inject * mass_of_particles
+       print *, '========================================='
+       print *, ''
+       
+       ! Write data to file for restart capability
+       call write_mass_loss_data()
+       
+    endif
+    
+ endif
+ 
+end subroutine take_periodic_mass_measurements
+
+!-----------------------------------------------------------------------
+!+
 !  Check if it's time for continuous reinjection (time-based)
 !+
 !-----------------------------------------------------------------------
@@ -372,7 +572,7 @@ subroutine check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,np
  integer, intent(inout) :: npartoftype(:)
  
  ! Check if enough time has passed since last reinjection
- if ( (time - time_last_reinject) < reinject_period ) then
+ if ( (time - time_last_reinject) < reinject_period  .and. time >= mass_loss_start_time) then
     return
  endif
 
@@ -410,7 +610,6 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real    :: x0(3), v0(3)
  real    :: total_mass_before, particle_mass_before, sink_mass_before
  real    :: mass_injected
- integer :: particles_per_injection
  
  sink_mass_before = xyzmh_ptmass(4, wind_emitting_sink)
  particle_mass_before = npartoftype(igas) * mass_of_particles + npartoftype(iboundary) * mass_of_particles
@@ -425,9 +624,6 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  r_dot = piston_velocity * cos(phase)
  
  ! Inject new gas particles just outside the outermost boundary sphere
- ! The outermost boundary sphere is at r_boundary_equilibrium(n_boundary_particles)
- ! We need to add one shell spacing to place the gas layer outside
- 
  if (allocated(r_boundary_equilibrium) .and. n_boundary_particles > 0) then
     r_inject = r_boundary_equilibrium(n_boundary_particles) + delta_r_radial(iboundary_spheres + 1)
     r_inject = r_inject + deltaR_osc * sin(phase)
@@ -445,13 +641,11 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  ! Store npart before injection
  old_npart = npart
 
- ! Calculate number of particles to inject using fraction of particles_per_sphere
- particles_per_injection = nint( real(particles_per_sphere) * injection_fraction )
-
  ! Increase shell number for rotation purposes
  n_reinjections = n_reinjections + 1
 
- call inject_fibonacci_sphere(n_shells_total + n_reinjections, npart + 1, particles_per_injection, &
+ ! Use calculated particles_to_inject based on mean mass-loss rate
+ call inject_fibonacci_sphere(n_shells_total + n_reinjections, npart + 1, particles_to_inject, &
                                 r_inject, r_dot, u, rho, &
                                 npart, npartoftype, xyzh, vxyzu, igas, x0, v0)
  
@@ -465,6 +659,7 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  print *, 'Reinjection performed:'
  print *, '  Number of particles injected: ', (npart - old_npart)
  print *, '  Injection radius: ', r_inject
+ print *, '  Mass injected (Msun): ', mass_injected
  print *, '  New total particles: ', npart
  print *, '  Relative to original particle count: ', real(npart)/real(particles_per_sphere * n_shells_total)
  print *, 'Reinjection complete.'
@@ -699,6 +894,88 @@ end subroutine update_injected_par
 
 !-----------------------------------------------------------------------
 !+
+!  Write mass-loss rate data to file for restart
+!+
+!-----------------------------------------------------------------------
+subroutine write_mass_loss_data()
+ use io, only:iprint
+ integer :: iunit, ierr, i
+ 
+ ! Only write if we have calculated the rate
+ if (.not. mass_loss_rate_calculated) return
+ 
+ open(newunit=iunit, file='mass_loss_rate.dat', status='replace', iostat=ierr)
+ if (ierr /= 0) then
+    write(iprint,*) 'WARNING: Could not write mass_loss_rate.dat'
+    return
+ endif
+ 
+ write(iunit,*) '# Mass-loss rate data for restart'
+ write(iunit,*) mass_loss_rate_calculated
+ write(iunit,*) mean_mass_loss_rate
+ write(iunit,*) particles_to_inject
+ write(iunit,*) n_measurements
+ 
+ ! Write all individual measurements
+ do i = 1, n_measurements
+    write(iunit,*) mass_loss_rates(i)
+ enddo
+ 
+ close(iunit)
+ 
+ write(iprint,*) 'Mass-loss rate data written to mass_loss_rate.dat'
+ 
+end subroutine write_mass_loss_data
+
+!-----------------------------------------------------------------------
+!+
+!  Read mass-loss rate data from file for restart
+!+
+!-----------------------------------------------------------------------
+subroutine read_mass_loss_data()
+ use io, only:iprint
+ integer :: iunit, ierr, i
+ logical :: file_exists
+ 
+ inquire(file='mass_loss_rate.dat', exist=file_exists)
+ if (.not. file_exists) return
+ 
+ open(newunit=iunit, file='mass_loss_rate.dat', status='old', iostat=ierr)
+ if (ierr /= 0) return
+ 
+ ! Skip comment line
+ read(iunit,*)
+ 
+ read(iunit,*, iostat=ierr) mass_loss_rate_calculated
+ if (ierr /= 0) then
+    close(iunit)
+    return
+ endif
+ 
+ read(iunit,*, iostat=ierr) mean_mass_loss_rate
+ read(iunit,*, iostat=ierr) particles_to_inject
+ read(iunit,*, iostat=ierr) n_measurements
+ 
+ ! Allocate and read individual measurements
+ if (n_measurements > 0) then
+    if (.not. allocated(mass_loss_rates)) allocate(mass_loss_rates(n_measurements))
+    do i = 1, n_measurements
+       read(iunit,*, iostat=ierr) mass_loss_rates(i)
+       if (ierr /= 0) exit
+    enddo
+ endif
+ 
+ close(iunit)
+ 
+ write(iprint,*) 'Mass-loss rate data read from mass_loss_rate.dat'
+ write(iprint,*) '  Mean mass-loss rate: ', mean_mass_loss_rate
+ write(iprint,*) '  Particles to inject: ', particles_to_inject
+ write(iprint,*) '  Number of measurements: ', n_measurements
+ 
+end subroutine read_mass_loss_data
+
+!-----------------------------------------------------------------------
+!+
 !  Calculate pulsation period based on stellar mass and radius
 !+
 !-----------------------------------------------------------------------
@@ -747,7 +1024,11 @@ subroutine write_options_inject(iunit)
  call write_inopt(var_boundary,'var_boundary','allow boundary particles to vary thermodynamic properties (logical)',iunit)
  call write_inopt(reinject_enabled,'reinject_enabled','enable dynamic reinjection of boundary spheres (logical)',iunit)
  call write_inopt(reinject_period_days,'reinject_period_days','period between reinjections in days (for continuous mode)',iunit)
- call write_inopt(injection_fraction,'injection_fraction','fraction of particles per sphere to inject during reinjection',iunit) 
+ call write_inopt(mass_loss_start,'mass_loss_start','start time for mass-loss calculation in years',iunit)
+ call write_inopt(mass_loss_end,'mass_loss_end','end time for mass-loss calculation in years',iunit)
+ call write_inopt(check_radius_au,'check_radius_au','radius in which to count mass for loss rate (AU)',iunit) 
+ call write_inopt(meas_int_days,'meas_int_days',&
+                  'interval for mass measurements in days',iunit)
 
 end subroutine write_options_inject
 
@@ -763,7 +1044,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save :: ngot = 0
- integer, parameter :: noptions = 19
+ integer, parameter :: noptions = 22
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -846,10 +1127,22 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) reinject_period_days
     ngot = ngot + 1
     if (reinject_period_days <= 0.) call fatal(label,'reinject_period_days must be > 0')
- case('injection_fraction')
-   read(valstring,*,iostat=ierr) injection_fraction
+ case('mass_loss_start')
+   read(valstring,*,iostat=ierr) mass_loss_start
    ngot = ngot + 1
-   if (injection_fraction <= 0. .or. injection_fraction > 1.0) call fatal(label,'injection_fraction must be in range (0,1]')
+   if (mass_loss_start < 0.) call fatal(label,'mass_loss_start must be >= 0')
+ case('mass_loss_end')
+   read(valstring,*,iostat=ierr) mass_loss_end
+   ngot = ngot + 1
+   if (mass_loss_end <= 0.) call fatal(label,'mass_loss_end must be > 0')
+ case('check_radius_au')
+   read(valstring,*,iostat=ierr) check_radius_au
+   ngot = ngot + 1
+   if (check_radius_au <= 0.) call fatal(label,'check_radius_au must be > 0')
+ case('meas_int_days')
+   read(valstring,*,iostat=ierr) meas_int_days
+   ngot = ngot + 1
+   if (meas_int_days <= 0.) call fatal(label,'meas_int_days must be > 0')
  case default
     imatch = .false.
  end select
