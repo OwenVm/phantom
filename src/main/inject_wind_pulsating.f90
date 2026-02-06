@@ -172,7 +172,7 @@ subroutine init_inject(ierr)
  real :: Mstar_cgs, Rstar_cgs, Tstar, delta_r_tangential, current_radius
  integer :: shell_index, particles_per_shell, distributed_particles, max_shells, temp_particles
  integer :: expected_measurements
- logical :: converged
+ logical :: converged, file_exists
 
  ierr = 0
 
@@ -189,7 +189,13 @@ subroutine init_inject(ierr)
 
  ! Calculate mass distribution
  Matmos = atmos_mass_fraction * Mtotal
- Msink  = Mtotal - Matmos
+ 
+ inquire(file='mass_loss_rate.dat', exist=file_exists)
+   
+ if (.not. file_exists) then
+    Msink = Mtotal - Matmos
+    xyzmh_ptmass(4,wind_emitting_sink) = Msink
+ endif
 
  ! Initialize active boundary spheres
  active_boundary_spheres = iboundary_spheres
@@ -332,7 +338,7 @@ subroutine init_inject(ierr)
  massoftype(igas) = mass_of_particles
  massoftype(iboundary) = mass_of_particles
 
- xyzmh_ptmass(4,wind_emitting_sink) = Msink
+!  xyzmh_ptmass(4,wind_emitting_sink) = Msink
 
 end subroutine init_inject
 
