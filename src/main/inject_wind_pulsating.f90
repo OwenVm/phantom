@@ -200,7 +200,7 @@ subroutine init_inject(ierr)
  ! Initialize active boundary spheres
  active_boundary_spheres = iboundary_spheres
 
- if (iwind == 2) then
+ if (iwind == 2 .and. .not. file_exists) then
     call calculate_period(Mtotal, Rstar, pulsation_period_days)
  endif
 
@@ -328,6 +328,10 @@ subroutine init_inject(ierr)
  ! Total atmospheric mass distributed over all particles
  mass_of_particles = Matmos / real(n_shells_total * particles_per_sphere)
 
+ if (file_exists) then
+    call read_mass_loss_data()
+ endif 
+
  print *, ''
  print *, 'Atmospheric particle mass (Msun): ', mass_of_particles
  print *, 'Total number of shells: ', n_shells_total
@@ -337,8 +341,6 @@ subroutine init_inject(ierr)
 
  massoftype(igas) = mass_of_particles
  massoftype(iboundary) = mass_of_particles
-
-!  xyzmh_ptmass(4,wind_emitting_sink) = Msink
 
 end subroutine init_inject
 
@@ -919,8 +921,10 @@ subroutine write_mass_loss_data()
  write(iunit,*) '# Mass-loss rate data for restart'
  write(iunit,*) mass_loss_rate_calculated
  write(iunit,*) mean_mass_loss_rate
+ write(iunit,*) Mtotal                
  write(iunit,*) particles_to_inject
  write(iunit,*) n_measurements
+ write(iunit,*) mass_of_particles
  
  ! Write all individual measurements
  do i = 1, n_measurements
@@ -959,8 +963,10 @@ subroutine read_mass_loss_data()
  endif
  
  read(iunit,*, iostat=ierr) mean_mass_loss_rate
+ read(iunit,*, iostat=ierr) Mtotal
  read(iunit,*, iostat=ierr) particles_to_inject
  read(iunit,*, iostat=ierr) n_measurements
+ read(iunit,*, iostat=ierr) mass_of_particles
  
  ! Allocate and read individual measurements
  if (n_measurements > 0) then
@@ -975,9 +981,10 @@ subroutine read_mass_loss_data()
  
  write(iprint,*) 'Mass-loss rate data read from mass_loss_rate.dat'
  write(iprint,*) '  Mean mass-loss rate: ', mean_mass_loss_rate
+ write(iprint,*) '  Total mass: ', Mtotal
  write(iprint,*) '  Particles to inject: ', particles_to_inject
  write(iprint,*) '  Number of measurements: ', n_measurements
- 
+ write(iprint,*) '  Mass of particles: ', mass_of_particles
 end subroutine read_mass_loss_data
 
 !-----------------------------------------------------------------------
