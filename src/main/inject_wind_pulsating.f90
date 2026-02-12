@@ -53,7 +53,7 @@ module inject
  integer :: iboundary_spheres = 5 ! Number of boundary spheres 
  integer :: n_profile_points = 10000 ! Number of points in stellar profile calculation
  integer :: n_particles = 500000 ! Total number of particles (not used if n_shells > 0)
- integer :: n_shells = -1 ! Total number of shells (if <0 determined automatically from n_particles)
+ integer :: n_shells = 25 ! Total number of shells (if <0 determined automatically from n_particles)
  real    :: r_min_on_rstar = 0.9 ! Inner radius (R_eq, not R_min) as fraction of Rstar
  real    :: r_max_on_rstar = 1.4 ! Outer radius as fraction of Rstar
  real    :: dtpulsation = huge(0.)
