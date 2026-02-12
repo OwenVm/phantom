@@ -130,7 +130,7 @@ subroutine set_default_options_inject(flag)
  iboundary_spheres = 5
  n_profile_points = 10000
  n_particles = 500000
- n_shells = -1
+ n_shells = 25
  r_min_on_rstar = 0.9
  r_max_on_rstar = 1.4
  dtpulsation = huge(0.)
@@ -147,7 +147,7 @@ subroutine set_default_options_inject(flag)
  reinject_enabled = .true.
  reinject_period_days = 10.0
  mass_loss_start = 1.0
- mass_loss_end = 2.0
+ mass_loss_end = 3.0
  check_radius_au = 3.0
  meas_int_days = 10.0
 
@@ -163,13 +163,14 @@ subroutine init_inject(ierr)
  use physcon,       only:pi,days,au,solarm,km,years
  use icosahedron,   only:compute_matrices,compute_corners
  use eos,           only:gmw,gamma
- use units,         only:utime,umass,unit_velocity
- use part,          only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff
+ use units,         only:utime,umass,unit_velocity,unit_luminosity
+ use part,          only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff,iLum
  use injectutils,   only:get_parts_per_sphere, get_fibonacci_spacing
  use wind_pulsating,only:setup_star,calc_stellar_profile
+ use dust_formation,only:calc_kappa_max
 
  integer, intent(out) :: ierr
- real :: Mstar_cgs, Rstar_cgs, Tstar, delta_r_tangential, current_radius
+ real :: Mstar_cgs, Rstar_cgs, Tstar, Lstar_cgs, delta_r_tangential, current_radius
  integer :: shell_index, particles_per_shell, distributed_particles, max_shells, temp_particles
  integer :: expected_measurements
  logical :: converged, file_exists
@@ -186,6 +187,9 @@ subroutine init_inject(ierr)
  Rstar_cgs = Rstar * au 
  Mstar_cgs = Mtotal * solarm 
  Tstar     = xyzmh_ptmass(iTeff,wind_emitting_sink)
+ Lstar_cgs = xyzmh_ptmass(iLum,wind_emitting_sink) * unit_luminosity 
+
+ call calc_kappa_max(Mstar_cgs, Lstar_cgs)
 
  ! Calculate mass distribution
  Matmos = atmos_mass_fraction * Mtotal

@@ -59,9 +59,9 @@ subroutine set_default_parameters_wind()
  semi_major_axis_au    = 4.0
  eccentricity          = 0.0
  primary_Teff          = 3000.0
- primary_lum_lsun      = 5315.
+ primary_lum_lsun      = -1.
  primary_mass_msun     = 1.5
- primary_Reff_au       = 1.
+ primary_Reff_au       = 1.2
  primary_racc_au       = 0.2
  secondary_lum_lsun    = 0.
  secondary_mass_msun   = 1.0

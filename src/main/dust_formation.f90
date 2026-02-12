@@ -35,7 +35,8 @@ module dust_formation
       calc_kappa_bowen,chemical_equilibrium_light,psat_C,calc_nucleation,&
       read_options_dust_formation,write_options_dust_formation,&
       calc_Eddington_factor,calc_muGamma,init_muGamma,init_nucleation,&
-      write_headeropts_dust_formation,read_headeropts_dust_formation
+      write_headeropts_dust_formation,read_headeropts_dust_formation, &
+      calc_kappa_max
 !
 !--runtime settings for this module
 !
@@ -50,6 +51,8 @@ module dust_formation
  character(len=*), parameter :: label = 'dust_formation'
  real :: wind_CO_ratio = 2.
  real :: bowen_kmax  = 2.7991
+ real :: grad_to_ggrav = 0.95
+ real :: kappa_max
  real :: bowen_Tcond = 1500.
  real :: bowen_delta = 60.
 
@@ -91,7 +94,7 @@ module dust_formation
 contains
 
 subroutine init_nucleation
- use part,  only:npart,nucleation,n_nucleation
+ use part,  only:npart,nucleation,n_nucleation, iLum
  use eos,   only:gamma,gmw
  integer :: i
  real :: JKmuS(n_nucleation)
@@ -219,7 +222,7 @@ pure elemental real function calc_kappa_bowen(Teq)
  if (dlnT > 50.) then
     calc_kappa_bowen = 0.
  else
-    calc_kappa_bowen = bowen_kmax/(1.0 + exp(dlnT)) + kappa_gas
+    calc_kappa_bowen = kappa_max/(1.0 + exp(dlnT)) + kappa_gas
  endif
 
 end function calc_kappa_bowen
@@ -266,6 +269,26 @@ pure real function calc_Eddington_factor(Mstar_cgs, Lstar_cgs, kappa_cgs, tau)
     calc_Eddington_factor = Lstar_cgs/(4.*pi*c*Gg*Mstar_cgs) * kappa_cgs
  endif
 end function calc_Eddington_factor
+
+!-----------------------------------------------------------------------
+!
+!  calculate maximum dust opacity from Eddington limit
+!
+!-----------------------------------------------------------------------
+subroutine calc_kappa_max(Mstar_cgs, Lstar_cgs)
+!all quantities in cgs
+ use physcon, only:c,Gg
+ real, intent(in) :: Mstar_cgs, Lstar_cgs
+ 
+ if (bowen_kmax > 0.) then
+    kappa_max = bowen_kmax
+ else
+    kappa_max = grad_to_ggrav * 4.0 * pi * Gg * Mstar_cgs * c / Lstar_cgs
+ endif
+
+ print *,'Calculated kappa_max =',kappa_max,' cm^2/g'
+ 
+end subroutine calc_kappa_max
 
 !----------------------------
 !
@@ -726,7 +749,8 @@ subroutine write_options_dust_formation(iunit)
  endif
  if (idust_opacity == 1) then
     call write_inopt(kappa_gas,'kappa_gas','constant gas opacity (cm²/g)',iunit)
-    call write_inopt(bowen_kmax,'bowen_kmax','maximum dust opacity (cm²/g)',iunit)
+    call write_inopt(bowen_kmax,'bowen_kmax','maximum dust opacity (cm²/g) (if < 0, calculated using grad_to_ggrav)',iunit)
+    call write_inopt(grad_to_ggrav,'grad_to_ggrav','ratio of radiative to gravitational acceleration',iunit)
     call write_inopt(bowen_Tcond,'bowen_Tcond','dust condensation temperature (K)',iunit)
     call write_inopt(bowen_delta,'bowen_delta','condensation temperature range (K)',iunit)
  endif
@@ -774,7 +798,11 @@ subroutine read_options_dust_formation(name,valstring,imatch,igotall,ierr)
  case('bowen_kmax')
     read(valstring,*,iostat=ierr) bowen_kmax
     ngot = ngot + 1
-    if (bowen_kmax < 0.)    call fatal(label,'invalid setting for bowen_kmax (<0)')
+    if (bowen_kmax < -10.)    call fatal(label,'invalid setting for bowen_kmax (<-10)')
+ case('grad_to_ggrav')
+    read(valstring,*,iostat=ierr) grad_to_ggrav
+    ngot = ngot + 1
+    if (grad_to_ggrav <= 0.) call fatal(label,'invalid setting for grad_to_ggrav (must be > 0)')
  case('bowen_Tcond')
     read(valstring,*,iostat=ierr) bowen_Tcond
     ngot = ngot + 1
