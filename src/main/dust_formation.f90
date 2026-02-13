@@ -50,7 +50,7 @@ module dust_formation
 
  character(len=*), parameter :: label = 'dust_formation'
  real :: wind_CO_ratio = 2.
- real :: bowen_kmax  = 2.7991
+ real :: bowen_kmax  = -1
  real :: grad_to_ggrav = 0.95
  real :: kappa_max
  real :: bowen_Tcond = 1500.
