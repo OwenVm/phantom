@@ -21,11 +21,13 @@ module wind_pulsating
  public :: stellar_state,save_stellarprofile,interp_stellar_profile,calc_stellar_profile
 
  private
- ! Shared variables
- real, parameter :: rho_power = 2.0  ! Density profile exponent (i.e. rho ~ r^(-rho_power))
+ ! Density profile exponent: rho ~ r^(-rho_power)
+ ! This is now a runtime parameter set via setup_star.
+ ! Typical values: 2.0 (default, analytic), 10.0 (grid-code steep profile)
+ real :: rho_power = 2.0
 
  ! input parameters
- real :: Mstar_cgs, Rstar_cgs, r_inner, Star_gamma, Star_mu, number_of_steps, P0, rho0, Menv_cgs
+ real :: Mstar_cgs, Rstar_cgs, r_inner, Star_gamma, Star_mu, P0, rho0, Menv_cgs
  real, dimension(:,:), allocatable, public :: stellar_1D
 
  ! stellar properties
@@ -37,28 +39,96 @@ module wind_pulsating
 
 contains
 
-subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, surface_pressure, M_env_in)
+subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, surface_pressure, M_env_in, rho_power_in)
  use physcon, only:au, solarm
-!  use units,   only:umass,udist
-!  use eos,     only:gamma, gmw
 
- real, intent(in)    :: Mstar_in, Rstar_in, r_min, mu_in, gamma_in, surface_pressure, M_env_in
+ real, intent(in)           :: Mstar_in, Rstar_in, r_min, mu_in, gamma_in, surface_pressure, M_env_in
+ real, intent(in), optional :: rho_power_in
 
  Mstar_cgs  = Mstar_in
  Rstar_cgs  = Rstar_in
- r_inner    = r_min  ! Location where the stellar atmosphere is assumed to be inverse quadratic (i.e. inner boundary)
+ r_inner    = r_min
  Star_gamma = gamma_in
  Star_mu    = mu_in
- P0 = surface_pressure
- Menv_cgs = M_env_in
+ P0         = surface_pressure
+ Menv_cgs   = M_env_in
+
+ ! Set density profile exponent; default to 2 if not supplied
+ if (present(rho_power_in)) then
+    rho_power = rho_power_in
+ else
+    rho_power = 2.0
+ endif
 
  print *, "Setting up star with parameters:"
- print *, "Rstar_cgs:", Rstar_cgs
- print *, "Mstar_cgs:", Mstar_cgs
- print *, "Menv_cgs:", Menv_cgs
- print *, "r_inner:", r_inner
+ print *, "Rstar_cgs  :", Rstar_cgs
+ print *, "Mstar_cgs  :", Mstar_cgs
+ print *, "Menv_cgs   :", Menv_cgs
+ print *, "r_inner    :", r_inner
+ print *, "rho_power  :", rho_power
 
 end subroutine setup_star
+
+!-----------------------------------------------------------------------
+!
+!  Normalization constant for the power-law density profile
+!
+!  rho(r) = C_rho / r^rho_power
+!
+!  where C_rho is chosen so that integrating rho over the shell volume
+!  [r_inner, Rstar] equals Menv_cgs:
+!
+!    Menv = 4*pi * C_rho * int_{r_inner}^{Rstar} r^(2-rho_power) dr
+!
+!  For rho_power /= 3:
+!    Menv = 4*pi * C_rho * [r^(3-rho_power) / (3-rho_power)]_{r_inner}^{Rstar}
+!
+!  For rho_power == 3 (logarithmic divergence):
+!    Menv = 4*pi * C_rho * ln(Rstar/r_inner)
+!
+!-----------------------------------------------------------------------
+real function calc_C_rho()
+ use physcon, only:pi
+
+ real :: exponent, integral
+
+ exponent = 3.0 - rho_power
+
+ if (abs(exponent) > 1.e-6) then
+    integral = (Rstar_cgs**exponent - r_inner**exponent) / exponent
+ else
+    ! rho_power == 3: integral of 1/r from r_inner to Rstar
+    integral = log(Rstar_cgs / r_inner)
+ endif
+
+ calc_C_rho = Menv_cgs / (4.0 * pi * integral)
+
+end function calc_C_rho
+
+!-----------------------------------------------------------------------
+!
+!  Enclosed envelope mass from r_inner to r (used in hydrostatic step)
+!
+!  M_env(r) = 4*pi * C_rho * int_{r_inner}^{r} r'^(2-rho_power) dr'
+!
+!-----------------------------------------------------------------------
+real function enclosed_env_mass(r, C_rho)
+ use physcon, only:pi
+
+ real, intent(in) :: r, C_rho
+ real :: exponent, integral
+
+ exponent = 3.0 - rho_power
+
+ if (abs(exponent) > 1.e-6) then
+    integral = (r**exponent - r_inner**exponent) / exponent
+ else
+    integral = log(r / r_inner)
+ endif
+
+ enclosed_env_mass = 4.0 * pi * C_rho * integral
+
+end function enclosed_env_mass
 
 !-----------------------------------------------------------------------
 !
@@ -66,26 +136,30 @@ end subroutine setup_star
 !
 !-----------------------------------------------------------------------
 subroutine init_atmosphere(state)
-! all quantities in cgs
  use physcon, only:pi, Rg, kboltz, mass_proton_cgs
  type(stellar_state), intent(out) :: state
  real :: C_rho
 
  ! Initialize at stellar surface
- state%r0     = Rstar_cgs
- state%r      = Rstar_cgs
- state%Rstar  = Rstar_cgs
- state%P      = P0
- C_rho        = Menv_cgs / (4.*pi * (Rstar_cgs - r_inner))
- rho0         = C_rho / Rstar_cgs**rho_power 
- state%rho    = rho0
- state%u      = state%P / (state%rho * (Star_gamma - 1.))
- state%T      = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
+ state%r0    = Rstar_cgs
+ state%r     = Rstar_cgs
+ state%Rstar = Rstar_cgs
+ state%P     = P0
+
+ C_rho     = calc_C_rho()
+ rho0      = C_rho / Rstar_cgs**rho_power
+ state%rho = rho0
+ state%u   = state%P / (state%rho * (Star_gamma - 1.))
+ state%T   = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
+
  print *, ""
  print *, "Initial stellar surface conditions:"
- print *, " mu:", Star_mu
- print *, " gamma:", Star_gamma
+ print *, " mu          :", Star_mu
+ print *, " gamma       :", Star_gamma
+ print *, " rho_power   :", rho_power
+ print *, " rho (surf)  :", rho0
  print *, ""
+
  state%nsteps = 1
  state%error  = .false.
 
@@ -103,25 +177,23 @@ subroutine stellar_step(state, r_new)
  real, intent(in) :: r_new
  real :: dr, r_mid, rho_mid, mr_mid, dP, C_rho
 
- dr = r_new - state%r
+ dr    = r_new - state%r
  r_mid = 0.5 * (state%r + r_new)
 
- ! Get density and enclosed mass at midpoint
- C_rho = Menv_cgs / (4.*pi * (Rstar_cgs - r_inner))
+ C_rho   = calc_C_rho()
  rho_mid = C_rho / r_mid**rho_power
- mr_mid = Mstar_cgs + Menv_cgs * ( r_mid - r_inner) / (Rstar_cgs - r_inner)
+ ! Total enclosed mass at midpoint = stellar core mass + envelope mass from r_inner to r_mid
+ mr_mid  = Mstar_cgs + enclosed_env_mass(r_mid, C_rho)
 
- ! Integrate hydrostatic equilibrium: dP/dr = -rho * G * M(r) / r^2
+ ! dP/dr = -rho * G * M(r) / r^2
  dP = -(Gg * mr_mid * rho_mid / r_mid**2) * dr
 
- ! Update state
  state%r   = r_new
  state%P   = state%P + dP
  state%rho = C_rho / state%r**rho_power
 
- ! Calculate thermodynamic quantities
- state%u = state%P / (state%rho * (star_gamma - 1.))
- state%T = star_mu * mass_proton_cgs / kboltz * (star_gamma - 1.) * state%u
+ state%u = state%P / (state%rho * (Star_gamma - 1.))
+ state%T = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
 
  state%nsteps = state%nsteps + 1
 
@@ -133,34 +205,28 @@ end subroutine stellar_step
 !
 !-----------------------------------------------------------------------
 subroutine calc_stellar_profile(n)
-! all quantities in cgs
  integer, intent(in) :: n
  type(stellar_state) :: state
  integer :: i
  real :: r_new, dr
 
- ! Initialize stellar structure
  call init_atmosphere(state)
 
- ! Allocate storage for profile
  if (allocated(stellar_1D)) deallocate(stellar_1D)
  allocate(stellar_1D(5, n))
 
- ! Store surface values
  stellar_1D(1, n) = state%r
  stellar_1D(2, n) = state%rho
  stellar_1D(3, n) = state%P
  stellar_1D(4, n) = state%u
  stellar_1D(5, n) = state%T
 
- ! Integrate inward from surface to center in steps of dr
- dr = (Rstar_cgs - r_inner) / real(n-1) 
+ dr = (Rstar_cgs - r_inner) / real(n-1)
 
  do i = n-1, 1, -1
-    r_new = Rstar_cgs - real(n-i)*dr 
+    r_new = Rstar_cgs - real(n-i)*dr
     call stellar_step(state, r_new)
 
-    ! Store in profile
     stellar_1D(1, i) = state%r
     stellar_1D(2, i) = state%rho
     stellar_1D(3, i) = state%P
@@ -168,8 +234,7 @@ subroutine calc_stellar_profile(n)
     stellar_1D(5, i) = state%T
  enddo
 
- ! Save profile to file
-call save_stellarprofile(n, 'stellar_profile1D.dat')
+ call save_stellarprofile(n, 'stellar_profile1D.dat')
 
 end subroutine calc_stellar_profile
 
@@ -179,23 +244,21 @@ end subroutine calc_stellar_profile
 !
 !-----------------------------------------------------------------------
 subroutine interp_stellar_profile(r, rho, P, u, T)
- !in/out variables in code units
  use units,       only:udist, unit_density, unit_ergg, unit_pressure
  use table_utils, only:find_nearest_index, interp_1d
  use io,          only:fatal
 
- real, intent(in)  :: r  ! in code units
+ real, intent(in)  :: r
  real, intent(out) :: rho, P, u, T
  real :: r_cgs
  integer :: indx, n
  character(len=*), parameter :: label = 'interp_stellar_profile'
 
- ! Check if profile exists
  if (.not. allocated(stellar_1D)) then
     call fatal(label, 'stellar_1D not allocated. Call setup_star first.')
  endif
 
- n = size(stellar_1D, 2)
+ n     = size(stellar_1D, 2)
  r_cgs = r * udist
 
  if (r_cgs <= stellar_1D(1,1)) then
@@ -215,10 +278,14 @@ subroutine interp_stellar_profile(r, rho, P, u, T)
 
  call find_nearest_index(stellar_1D(1,:), r_cgs, indx)
 
- rho = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1),stellar_1D(2,indx), stellar_1D(2,indx+1)) / unit_density
- P   = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1),stellar_1D(3,indx), stellar_1D(3,indx+1)) / unit_pressure
- u   = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1),stellar_1D(4,indx), stellar_1D(4,indx+1)) / unit_ergg
- T   = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1),stellar_1D(5,indx), stellar_1D(5,indx+1)) 
+ rho = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1), &
+                 stellar_1D(2,indx), stellar_1D(2,indx+1)) / unit_density
+ P   = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1), &
+                 stellar_1D(3,indx), stellar_1D(3,indx+1)) / unit_pressure
+ u   = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1), &
+                 stellar_1D(4,indx), stellar_1D(4,indx+1)) / unit_ergg
+ T   = interp_1d(r_cgs, stellar_1D(1,indx), stellar_1D(1,indx+1), &
+                 stellar_1D(5,indx), stellar_1D(5,indx+1))
 
 end subroutine interp_stellar_profile
 
@@ -242,7 +309,6 @@ subroutine save_stellarprofile(n, filename)
  open(unit=iunit, file=filename, status='replace')
  call filewrite_stellar_header(iunit, nwrite)
 
- ! Write profile data
  do i = 1, n
     call filewrite_stellar_state(iunit, nwrite, i)
  enddo
@@ -262,15 +328,14 @@ subroutine filewrite_stellar_header(iunit, nwrite)
 end subroutine filewrite_stellar_header
 
 subroutine state_to_array(i, array)
- use physcon, only:pi
- integer, intent(in) :: i
- real, intent(out) :: array(:)
+ integer, intent(in)  :: i
+ real,    intent(out) :: array(:)
 
- array(1) = stellar_1D(1, i)  ! r
- array(2) = stellar_1D(2, i)  ! rho
- array(3) = stellar_1D(3, i)  ! P
- array(4) = stellar_1D(4, i)  ! u
- array(5) = stellar_1D(5, i)  ! T
+ array(1) = stellar_1D(1, i)
+ array(2) = stellar_1D(2, i)
+ array(3) = stellar_1D(3, i)
+ array(4) = stellar_1D(4, i)
+ array(5) = stellar_1D(5, i)
 
 end subroutine state_to_array
 
