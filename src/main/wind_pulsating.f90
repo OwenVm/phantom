@@ -19,6 +19,7 @@ module wind_pulsating
  implicit none
  public :: setup_star
  public :: stellar_state,save_stellarprofile,interp_stellar_profile,calc_stellar_profile
+ public :: region_mass
 
  private
  ! Density profile exponent: rho ~ r^(-rho_power)
@@ -75,17 +76,6 @@ end subroutine setup_star
 !
 !  rho(r) = C_rho / r^rho_power
 !
-!  where C_rho is chosen so that integrating rho over the shell volume
-!  [r_inner, Rstar] equals Menv_cgs:
-!
-!    Menv = 4*pi * C_rho * int_{r_inner}^{Rstar} r^(2-rho_power) dr
-!
-!  For rho_power /= 3:
-!    Menv = 4*pi * C_rho * [r^(3-rho_power) / (3-rho_power)]_{r_inner}^{Rstar}
-!
-!  For rho_power == 3 (logarithmic divergence):
-!    Menv = 4*pi * C_rho * ln(Rstar/r_inner)
-!
 !-----------------------------------------------------------------------
 real function calc_C_rho()
  use physcon, only:pi
@@ -129,6 +119,27 @@ real function enclosed_env_mass(r, C_rho)
  enclosed_env_mass = 4.0 * pi * C_rho * integral
 
 end function enclosed_env_mass
+
+!-----------------------------------------------------------------------
+!
+!  Mass of the envelope between two radii r_a and r_b (r_a < r_b),
+!
+!-----------------------------------------------------------------------
+real function region_mass(r_a_code, r_b_code)
+ use units,   only:udist, umass
+ use physcon, only:au
+
+ real, intent(in) :: r_a_code, r_b_code  
+ real :: r_a_cgs, r_b_cgs, C_rho
+
+ r_a_cgs = r_a_code * udist
+ r_b_cgs = r_b_code * udist
+ C_rho   = calc_C_rho()
+
+ region_mass = (enclosed_env_mass(r_b_cgs, C_rho) &
+              - enclosed_env_mass(r_a_cgs, C_rho)) / umass
+
+end function region_mass
 
 !-----------------------------------------------------------------------
 !
