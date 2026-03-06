@@ -22,16 +22,12 @@ module wind_pulsating
  public :: region_mass
 
  private
- ! Density profile exponent: rho ~ r^(-rho_power)
- ! This is now a runtime parameter set via setup_star.
- ! Typical values: 2.0 (default, analytic), 10.0 (grid-code steep profile)
  real :: rho_power = 2.0
 
  ! input parameters
- real :: Mstar_cgs, Rstar_cgs, r_inner, Star_gamma, Star_mu, P0, rho0, Menv_cgs
+ real :: Mstar_cgs, Rstar_cgs, r_inner, Star_gamma, Star_mu, rho_inner_cgs
  real, dimension(:,:), allocatable, public :: stellar_1D
 
- ! stellar properties
  type stellar_state
     real :: r, r0, Rstar, rho, P, u, T
     integer :: nsteps
@@ -40,21 +36,19 @@ module wind_pulsating
 
 contains
 
-subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, surface_pressure, M_env_in, rho_power_in)
+subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, rho_inner_in, rho_power_in)
  use physcon, only:au, solarm
 
- real, intent(in)           :: Mstar_in, Rstar_in, r_min, mu_in, gamma_in, surface_pressure, M_env_in
+ real, intent(in)           :: Mstar_in, Rstar_in, r_min, mu_in, gamma_in, rho_inner_in
  real, intent(in), optional :: rho_power_in
 
- Mstar_cgs  = Mstar_in
- Rstar_cgs  = Rstar_in
- r_inner    = r_min
- Star_gamma = gamma_in
- Star_mu    = mu_in
- P0         = surface_pressure
- Menv_cgs   = M_env_in
+ Mstar_cgs     = Mstar_in
+ Rstar_cgs     = Rstar_in
+ r_inner       = r_min
+ Star_gamma    = gamma_in
+ Star_mu       = mu_in
+ rho_inner_cgs = rho_inner_in
 
- ! Set density profile exponent; default to 2 if not supplied
  if (present(rho_power_in)) then
     rho_power = rho_power_in
  else
@@ -64,7 +58,7 @@ subroutine setup_star(Mstar_in, Rstar_in, r_min, mu_in, gamma_in, surface_pressu
  print *, "Setting up star with parameters:"
  print *, "Rstar_cgs  :", Rstar_cgs
  print *, "Mstar_cgs  :", Mstar_cgs
- print *, "Menv_cgs   :", Menv_cgs
+ print *, "rho_inner  :", rho_inner_cgs
  print *, "r_inner    :", r_inner
  print *, "rho_power  :", rho_power
 
@@ -75,31 +69,16 @@ end subroutine setup_star
 !  Normalization constant for the power-law density profile
 !
 !  rho(r) = C_rho / r^rho_power
+!  Anchored at r_inner: C_rho = rho_inner_cgs * r_inner^rho_power
 !
 !-----------------------------------------------------------------------
 real function calc_C_rho()
- use physcon, only:pi
-
- real :: exponent, integral
-
- exponent = 3.0 - rho_power
-
- if (abs(exponent) > 1.e-6) then
-    integral = (Rstar_cgs**exponent - r_inner**exponent) / exponent
- else
-    ! rho_power == 3: integral of 1/r from r_inner to Rstar
-    integral = log(Rstar_cgs / r_inner)
- endif
-
- calc_C_rho = Menv_cgs / (4.0 * pi * integral)
-
+ calc_C_rho = rho_inner_cgs * r_inner**rho_power
 end function calc_C_rho
 
 !-----------------------------------------------------------------------
 !
-!  Enclosed envelope mass from r_inner to r (used in hydrostatic step)
-!
-!  M_env(r) = 4*pi * C_rho * int_{r_inner}^{r} r'^(2-rho_power) dr'
+!  Enclosed envelope mass from r_inner to r
 !
 !-----------------------------------------------------------------------
 real function enclosed_env_mass(r, C_rho)
@@ -122,14 +101,14 @@ end function enclosed_env_mass
 
 !-----------------------------------------------------------------------
 !
-!  Mass of the envelope between two radii r_a and r_b (r_a < r_b),
+!  Mass of the envelope between two radii r_a and r_b (r_a < r_b)
 !
 !-----------------------------------------------------------------------
 real function region_mass(r_a_code, r_b_code)
  use units,   only:udist, umass
  use physcon, only:au
 
- real, intent(in) :: r_a_code, r_b_code  
+ real, intent(in) :: r_a_code, r_b_code
  real :: r_a_cgs, r_b_cgs, C_rho
 
  r_a_cgs = r_a_code * udist
@@ -143,32 +122,56 @@ end function region_mass
 
 !-----------------------------------------------------------------------
 !
-!  Initialize variables for stellar profile integration
+!  Initialize variables for stellar profile integration at r_inner
+!  with the supplied inner density boundary condition.
+!
+!  P_inner is set from ideal gas EOS assuming the local hydrostatic
+!  scale height H = P/(rho*g) gives a consistent temperature:
+!    P_inner = rho_inner * k_B * T_inner / (mu * m_H)
+!  We derive T_inner from the adiabatic sound speed anchored to the
+!  local gravitational scale height:
+!    c_s^2 = gamma * P / rho  =  gamma * k_B * T / (mu * m_H)
+!    H     = c_s^2 / g        =  r^2 * c_s^2 / (G * M)
+!  Choosing H = r / rho_power (scale height of the power-law profile):
+!    c_s^2 = G * M * rho_power / r
+!    P_inner = rho_inner * G * M * rho_power / (gamma * r_inner)
 !
 !-----------------------------------------------------------------------
 subroutine init_atmosphere(state)
- use physcon, only:pi, Rg, kboltz, mass_proton_cgs
+ use physcon, only:pi, kboltz, mass_proton_cgs, Gg
  type(stellar_state), intent(out) :: state
- real :: C_rho
+ real :: C_rho, exponent, P_inner
 
- ! Initialize at stellar surface
- state%r0    = Rstar_cgs
- state%r     = Rstar_cgs
+ state%r0    = r_inner
+ state%r     = r_inner
  state%Rstar = Rstar_cgs
- state%P     = P0
+ state%rho   = rho_inner_cgs
 
- C_rho     = calc_C_rho()
- rho0      = C_rho / Rstar_cgs**rho_power
- state%rho = rho0
- state%u   = state%P / (state%rho * (Star_gamma - 1.))
- state%T   = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
+ ! Derive P_inner by integrating dP/dr = -rho*g analytically from
+ ! r_outer (where P=0) down to r_inner:
+ !
+ !   P_inner = G*M*C_rho * integral_{r_inner}^{r_outer} r^{-(rho_power+2)} dr
+ !           = G*M*C_rho / (rho_power+1) * (r_inner^{-(rho_power+1)} - r_outer^{-(rho_power+1)})
+ !
+ C_rho    = calc_C_rho()
+ exponent = rho_power + 1.0
+ ! Use 10*Rstar_cgs as effective outer boundary so P remains positive
+ ! all the way to r_max_on_rstar * Rstar (which can exceed Rstar_cgs)
+ P_inner  = Gg * Mstar_cgs * C_rho / exponent * &
+            (r_inner**(-exponent) - (10.0*Rstar_cgs)**(-exponent))
+
+ state%P = P_inner
+ state%u = state%P / (state%rho * (Star_gamma - 1.))
+ state%T = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
 
  print *, ""
- print *, "Initial stellar surface conditions:"
+ print *, "Initial inner boundary conditions:"
  print *, " mu          :", Star_mu
  print *, " gamma       :", Star_gamma
  print *, " rho_power   :", rho_power
- print *, " rho (surf)  :", rho0
+ print *, " rho (inner) :", rho_inner_cgs
+ print *, " P   (inner) :", state%P
+ print *, " T   (inner) :", state%T
  print *, ""
 
  state%nsteps = 1
@@ -178,7 +181,7 @@ end subroutine init_atmosphere
 
 !-----------------------------------------------------------------------
 !
-!  Integrate hydrostatic equilibrium over one radial step
+!  Integrate hydrostatic equilibrium over one radial step (outward)
 !
 !-----------------------------------------------------------------------
 subroutine stellar_step(state, r_new)
@@ -193,10 +196,9 @@ subroutine stellar_step(state, r_new)
 
  C_rho   = calc_C_rho()
  rho_mid = C_rho / r_mid**rho_power
- ! Total enclosed mass at midpoint = stellar core mass + envelope mass from r_inner to r_mid
  mr_mid  = Mstar_cgs + enclosed_env_mass(r_mid, C_rho)
 
- ! dP/dr = -rho * G * M(r) / r^2
+ ! dP/dr = -rho * G * M(r) / r^2  (negative: P decreases outward)
  dP = -(Gg * mr_mid * rho_mid / r_mid**2) * dr
 
  state%r   = r_new
@@ -212,7 +214,7 @@ end subroutine stellar_step
 
 !-----------------------------------------------------------------------
 !
-!  Integrate the hydrostatic equilibrium equation
+!  Integrate the hydrostatic equilibrium equation outward from r_inner
 !
 !-----------------------------------------------------------------------
 subroutine calc_stellar_profile(n)
@@ -226,16 +228,16 @@ subroutine calc_stellar_profile(n)
  if (allocated(stellar_1D)) deallocate(stellar_1D)
  allocate(stellar_1D(5, n))
 
- stellar_1D(1, n) = state%r
- stellar_1D(2, n) = state%rho
- stellar_1D(3, n) = state%P
- stellar_1D(4, n) = state%u
- stellar_1D(5, n) = state%T
-
  dr = (Rstar_cgs - r_inner) / real(n-1)
 
- do i = n-1, 1, -1
-    r_new = Rstar_cgs - real(n-i)*dr
+ stellar_1D(1, 1) = state%r
+ stellar_1D(2, 1) = state%rho
+ stellar_1D(3, 1) = state%P
+ stellar_1D(4, 1) = state%u
+ stellar_1D(5, 1) = state%T
+
+ do i = 2, n
+    r_new = r_inner + real(i-1) * dr
     call stellar_step(state, r_new)
 
     stellar_1D(1, i) = state%r
@@ -273,7 +275,6 @@ subroutine interp_stellar_profile(r, rho, P, u, T)
  r_cgs = r * udist
 
  if (r_cgs <= stellar_1D(1,1)) then
-    print *, 'Warning: r_cgs < stellar_1D(1,1). Extrapolating...'
     rho = stellar_1D(2, 1) / unit_density
     P   = stellar_1D(3, 1) / unit_pressure
     u   = stellar_1D(4, 1) / unit_ergg
