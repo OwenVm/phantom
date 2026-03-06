@@ -61,36 +61,27 @@ module inject
            set_default_options_inject, update_injected_par
  private
 
- !------------------------------------------------------------------
- ! Runtime parameters (read from input file)
- !------------------------------------------------------------------
- integer :: iboundary_spheres    = 5
- integer :: n_profile_points     = 10000
- integer :: n_particles          = 500000
- integer :: n_shells             = 25
- ! Ratio N_boundary_per_shell / N_gas_per_shell at the interface (r_min).
- ! Each boundary shell gets particles proportional to local density scaled
- ! by this fraction relative to gas shells at the same density.
- real    :: boundary_fraction       = 0.1
- real    :: rho_power_in            = 2.0
- real    :: r_min_on_rstar          = 0.9
- real    :: r_max_on_rstar          = 1.4
- ! Inner edge of boundary region — also sets the inner edge of the
- ! hydrostatic profile integration, so no extrapolation occurs.
- real    :: r_b_min_on_rmax = 0.7
- real    :: dtpulsation          = huge(0.)
- real    :: pulsation_period_days= 300.0
- real    :: piston_velocity_km_s = 4.0
- real    :: time_puls            = -1.0
- real    :: atmos_mass_fraction  = 5e-5
- real    :: surface_pressure     = 0.001
- integer :: iwind                = 1
- real    :: pulsation_timestep   = 0.02
- real    :: phi0                 = -3.1415926536d0/2.0
- real    :: wss                  = 1.0
- logical :: var_boundary         = .false.
+ integer :: iboundary_spheres     = 5
+ integer :: n_profile_points      = 10000
+ integer :: n_particles           = 500000
+ integer :: n_shells              = 25
+ real    :: boundary_fraction     = 0.9
+ real    :: rho_power_in          = 10.0
+ real    :: r_min_on_rstar        = 0.9
+ real    :: r_max_on_rstar        = 1.4
+ real    :: r_b_min_on_rmax       = 0.8
+ real    :: dtpulsation           = huge(0.)
+ real    :: pulsation_period_days = 300.0
+ real    :: piston_velocity_km_s  = 4.0
+ real    :: time_puls             = -1.0
+ real    :: atmos_mass_fraction   = 5e-5
+ real    :: surface_pressure      = 0.001
+ integer :: iwind                 = 1
+ real    :: pulsation_timestep    = 0.02
+ real    :: phi0                  = 3.1415926536d0/2.0
+ real    :: wss                   = 1.0
+ logical :: var_boundary          = .false.
 
- ! Reinjection parameters
  logical :: reinject_enabled      = .true.
  real    :: reinject_period_days  = 10.0
  real    :: mass_loss_start       = 1.0
@@ -98,9 +89,6 @@ module inject
  real    :: check_radius_au       = 3.0
  real    :: meas_int_days         = 10.0
 
- !------------------------------------------------------------------
- ! Global variables
- !------------------------------------------------------------------
  integer, parameter :: wind_emitting_sink = 1
  integer, parameter :: max_measurements   = 10000
 
@@ -108,29 +96,23 @@ module inject
  real :: Rstar, r_min, r_boundary_min
  real :: Mtotal, Matmos, Msink
 
- ! Per-shell particle counts (allocated to n_shells_total)
- integer, allocatable :: npart_per_shell(:)          ! gas shells (iboundary_spheres+1 : n_shells_total)
- integer, allocatable :: npart_per_boundary_shell(:) ! boundary shells (1 : iboundary_spheres)
+ integer, allocatable :: npart_per_shell(:)
+ integer, allocatable :: npart_per_boundary_shell(:)
 
- ! Independent radial grids for gas and boundary shells
- real, allocatable :: delta_r_gas(:)      ! spacing for gas shells
- real, allocatable :: delta_r_boundary(:) ! spacing for boundary shells (independent grid)
- real, allocatable :: shell_radii_gas(:)  ! central radii of gas shells
- real, allocatable :: shell_radii_bnd(:)  ! central radii of boundary shells
+ real, allocatable :: delta_r_gas(:)
+ real, allocatable :: delta_r_boundary(:)
+ real, allocatable :: shell_radii_gas(:)
+ real, allocatable :: shell_radii_bnd(:)
 
- ! Single particle masses (constant within each particle type)
  real :: mass_of_gas_particle      = 0.0
  real :: mass_of_boundary_particle = 0.0
 
- ! Combined delta_r array (boundary shells first, then gas) used by
- ! apply_pulsation and perform_reinjection which index by shell number.
  real, allocatable :: delta_r_radial(:)
 
  logical :: atmosphere_setup_complete = .false.
- integer :: n_shells_total   ! total gas shells
- integer :: n_shells_bnd     ! total boundary shells (== iboundary_spheres)
+ integer :: n_shells_total
+ integer :: n_shells_bnd
 
- ! Boundary particle tracking
  real, allocatable    :: r_boundary_equilibrium(:)
  integer, allocatable :: boundary_particle_ids(:)
  integer              :: n_boundary_particles
@@ -138,12 +120,10 @@ module inject
 
  logical :: reinjection_needed = .false.
 
- ! Continuous reinjection tracking
  real    :: time_last_reinject = 0.0
  real    :: reinject_period
  integer :: n_reinjections     = 0
 
- ! Mass-loss rate tracking
  real    :: mass_loss_start_time
  real    :: mass_loss_end_time
  real    :: mass_loss_check_radius
@@ -161,97 +141,38 @@ module inject
 
 contains
 
-!-----------------------------------------------------------------------
-!+
-!  Set default options
-!+
-!-----------------------------------------------------------------------
 subroutine set_default_options_inject(flag)
  integer, optional, intent(in) :: flag
 
- iboundary_spheres          = 5
- n_profile_points           = 10000
- n_particles                = 500000
- n_shells                   = 25
- boundary_fraction          = 0.1
- rho_power_in               = 2.0
- r_min_on_rstar             = 0.9
- r_max_on_rstar             = 1.4
- r_b_min_on_rmax    = 0.7
- dtpulsation          = huge(0.)
- atmos_mass_fraction  = 5e-5
- surface_pressure     = 0.001
- iwind                = 1
- pulsation_period_days= 300.0
- piston_velocity_km_s = 4.0
- time_puls            = -1.0
- pulsation_timestep   = 0.02
- phi0                 = -3.1415926536d0/2.0
- wss                  = 1.0
- var_boundary         = .false.
- reinject_enabled     = .true.
- reinject_period_days = 10.0
- mass_loss_start      = 1.0
- mass_loss_end        = 3.0
- check_radius_au      = 3.0
- meas_int_days        = 10.0
+ iboundary_spheres     = 5
+ n_profile_points      = 10000
+ n_particles           = 500000
+ n_shells              = 25
+ boundary_fraction     = 0.9
+ rho_power_in          = 10.0
+ r_min_on_rstar        = 0.9
+ r_max_on_rstar        = 1.4
+ r_b_min_on_rmax       = 0.8
+ dtpulsation           = huge(0.)
+ atmos_mass_fraction   = 5e-5
+ surface_pressure      = 0.001
+ iwind                 = 1
+ pulsation_period_days = 300.0
+ piston_velocity_km_s  = 4.0
+ time_puls             = -1.0
+ pulsation_timestep    = 0.02
+ phi0                  = 3.1415926536d0/2.0
+ wss                   = 1.0
+ var_boundary          = .false.
+ reinject_enabled      = .true.
+ reinject_period_days  = 10.0
+ mass_loss_start       = 1.0
+ mass_loss_end         = 3.0
+ check_radius_au       = 3.0
+ meas_int_days         = 10.0
 
 end subroutine set_default_options_inject
 
-!-----------------------------------------------------------------------
-!+
-!  Compute per-shell particle counts so that every particle in a given
-!  population (gas or boundary) has the same mass.
-!
-!  For a shell at radius r with local density rho(r), the shell mass is
-!    M_shell = 4*pi * r^2 * dr * rho(r)      (thin-shell approximation)
-!  We want M_shell / N_shell = m_particle = const, so
-!    N_shell  proportional to  M_shell  proportional to  rho(r) * r^2 * dr
-!
-!  In practice we normalise so that sum(N_shell) = n_total_target, then
-!  enforce N_shell >= 1.
-!
-!  shell_r(1:nsh)  - central radius of each shell  [code units]
-!  shell_dr(1:nsh) - radial width of each shell     [code units]
-!  nsh             - number of shells
-!  n_total_target  - desired total particle count
-!  npart_shell(:)  - output: integer particles per shell
-!+
-!-----------------------------------------------------------------------
-subroutine calc_particles_per_shell(shell_r, shell_dr, nsh, n_total_target, npart_shell)
- use wind_pulsating, only:interp_stellar_profile
- use units,          only:unit_density
-
- real,    intent(in)  :: shell_r(:), shell_dr(:)
- integer, intent(in)  :: nsh, n_total_target
- integer, intent(out) :: npart_shell(nsh)
-
- integer :: i
- real    :: rho, P, u, T
- real    :: weight(nsh), weight_sum, scale
-
- ! Compute shell mass weights  ~ rho(r) * r^2 * dr
- weight_sum = 0.0
- do i = 1, nsh
-    call interp_stellar_profile(shell_r(i), rho, P, u, T)
-    ! rho returned in code units; we only need relative weights
-    weight(i) = rho * shell_r(i)**2 * shell_dr(i)
-    weight_sum = weight_sum + weight(i)
- enddo
-
- ! Scale so sum == n_total_target, then round
- scale = real(n_total_target) / weight_sum
- do i = 1, nsh
-    npart_shell(i) = max(1, nint(weight(i) * scale))
- enddo
-
-end subroutine calc_particles_per_shell
-
-!-----------------------------------------------------------------------
-!+
-!  Initialize atmospheric setup and pulsation parameters
-!+
-!-----------------------------------------------------------------------
 subroutine init_inject(ierr)
  use io,            only:fatal
  use physcon,       only:pi,days,au,solarm,km,years
@@ -260,18 +181,23 @@ subroutine init_inject(ierr)
  use units,         only:utime,umass,unit_velocity,unit_luminosity
  use part,          only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff,iLum
  use injectutils,   only:get_parts_per_sphere, get_fibonacci_spacing
- use wind_pulsating,only:setup_star,calc_stellar_profile,region_mass
+ use wind_pulsating,only:setup_star,calc_stellar_profile,region_mass,interp_stellar_profile
  use dust_formation,only:calc_kappa_max
 
  integer, intent(out) :: ierr
  real    :: Mstar_cgs, Rstar_cgs, Tstar, Lstar_cgs
- real    :: delta_r_tangential, current_radius
- integer :: shell_index, max_shells, temp_particles, particles_per_shell_ref
- integer :: expected_measurements, i
- integer :: n_bnd_ref_grid, n_boundary_total
+ real    :: current_radius, dr, dr_new, r_c, rho, P, u, T, m_shell
+ integer :: shell_index, max_shells, n_first, n_shell
+ integer :: expected_measurements, i, iter, bisect_iter
  integer, parameter  :: max_shells_tmp = 2000
+ integer, parameter  :: max_iter_dr    = 100
+ real,    parameter  :: tol_dr         = 1.0e-6
  real    :: tmp_dr_gas(max_shells_tmp), tmp_r_gas(max_shells_tmp)
+ integer :: tmp_n_gas(max_shells_tmp)
  real    :: tmp_dr_bnd(max_shells_tmp), tmp_r_bnd(max_shells_tmp)
+ integer :: tmp_n_bnd(max_shells_tmp)
+ real    :: m_bnd, m_bnd_lo, m_bnd_hi, m_bnd_mid
+ integer :: n_bnd_count
  logical :: converged, file_exists
 
  ierr = 0
@@ -326,107 +252,149 @@ subroutine init_inject(ierr)
  call setup_star(Msink * umass, r_max_on_rstar * Rstar * au, r_b_min_on_rmax * Rstar * au, &
                  gmw, gamma, surface_pressure, Matmos * umass, rho_power_in)
 
- r_min          = r_min_on_rstar          * Rstar
+ r_min          = r_min_on_rstar * Rstar
  r_boundary_min = r_b_min_on_rmax * Rstar
 
  if (r_boundary_min >= r_min) &
     call fatal(label,'r_b_min_on_rmax must be less than r_min_on_rstar')
 
- ! Hydrostatic profile must exist before any interp calls below
  call calc_stellar_profile(n_profile_points)
 
  ! ================================================================
- ! STEP 1: Build gas shell grid outward from r_min
+ ! GAS GRID: single forward-building loop from r_min.
  !
- ! Converge on a reference per-shell count particles_per_shell_ref
- ! such that the shells fill [r_min, r_max] with the desired number
- ! of shells.  The spacing dr(i) = wss * r(i) * fibonacci(N_ref)
- ! uses a uniform N_ref at this stage — the actual density-weighted
- ! counts come in Step 2.  The grid only needs self-consistent
- ! isotropic spacing, so the converged N_ref is appropriate here.
+ ! Free parameter: n_first (particle count of the first shell).
+ ! Outer loop increments n_first until the shell count or total
+ ! particle budget target is reached.
+ !
+ ! Per shell, a fixed-point inner loop finds the self-consistent dr:
+ !   N_shell = max(1, round(4*pi * rho(r_c) * r_c^2 * dr / m_gas))
+ !   dr_new  = wss * r_inner * fibonacci(N_shell)
+ ! where m_gas = M([r_min, r_max]) / n_particles (for n_shells<0)
+ ! or is determined after convergence (for n_shells>0).
+ !
+ ! For n_shells>0: m_gas is not known a priori, so we use n_first
+ ! directly as the particle count of the first shell and propagate
+ ! forward using the density ratio between adjacent shell centres.
  ! ================================================================
+
  if (n_shells < 0) then
-    temp_particles          = n_particles
-    particles_per_shell_ref = nint(real(temp_particles) / real(max_shells))
+    ! m_gas is known: total mass / target particle count
+    mass_of_gas_particle = region_mass(r_min, r_max_on_rstar * Rstar) / real(n_particles)
+
+    n_first   = 1
     converged = .false.
     do while (.not. converged)
-       current_radius          = r_min
-       particles_per_shell_ref = particles_per_shell_ref + 10
-       shell_index             = 0
+       n_first        = n_first + 1
+       current_radius = r_min
+       shell_index    = 0
+
        do while (current_radius < r_max_on_rstar * Rstar)
           shell_index = shell_index + 1
           if (shell_index > max_shells_tmp) call fatal(label,'gas shell tmp array too small')
-          delta_r_tangential      = current_radius * get_fibonacci_spacing(particles_per_shell_ref)
-          tmp_dr_gas(shell_index) = wss * delta_r_tangential
-          tmp_r_gas(shell_index)  = current_radius + 0.5*tmp_dr_gas(shell_index)
-          current_radius          = current_radius + tmp_dr_gas(shell_index)
+
+          ! fixed-point loop for self-consistent dr
+          dr = wss * current_radius * get_fibonacci_spacing(n_first)
+          do iter = 1, max_iter_dr
+             r_c    = current_radius + 0.5 * dr
+             call interp_stellar_profile(r_c, rho, P, u, T)
+             m_shell = 4.0 * pi * rho * r_c**2 * dr
+             n_shell = max(1, nint(m_shell / mass_of_gas_particle))
+             dr_new  = wss * current_radius * get_fibonacci_spacing(n_shell)
+             if (abs(dr_new - dr) < tol_dr * dr) then
+                dr = dr_new
+                exit
+             endif
+             dr = dr_new
+          enddo
+
+          tmp_dr_gas(shell_index) = dr
+          tmp_r_gas(shell_index)  = current_radius + 0.5 * dr
+          tmp_n_gas(shell_index)  = n_shell
+          current_radius          = current_radius + dr
        enddo
-       if (shell_index * particles_per_shell_ref >= temp_particles) converged = .true.
+
+       if (sum(tmp_n_gas(1:shell_index)) >= n_particles) converged = .true.
     enddo
+
  else
-    temp_particles          = 100
-    particles_per_shell_ref = nint(real(temp_particles) / real(max_shells))
+    ! m_gas not known a priori; use n_first as first-shell count and
+    ! propagate N forward via density ratio between shell centres.
+    n_first   = 1
     converged = .false.
     do while (.not. converged)
-       current_radius          = r_min
-       particles_per_shell_ref = particles_per_shell_ref + 10
-       shell_index             = 0
+       n_first        = n_first + 1
+       current_radius = r_min
+       shell_index    = 0
+
        do while (current_radius < r_max_on_rstar * Rstar)
           shell_index = shell_index + 1
           if (shell_index > max_shells_tmp) call fatal(label,'gas shell tmp array too small')
-          delta_r_tangential      = current_radius * get_fibonacci_spacing(particles_per_shell_ref)
-          tmp_dr_gas(shell_index) = wss * delta_r_tangential
-          tmp_r_gas(shell_index)  = current_radius + 0.5*tmp_dr_gas(shell_index)
-          current_radius          = current_radius + tmp_dr_gas(shell_index)
+
+          if (shell_index == 1) then
+             n_shell = n_first
+          else
+             ! propagate N using density ratio: N_i/N_{i-1} = rho_i*r_i^2*dr_i / (rho_{i-1}*r_{i-1}^2*dr_{i-1})
+             ! approximated at shell centres with equal-mass condition
+             call interp_stellar_profile(tmp_r_gas(shell_index-1), rho, P, u, T)
+             m_shell = 4.0 * pi * rho * tmp_r_gas(shell_index-1)**2 * tmp_dr_gas(shell_index-1)
+             ! m_gas estimate from previous shell
+             mass_of_gas_particle = m_shell / real(tmp_n_gas(shell_index-1))
+          endif
+
+          ! fixed-point loop for self-consistent dr
+          dr = wss * current_radius * get_fibonacci_spacing(n_shell)
+          do iter = 1, max_iter_dr
+             r_c    = current_radius + 0.5 * dr
+             call interp_stellar_profile(r_c, rho, P, u, T)
+             m_shell = 4.0 * pi * rho * r_c**2 * dr
+             if (shell_index > 1) then
+                n_shell = max(1, nint(m_shell / mass_of_gas_particle))
+             endif
+             dr_new  = wss * current_radius * get_fibonacci_spacing(n_shell)
+             if (abs(dr_new - dr) < tol_dr * dr) then
+                dr = dr_new
+                exit
+             endif
+             dr = dr_new
+          enddo
+
+          tmp_dr_gas(shell_index) = dr
+          tmp_r_gas(shell_index)  = current_radius + 0.5 * dr
+          tmp_n_gas(shell_index)  = n_shell
+          current_radius          = current_radius + dr
        enddo
+
        if (shell_index >= max_shells) converged = .true.
     enddo
+
+    ! Now set m_gas from the converged grid
+    mass_of_gas_particle = region_mass(r_min, r_max_on_rstar * Rstar) / real(sum(tmp_n_gas(1:shell_index)))
  endif
 
  n_shells_total = shell_index
 
- ! ================================================================
- ! STEP 2: Density-weighted per-shell particle counts for gas shells
- !
- ! N_gas(i) ∝ rho(r_i) * r_i^2 * dr_i  =>  equal mass per particle
- ! Normalised so sum == target gas count.
- ! ================================================================
- if (n_shells < 0) then
-    temp_particles = n_particles
- else
-    temp_particles = n_shells_total * particles_per_shell_ref
- endif
-
  allocate(npart_per_shell(n_shells_total))
  allocate(delta_r_gas(n_shells_total))
  allocate(shell_radii_gas(n_shells_total))
- delta_r_gas     = tmp_dr_gas(1:n_shells_total)
- shell_radii_gas = tmp_r_gas(1:n_shells_total)
-
- call calc_particles_per_shell(shell_radii_gas, delta_r_gas, n_shells_total, &
-                                temp_particles, npart_per_shell)
+ do i = 1, n_shells_total
+    npart_per_shell(i)  = tmp_n_gas(i)
+    delta_r_gas(i)      = tmp_dr_gas(i)
+    shell_radii_gas(i)  = tmp_r_gas(i)
+ enddo
 
  ! ================================================================
- ! STEP 3: Build boundary shell grid filling [r_boundary_min, r_min]
+ ! BOUNDARY GRID: bisect on m_bnd until exactly iboundary_spheres
+ ! shells fit stepping inward from r_min.
  !
- ! The grid construction is deliberately decoupled from the per-shell
- ! particle counts.  First we converge on a uniform reference count
- ! n_bnd_ref_grid such that exactly iboundary_spheres shells of
- ! spacing
+ ! Higher m_bnd -> wider dr -> fewer shells; lower -> more shells.
+ ! Bracket: find m_bnd_lo (too many shells) and m_bnd_hi (too few),
+ ! then bisect to 60 iterations (~2^-60 relative precision).
  !
- !   dr(i) = wss * r(i) * fibonacci(n_bnd_ref_grid)
- !
- ! fill [r_boundary_min, r_min].  This mirrors the gas grid loop
- ! exactly (which also uses a uniform reference count for spacing).
- !
- ! The actual per-shell particle counts are assigned afterwards by
- ! calc_particles_per_shell with the total target
- !
- !   N_boundary_total = round(boundary_fraction * N_gas_total)
- !
- ! so that the global ratio boundary_fraction is honoured exactly
- ! and each boundary shell is weighted by local density within its
- ! domain, independently of the spacing step above.
+ ! Interface condition: the gap between the outermost boundary shell
+ ! centre and the innermost gas shell centre equals
+ !   0.5*dr_bnd(n_shells_bnd) + 0.5*dr_gas(1)
+ ! which is automatically satisfied since both grids tile from r_min.
  ! ================================================================
  n_shells_bnd = iboundary_spheres
 
@@ -435,78 +403,62 @@ subroutine init_inject(ierr)
     allocate(delta_r_boundary(0))
     allocate(shell_radii_bnd(0))
  else
-    ! Start n_bnd_ref_grid from a rough estimate: boundary region spans
-    ! (r_min - r_boundary_min), gas region spans (r_max - r_min), so
-    ! expect similar shell widths => similar reference counts.
-    n_bnd_ref_grid = particles_per_shell_ref
-    converged = .false.
-    do while (.not. converged)
-       current_radius = r_min
-       shell_index    = 0
+    ! Initial bracket anchor from gas particle mass
+    m_bnd_lo = mass_of_gas_particle * 1.0e-6
+    m_bnd_hi = mass_of_gas_particle * 1.0e6
 
-       do while (current_radius > r_boundary_min)
-          shell_index = shell_index + 1
-          if (shell_index > max_shells_tmp) call fatal(label,'boundary shell tmp array too small')
-          delta_r_tangential          = current_radius * get_fibonacci_spacing(n_bnd_ref_grid)
-          tmp_dr_bnd(shell_index)     = wss * delta_r_tangential
-          tmp_r_bnd(shell_index)      = current_radius - 0.5*tmp_dr_bnd(shell_index)
-          current_radius              = current_radius - tmp_dr_bnd(shell_index)
-       enddo
-
-       if (shell_index >= n_shells_bnd) then
-          converged = .true.
-       else
-          ! Too few shells: reduce n_bnd_ref_grid to widen spacing
-          n_bnd_ref_grid = max(1, n_bnd_ref_grid - 1)
-          if (n_bnd_ref_grid == 1) then
-             print *, 'Warning: could not fit iboundary_spheres=', n_shells_bnd, &
-                      ' boundary shells in [r_boundary_min, r_min]; got ', shell_index
-             converged = .true.
-          endif
-       endif
+    ! Widen lo until it gives strictly more than iboundary_spheres shells
+    do bisect_iter = 1, 200
+       if (count_bnd_shells(m_bnd_lo, max_shells_tmp, tmp_dr_bnd, tmp_r_bnd, tmp_n_bnd, &
+                             r_min, r_boundary_min, pi, tol_dr, max_iter_dr) > iboundary_spheres) exit
+       m_bnd_lo = m_bnd_lo * 0.1
+    enddo
+    ! Widen hi until it gives strictly fewer than iboundary_spheres shells
+    do bisect_iter = 1, 200
+       if (count_bnd_shells(m_bnd_hi, max_shells_tmp, tmp_dr_bnd, tmp_r_bnd, tmp_n_bnd, &
+                             r_min, r_boundary_min, pi, tol_dr, max_iter_dr) < iboundary_spheres) exit
+       m_bnd_hi = m_bnd_hi * 10.0
     enddo
 
-    n_shells_bnd = min(n_shells_bnd, shell_index)
+    ! Bisect: maintain invariant lo gives >=iboundary_spheres, hi gives <iboundary_spheres
+    do bisect_iter = 1, 60
+       m_bnd_mid   = 0.5 * (m_bnd_lo + m_bnd_hi)
+       n_bnd_count = count_bnd_shells(m_bnd_mid, max_shells_tmp, tmp_dr_bnd, tmp_r_bnd, tmp_n_bnd, &
+                                       r_min, r_boundary_min, pi, tol_dr, max_iter_dr)
+       if (n_bnd_count >= iboundary_spheres) then
+          m_bnd_lo = m_bnd_mid
+       else
+          m_bnd_hi = m_bnd_mid
+       endif
+    enddo
+    m_bnd = m_bnd_lo  ! m_bnd_lo is the largest m_bnd that still gives >= iboundary_spheres shells
+    mass_of_boundary_particle = m_bnd
+
+    ! Final pass with converged m_bnd to get shell arrays
+    n_bnd_count = count_bnd_shells(m_bnd, max_shells_tmp, tmp_dr_bnd, tmp_r_bnd, tmp_n_bnd, &
+                                    r_min, r_boundary_min, pi, tol_dr, max_iter_dr)
+    n_shells_bnd = min(n_shells_bnd, n_bnd_count)
 
     allocate(npart_per_boundary_shell(n_shells_bnd))
     allocate(delta_r_boundary(n_shells_bnd))
     allocate(shell_radii_bnd(n_shells_bnd))
 
-    ! Reverse from outermost->innermost to innermost->outermost
+    ! Reverse: tmp arrays are outermost->innermost; store innermost->outermost
     do i = 1, n_shells_bnd
-       delta_r_boundary(i) = tmp_dr_bnd(n_shells_bnd + 1 - i)
-       shell_radii_bnd(i)  = tmp_r_bnd(n_shells_bnd + 1 - i)
+       delta_r_boundary(i)         = tmp_dr_bnd(n_shells_bnd + 1 - i)
+       shell_radii_bnd(i)          = tmp_r_bnd(n_shells_bnd + 1 - i)
+       npart_per_boundary_shell(i) = tmp_n_bnd(n_shells_bnd + 1 - i)
     enddo
-
-    ! Density-weighted per-shell counts, global total = boundary_fraction * N_gas_total
-    n_boundary_total = max(1, nint(boundary_fraction * real(sum(npart_per_shell))))
-    call calc_particles_per_shell(shell_radii_bnd, delta_r_boundary, n_shells_bnd, &
-                                   n_boundary_total, npart_per_boundary_shell)
  endif
 
- ! ================================================================
- ! STEP 4: Combined delta_r_radial (boundary first, then gas) so
- ! that routines indexing by shell number remain correct.
- ! ================================================================
+ ! Combined delta_r_radial (boundary first, then gas)
  if (allocated(delta_r_radial)) deallocate(delta_r_radial)
  allocate(delta_r_radial(n_shells_bnd + n_shells_total))
  if (n_shells_bnd > 0) delta_r_radial(1:n_shells_bnd) = delta_r_boundary
  delta_r_radial(n_shells_bnd+1 : n_shells_bnd+n_shells_total) = delta_r_gas
 
- ! ================================================================
- ! STEP 5: Particle masses from domain-specific analytical mass
- !
- ! Each particle type carries the mass of its own radial domain
- ! divided by the number of particles in that domain:
- !
- !   m_gas = M([r_min, r_max])      / N_gas_total
- !   m_bnd = M([r_boundary_min, r_min]) / N_boundary_total
- !
- ! M([r_a, r_b]) is computed via the same power-law integral used
- ! in the hydrostatic profile (region_mass from wind_pulsating).
- ! ================================================================
+ ! Particle masses
  mass_of_gas_particle = region_mass(r_min, r_max_on_rstar * Rstar) / real(sum(npart_per_shell))
-
  if (n_shells_bnd > 0) then
     mass_of_boundary_particle = region_mass(r_boundary_min, r_min) / real(sum(npart_per_boundary_shell))
  else
@@ -520,7 +472,6 @@ subroutine init_inject(ierr)
 
  print *, ''
  print *, ' rho_power                        :', rho_power_in
- print *, ' boundary_fraction (target)       :', boundary_fraction
  print *, ' Boundary region  [r_bnd_min, r_min] / Rstar :', r_b_min_on_rmax, r_min_on_rstar
  print *, ' Gas region       [r_min,     r_max] / Rstar :', r_min_on_rstar, r_max_on_rstar
  print *, ' M_gas   (Msun)                   :', region_mass(r_min,          r_max_on_rstar * Rstar)
@@ -530,7 +481,7 @@ subroutine init_inject(ierr)
  print *, ' Total gas particles              :', sum(npart_per_shell)
  if (n_shells_bnd > 0) then
     print *, ' Total boundary particles         :', sum(npart_per_boundary_shell)
-    print *, ' boundary_fraction (actual)       :', &
+    print *, ' N_bnd / N_gas (actual)           :', &
               real(sum(npart_per_boundary_shell)) / real(sum(npart_per_shell))
     print *, ' Innermost boundary N_per_shell   :', npart_per_boundary_shell(1)
     print *, ' Outermost boundary N_per_shell   :', npart_per_boundary_shell(n_shells_bnd)
@@ -542,13 +493,85 @@ subroutine init_inject(ierr)
  print *, ' Boundary/gas mass ratio          :', mass_of_boundary_particle / mass_of_gas_particle
  print *, ''
 
+ do i = 1, n_shells_bnd
+    print *, 'Boundary shell ', i, ': r=', shell_radii_bnd(i)/Rstar, ' Rstar, dr=', delta_r_boundary(i)/Rstar, &
+             ' Rstar, N_particles=', npart_per_boundary_shell(i)
+ enddo
+ do i = 1, n_shells_total
+    print *, 'Gas shell      ', i, ': r=', shell_radii_gas(i)/Rstar, ' Rstar, dr=', delta_r_gas(i)/Rstar, &
+             ' Rstar, N_particles=', npart_per_shell(i)
+ enddo
+
 end subroutine init_inject
 
-!-----------------------------------------------------------------------
-!+
-!  Main routine: called at start to setup atmosphere, then each timestep
-!+
-!-----------------------------------------------------------------------
+! Helper: count how many boundary shells fit stepping inward from r_min
+! with a given m_bnd. Also fills tmp arrays for the final pass.
+integer function count_bnd_shells(m_bnd, max_shells_tmp, tmp_dr, tmp_r, tmp_n, &
+                                   r_min_in, r_bnd_min, pi_in, tol, max_iter)
+ use injectutils,    only:get_fibonacci_spacing
+ use wind_pulsating, only:interp_stellar_profile
+
+ real,    intent(in)    :: m_bnd, r_min_in, r_bnd_min, pi_in, tol
+ integer, intent(in)    :: max_shells_tmp, max_iter
+ real,    intent(out)   :: tmp_dr(max_shells_tmp), tmp_r(max_shells_tmp)
+ integer, intent(out)   :: tmp_n(max_shells_tmp)
+
+ real    :: current_radius, dr, dr_new, r_c, rho, P, u, T, m_shell
+ integer :: n_shell, idx, iter
+
+ current_radius = r_min_in
+ idx = 0
+
+ do while (current_radius > r_bnd_min)
+    idx = idx + 1
+    if (idx > max_shells_tmp) then
+       idx = idx - 1
+       exit
+    endif
+
+    dr = min(wss * current_radius * get_fibonacci_spacing(1), &
+             (r_min_in - r_bnd_min) * 0.5)
+
+    do iter = 1, max_iter
+       r_c    = current_radius - 0.5 * dr
+       if (r_c <= r_bnd_min) then
+          dr = (current_radius - r_bnd_min) * 0.9
+          r_c = current_radius - 0.5 * dr
+       endif
+       call interp_stellar_profile(r_c, rho, P, u, T)
+       m_shell = 4.0 * pi_in * rho * r_c**2 * dr
+       n_shell = max(1, nint(m_shell / m_bnd))
+       dr_new  = wss * current_radius * get_fibonacci_spacing(n_shell)
+       if (abs(dr_new - dr) < tol * dr) then
+          dr = dr_new
+          exit
+       endif
+       dr = dr_new
+    enddo
+
+    ! If this shell would overshoot, stop
+    if (current_radius - dr < r_bnd_min) then
+       if (current_radius - 0.5*dr > r_bnd_min) then
+          tmp_dr(idx) = dr
+          tmp_r(idx)  = current_radius - 0.5 * dr
+          tmp_n(idx)  = n_shell
+       else
+          idx = idx - 1
+       endif
+       exit
+    endif
+
+    tmp_dr(idx) = dr
+    tmp_r(idx)  = current_radius - 0.5 * dr
+    tmp_n(idx)  = n_shell
+    current_radius = current_radius - dr
+ enddo
+
+ count_bnd_shells = idx
+
+end function count_bnd_shells
+
+
 subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npart_old,npartoftype,dtinject)
  use part, only:igas,iboundary,iamtype
 
@@ -595,11 +618,6 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
 
 end subroutine inject_particles
 
-!-----------------------------------------------------------------------
-!+
-!  Take periodic mass measurements and calculate mean mass-loss rate
-!+
-!-----------------------------------------------------------------------
 subroutine take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoftype)
  use part,   only:igas,iboundary,iphase,iamtype
  use units,  only:utime,umass
@@ -626,7 +644,6 @@ subroutine take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoft
        dz = xyzh(3,i) - x0(3)
        r  = sqrt(dx**2 + dy**2 + dz**2)
        if (r <= mass_loss_check_radius) then
-          ! Use appropriate particle mass per type
           if (iamtype(iphase(i)) == iboundary) then
              mass_previous_measurement = mass_previous_measurement + mass_of_boundary_particle
           else
@@ -669,7 +686,6 @@ subroutine take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoft
           sum_rates = sum_rates + mass_loss_rates(i)
        enddo
        mean_mass_loss_rate = sum_rates / real(n_measurements)
-       ! Reinjected particles are gas particles placed just outside the boundary
        particles_to_inject = nint((mean_mass_loss_rate * reinject_period) / mass_of_gas_particle)
        if (particles_to_inject < 1) particles_to_inject = 1
        mass_loss_rate_calculated = .true.
@@ -679,11 +695,6 @@ subroutine take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoft
 
 end subroutine take_periodic_mass_measurements
 
-!-----------------------------------------------------------------------
-!+
-!  Check if it is time for continuous reinjection
-!+
-!-----------------------------------------------------------------------
 subroutine check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
  use units,  only:utime
  use physcon,only:days
@@ -706,11 +717,6 @@ subroutine check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,np
 
 end subroutine check_continuous_reinject
 
-!-----------------------------------------------------------------------
-!+
-!  Perform reinjection: inject new gas particles to replenish lost mass
-!+
-!-----------------------------------------------------------------------
 subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
  use part,           only:igas,iboundary,iamtype,set_particle_type
  use injectutils,    only:inject_fibonacci_sphere
@@ -746,14 +752,13 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
 
  call interp_stellar_profile(r_inject, rho, P, u, T)
 
- old_npart    = npart
+ old_npart      = npart
  n_reinjections = n_reinjections + 1
 
  call inject_fibonacci_sphere(n_shells_total + n_reinjections, npart + 1, particles_to_inject, &
                                r_inject, r_dot, u, rho, &
                                npart, npartoftype, xyzh, vxyzu, igas, x0, v0)
 
- ! Reinjected particles are gas particles
  mass_injected = real(npart - old_npart) * mass_of_gas_particle
  xyzmh_ptmass(4, wind_emitting_sink) = xyzmh_ptmass(4, wind_emitting_sink) - mass_injected
 
@@ -766,11 +771,6 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
 
 end subroutine perform_reinjection
 
-!-----------------------------------------------------------------------
-!+
-!  Setup initial atmosphere with all shells at t=0
-!+
-!-----------------------------------------------------------------------
 subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
  use part,           only:igas,iboundary,iphase,iamtype
  use injectutils,    only:inject_fibonacci_sphere
@@ -791,29 +791,27 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
 
  npart = 0
 
- ! ---- Boundary shells (independent grid, innermost first) ----
- r_cur = shell_radii_bnd(1) - 0.5*delta_r_boundary(1)  ! inner edge of innermost bnd shell
+ r_cur = shell_radii_bnd(1) - 0.5*delta_r_boundary(1)
  do i = 1, n_shells_bnd
     r     = shell_radii_bnd(i)
-    r_cur = r_cur + delta_r_boundary(i)   ! advance to shell centre
+    r_cur = r_cur + delta_r_boundary(i)
     call interp_stellar_profile(r, rho, P, u, T)
-    v_radial      = 0.0
+    v_radial       = 0.0
     first_particle = npart + 1
     call inject_fibonacci_sphere(i, first_particle, npart_per_boundary_shell(i), r, v_radial, u, rho, &
                                  npart, npartoftype, xyzh, vxyzu, iboundary, x0, v0)
  enddo
 
- ! ---- Gas shells (outward from r_min) ----
  do i = 1, n_shells_total
     r = shell_radii_gas(i)
     call interp_stellar_profile(r, rho, P, u, T)
-    v_radial      = 0.0
+    v_radial       = 0.0
     first_particle = npart + 1
     call inject_fibonacci_sphere(n_shells_bnd + i, first_particle, npart_per_shell(i), r, v_radial, u, rho, &
                                  npart, npartoftype, xyzh, vxyzu, igas, x0, v0)
  enddo
 
- nboundary           = npartoftype(iboundary)
+ nboundary            = npartoftype(iboundary)
  n_boundary_particles = nboundary
 
  print *, 'Boundary particles : ', nboundary
@@ -839,11 +837,6 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
 
 end subroutine setup_initial_atmosphere
 
-!-----------------------------------------------------------------------
-!+
-!  Reconstruct boundary particle information when resuming from dump
-!+
-!-----------------------------------------------------------------------
 subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
  use part,   only:iboundary,iphase,iamtype
  use physcon,only:pi
@@ -884,11 +877,6 @@ subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
 
 end subroutine reconstruct_boundary_info
 
-!-----------------------------------------------------------------------
-!+
-!  Apply pulsation to boundary particles
-!+
-!-----------------------------------------------------------------------
 subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  use physcon,        only:pi
  use wind_pulsating, only:interp_stellar_profile
@@ -951,14 +939,8 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
 end subroutine apply_pulsation
 
 subroutine update_injected_par
- ! placeholder
 end subroutine update_injected_par
 
-!-----------------------------------------------------------------------
-!+
-!  Write mass-loss rate data to file for restart
-!+
-!-----------------------------------------------------------------------
 subroutine write_mass_loss_data()
  use io, only:iprint
  integer :: iunit, ierr, i
@@ -988,11 +970,6 @@ subroutine write_mass_loss_data()
 
 end subroutine write_mass_loss_data
 
-!-----------------------------------------------------------------------
-!+
-!  Read mass-loss rate data from file for restart
-!+
-!-----------------------------------------------------------------------
 subroutine read_mass_loss_data()
  use io, only:iprint
  integer :: iunit, ierr, i
@@ -1004,7 +981,7 @@ subroutine read_mass_loss_data()
  open(newunit=iunit, file='mass_loss_rate.dat', status='old', iostat=ierr)
  if (ierr /= 0) return
 
- read(iunit,*)   ! skip comment
+ read(iunit,*)
  read(iunit,*, iostat=ierr) mass_loss_rate_calculated
  if (ierr /= 0) then; close(iunit); return; endif
  read(iunit,*, iostat=ierr) mean_mass_loss_rate
@@ -1031,11 +1008,6 @@ subroutine read_mass_loss_data()
 
 end subroutine read_mass_loss_data
 
-!-----------------------------------------------------------------------
-!+
-!  Calculate pulsation period from stellar mass-radius relation
-!+
-!-----------------------------------------------------------------------
 subroutine calculate_period(M, R, pulsation_period_days)
  real, intent(in)  :: M, R
  real, intent(out) :: pulsation_period_days
@@ -1050,11 +1022,6 @@ subroutine calculate_period(M, R, pulsation_period_days)
 
 end subroutine calculate_period
 
-!-----------------------------------------------------------------------
-!+
-!  Write options to input file
-!+
-!-----------------------------------------------------------------------
 subroutine write_options_inject(iunit)
  use infile_utils, only:write_inopt
  integer, intent(in) :: iunit
@@ -1071,7 +1038,7 @@ subroutine write_options_inject(iunit)
  call write_inopt(atmos_mass_fraction,  'atmos_mass_fraction', 'atmospheric mass as fraction of total stellar mass',iunit)
  call write_inopt(surface_pressure,     'surface_pressure',    'surface pressure (cgs)',iunit)
  call write_inopt(iwind,                'iwind',               'wind type: 1=prescribed, 2=period from mass-radius relation',iunit)
- call write_inopt(pulsation_period_days,'pulsation_period',   'pulsation period (days)',iunit)
+ call write_inopt(pulsation_period_days,'pulsation_period',    'pulsation period (days)',iunit)
  call write_inopt(piston_velocity_km_s, 'piston_velocity',     'piston velocity amplitude (km/s)',iunit)
  call write_inopt(time_puls,            'time_puls',           'time for piston to ramp up (in periods, -1=instant)',iunit)
  call write_inopt(pulsation_timestep,   'pulsation_timestep',  'pulsation timestep as fraction of period',iunit)
@@ -1087,11 +1054,6 @@ subroutine write_options_inject(iunit)
 
 end subroutine write_options_inject
 
-!-----------------------------------------------------------------------
-!+
-!  Read options from input file
-!+
-!-----------------------------------------------------------------------
 subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  use io, only:fatal
  character(len=*), intent(in)  :: name, valstring
