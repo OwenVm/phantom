@@ -122,43 +122,33 @@ end function region_mass
 
 !-----------------------------------------------------------------------
 !
-!  Initialize variables for stellar profile integration at r_inner
-!  with the supplied inner density boundary condition.
+!  Initialize variables for stellar profile integration at r_inner.
 !
-!  P_inner is set from ideal gas EOS assuming the local hydrostatic
-!  scale height H = P/(rho*g) gives a consistent temperature:
-!    P_inner = rho_inner * k_B * T_inner / (mu * m_H)
-!  We derive T_inner from the adiabatic sound speed anchored to the
-!  local gravitational scale height:
-!    c_s^2 = gamma * P / rho  =  gamma * k_B * T / (mu * m_H)
-!    H     = c_s^2 / g        =  r^2 * c_s^2 / (G * M)
-!  Choosing H = r / rho_power (scale height of the power-law profile):
-!    c_s^2 = G * M * rho_power / r
-!    P_inner = rho_inner * G * M * rho_power / (gamma * r_inner)
+!  P_inner is derived by analytically integrating dP/dr = -rho*g
+!  from r_outer (where P = P_outer) inward to r_inner, assuming
+!  M(r) = Mstar (envelope self-gravity neglected):
+!
+!   P_inner = P_outer + G*M*C_rho/(rho_power+1)
+!             * (r_inner^{-(rho_power+1)} - Rstar^{-(rho_power+1)})
+!
+!  This is consistent with stellar_step which also uses M(r) = Mstar.
 !
 !-----------------------------------------------------------------------
 subroutine init_atmosphere(state)
  use physcon, only:pi, kboltz, mass_proton_cgs, Gg
  type(stellar_state), intent(out) :: state
  real :: C_rho, exponent, P_inner
+ real, parameter :: P_outer = 1.0e-2  ! dyne/cm^2, pressure at Rstar
 
  state%r0    = r_inner
  state%r     = r_inner
  state%Rstar = Rstar_cgs
  state%rho   = rho_inner_cgs
 
- ! Derive P_inner by integrating dP/dr = -rho*g analytically from
- ! r_outer (where P=0) down to r_inner:
- !
- !   P_inner = G*M*C_rho * integral_{r_inner}^{r_outer} r^{-(rho_power+2)} dr
- !           = G*M*C_rho / (rho_power+1) * (r_inner^{-(rho_power+1)} - r_outer^{-(rho_power+1)})
- !
  C_rho    = calc_C_rho()
  exponent = rho_power + 1.0
- ! Use 10*Rstar_cgs as effective outer boundary so P remains positive
- ! all the way to r_max_on_rstar * Rstar (which can exceed Rstar_cgs)
  P_inner  = Gg * Mstar_cgs * C_rho / exponent * &
-            (r_inner**(-exponent) - (10.0*Rstar_cgs)**(-exponent))
+            (r_inner**(-exponent) - Rstar_cgs**(-exponent)) + P_outer
 
  state%P = P_inner
  state%u = state%P / (state%rho * (Star_gamma - 1.))
@@ -181,7 +171,10 @@ end subroutine init_atmosphere
 
 !-----------------------------------------------------------------------
 !
-!  Integrate hydrostatic equilibrium over one radial step (outward)
+!  Integrate hydrostatic equilibrium over one radial step (outward).
+!
+!  Uses M(r) = Mstar only, consistent with the analytic P_inner
+!  derivation in init_atmosphere (envelope self-gravity neglected).
 !
 !-----------------------------------------------------------------------
 subroutine stellar_step(state, r_new)
@@ -189,17 +182,17 @@ subroutine stellar_step(state, r_new)
 
  type(stellar_state), intent(inout) :: state
  real, intent(in) :: r_new
- real :: dr, r_mid, rho_mid, mr_mid, dP, C_rho
+ real :: dr, r_mid, rho_mid, dP, C_rho
 
  dr    = r_new - state%r
  r_mid = 0.5 * (state%r + r_new)
 
  C_rho   = calc_C_rho()
  rho_mid = C_rho / r_mid**rho_power
- mr_mid  = Mstar_cgs + enclosed_env_mass(r_mid, C_rho)
 
- ! dP/dr = -rho * G * M(r) / r^2  (negative: P decreases outward)
- dP = -(Gg * mr_mid * rho_mid / r_mid**2) * dr
+ ! M(r) = Mstar: envelope self-gravity neglected, consistent with
+ ! the analytic integral used to derive P_inner in init_atmosphere.
+ dP = -(Gg * Mstar_cgs * rho_mid / r_mid**2) * dr
 
  state%r   = r_new
  state%P   = state%P + dP
