@@ -8,6 +8,12 @@ module wind_pulsating
 !
 ! driver to integrate the hydrostatic equilibrium equations to set the outer layers of an AGB star
 !
+! Pressure is evaluated analytically at every radius by integrating
+! dP/dr = -rho(r)*g(r) from the outer boundary (P=0 at Rstar) inward
+! to r, assuming a power-law density profile rho = C_rho / r^rho_power
+! and M(r) = Mstar + Menv(r).  This avoids the numerical precision
+! problems that arise when forward-stepping with a very steep profile.
+!
 ! :References: None
 !
 ! :Owner: Owen Vermeulen
@@ -122,154 +128,148 @@ end function region_mass
 
 !-----------------------------------------------------------------------
 !
-!  Initialize variables for stellar profile integration at r_inner.
+!  Analytic pressure at radius r, anchored at P(Rstar) = 0.
 !
-!  P_inner is derived by analytically integrating dP/dr = -rho*g
-!  from Rstar (where P = P_outer) inward to r_inner, with
-!  M(r) = Mstar + Menv(r), consistent with stellar_step.
+!  Integrates dP/dr = -rho(r)*[G*M(r)/r^2] analytically from Rstar to r:
 !
-!  P_inner = P_outer
-!          + G*Mstar*C_rho/(p+1) * (ri^{-(p+1)} - Ro^{-(p+1)})
-!          + 4*pi*G*C_rho^2/(3-p) * (I1 - ri^{3-p} * I2)
+!    P(r) = G*Mstar*C_rho/(p+1) * (r^{-(p+1)} - Rstar^{-(p+1)})
+!         + 4*pi*G*C_rho^2/(3-p) * (I1(r,Rstar) - r^{3-p} * I2(r,Rstar))
 !
 !  where:
-!    I1 = (Ro^{2-2p} - ri^{2-2p}) / (2-2p)      [assumes p /= 1]
-!    I2 = (ri^{-(p+1)} - Ro^{-(p+1)}) / (p+1)   [assumes p /= -1]
+!    I1 = (Rstar^{2-2p} - r^{2-2p}) / (2-2p)     [p=1: log(Rstar/r)]
+!    I2 = (r^{-(p+1)}   - Rstar^{-(p+1)}) / (p+1) [same as stellar term coeff]
+!
+!  Degenerate cases (p=1 for I1, p=3 for envelope self-gravity) are
+!  handled explicitly.
+!
+!-----------------------------------------------------------------------
+real function analytic_pressure(r, C_rho)
+ use physcon, only:pi, Gg
+
+ real, intent(in) :: r, C_rho
+ real :: Pval, I1val, I2val, pp
+
+ pp = rho_power
+
+ ! stellar point-mass term
+ Pval = Gg * Mstar_cgs * C_rho / (pp + 1.0) * &
+        (r**(-(pp+1.0)) - Rstar_cgs**(-(pp+1.0)))
+
+ ! envelope self-gravity term
+ if (abs(2.0 - 2.0*pp) > 1.e-6) then
+    I1val = (Rstar_cgs**(2.0-2.0*pp) - r**(2.0-2.0*pp)) / (2.0 - 2.0*pp)
+ else
+    I1val = log(Rstar_cgs / r)
+ endif
+ I2val = (r**(-(pp+1.0)) - Rstar_cgs**(-(pp+1.0))) / (pp + 1.0)
+
+ if (abs(3.0 - pp) > 1.e-6) then
+    Pval = Pval + 4.0*pi * Gg * C_rho**2 / (3.0 - pp) * &
+           (I1val - r**(3.0-pp) * I2val)
+ else
+    ! pp=3: enclosed mass diverges logarithmically; skip self-gravity term
+    print *, "Warning: rho_power=3, envelope self-gravity term skipped"
+ endif
+
+ analytic_pressure = max(Pval, 0.0)
+
+end function analytic_pressure
+
+!-----------------------------------------------------------------------
+!
+!  Evaluate the full stellar state (rho, P, u, T) at radius r_cgs (cgs).
+!
+!-----------------------------------------------------------------------
+subroutine eval_stellar_state(r_cgs, C_rho, rho, P, u, T)
+ use physcon, only:kboltz, mass_proton_cgs
+
+ real, intent(in)  :: r_cgs, C_rho
+ real, intent(out) :: rho, P, u, T
+
+ rho = C_rho / r_cgs**rho_power
+ P   = analytic_pressure(r_cgs, C_rho)
+ u   = P / (rho * (Star_gamma - 1.))
+ T   = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * u
+
+end subroutine eval_stellar_state
+
+!-----------------------------------------------------------------------
+!
+!  Initialize the stellar state at r_inner (for compatibility/printing).
 !
 !-----------------------------------------------------------------------
 subroutine init_atmosphere(state)
- use physcon, only:pi, kboltz, mass_proton_cgs, Gg
+ use physcon, only:kboltz, mass_proton_cgs
  type(stellar_state), intent(out) :: state
- real :: C_rho, P_inner, I1, I2
- real, parameter :: P_outer = 1.0e-2  ! dyne/cm^2, pressure at Rstar
+ real :: C_rho, rho, P, u, T
+
+ C_rho = calc_C_rho()
+ call eval_stellar_state(r_inner, C_rho, rho, P, u, T)
 
  state%r0    = r_inner
  state%r     = r_inner
  state%Rstar = Rstar_cgs
- state%rho   = rho_inner_cgs
-
- C_rho = calc_C_rho()
-
- ! stellar term
- P_inner = Gg * Mstar_cgs * C_rho / (rho_power + 1.0) * &
-           (r_inner**(-(rho_power+1.0)) - Rstar_cgs**(-(rho_power+1.0)))
-
- ! envelope self-gravity term
- ! I1 = integral of r^{1-2p} dr  (degenerate at p=1: use log form)
- ! I2 = integral of r^{-(p+2)} dr = already in stellar term, reuse
- ! overall integral diverges at p=3 (enclosed mass log divergence)
- if (abs(2.0 - 2.0*rho_power) > 1.e-6) then
-    I1 = (Rstar_cgs**(2.0-2.0*rho_power) - r_inner**(2.0-2.0*rho_power)) / (2.0 - 2.0*rho_power)
- else
-    I1 = log(Rstar_cgs / r_inner)  ! p=1 case
- endif
- I2 = (r_inner**(-(rho_power+1.0)) - Rstar_cgs**(-(rho_power+1.0))) / (rho_power + 1.0)
- if (abs(3.0 - rho_power) > 1.e-6) then
-    P_inner = P_inner + 4.0*pi * Gg * C_rho**2 / (3.0 - rho_power) * &
-              (I1 - r_inner**(3.0-rho_power) * I2)
- else
-    ! p=3: M_env diverges logarithmically; skip envelope self-gravity term
-    print *, "Warning: rho_power=3, envelope self-gravity term skipped"
- endif
-
- P_inner = P_inner + P_outer
-
- state%P = P_inner
- state%u = state%P / (state%rho * (Star_gamma - 1.))
- state%T = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
+ state%rho   = rho
+ state%P     = P
+ state%u     = u
+ state%T     = T
+ state%nsteps = 1
+ state%error  = .false.
 
  print *, ""
- print *, "Initial inner boundary conditions:"
+ print *, "Initial inner boundary conditions (analytic):"
  print *, " mu          :", Star_mu
  print *, " gamma       :", Star_gamma
  print *, " rho_power   :", rho_power
- print *, " rho (inner) :", rho_inner_cgs
- print *, " P   (inner) :", state%P
- print *, " T   (inner) :", state%T
+ print *, " rho (inner) :", rho
+ print *, " P   (inner) :", P
+ print *, " T   (inner) :", T
  print *, ""
-
- state%nsteps = 1
- state%error  = .false.
 
 end subroutine init_atmosphere
 
 !-----------------------------------------------------------------------
 !
-!  Integrate hydrostatic equilibrium over one radial step (outward).
-!
-!  Uses M(r) = Mstar + Menv(r), consistent with the analytic P_inner
-!  derivation in init_atmosphere.
-!
-!-----------------------------------------------------------------------
-subroutine stellar_step(state, r_new)
- use physcon, only:Gg, pi, Rg, kboltz, mass_proton_cgs
-
- type(stellar_state), intent(inout) :: state
- real, intent(in) :: r_new
- real :: dr, r_mid, rho_mid, dP, C_rho
-
- dr    = r_new - state%r
- r_mid = 0.5 * (state%r + r_new)
-
- C_rho   = calc_C_rho()
- rho_mid = C_rho / r_mid**rho_power
-
- ! M(r) = Mstar + Menv(r), consistent with analytic P_inner
- dP = -(Gg * (Mstar_cgs + enclosed_env_mass(r_mid, C_rho)) * rho_mid / r_mid**2) * dr
-
- state%r   = r_new
- state%P   = state%P + dP
- state%rho = C_rho / state%r**rho_power
-
- state%u = state%P / (state%rho * (Star_gamma - 1.))
- state%T = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
-
- state%nsteps = state%nsteps + 1
-
-end subroutine stellar_step
-
-!-----------------------------------------------------------------------
-!
-!  Integrate the hydrostatic equilibrium equation outward from r_inner
+!  Compute the full stellar profile by direct analytic evaluation at
+!  each grid point.  No numerical stepping involved.
 !
 !-----------------------------------------------------------------------
 subroutine calc_stellar_profile(n)
  integer, intent(in) :: n
- type(stellar_state) :: state
+ real :: C_rho, r_cgs, dr, rho, P, u, T
  integer :: i
- real :: r_new, dr
 
- call init_atmosphere(state)
+ call init_atmosphere_print()
+
+ C_rho = calc_C_rho()
+ dr    = (Rstar_cgs - r_inner) / real(n-1)
 
  if (allocated(stellar_1D)) deallocate(stellar_1D)
  allocate(stellar_1D(5, n))
 
- dr = (Rstar_cgs - r_inner) / real(n-1)
-
- stellar_1D(1, 1) = state%r
- stellar_1D(2, 1) = state%rho
- stellar_1D(3, 1) = state%P
- stellar_1D(4, 1) = state%u
- stellar_1D(5, 1) = state%T
-
- do i = 2, n
-    r_new = r_inner + real(i-1) * dr
-    call stellar_step(state, r_new)
-
-    stellar_1D(1, i) = state%r
-    stellar_1D(2, i) = state%rho
-    stellar_1D(3, i) = state%P
-    stellar_1D(4, i) = state%u
-    stellar_1D(5, i) = state%T
+ do i = 1, n
+    r_cgs = r_inner + real(i-1) * dr
+    call eval_stellar_state(r_cgs, C_rho, rho, P, u, T)
+    stellar_1D(1, i) = r_cgs
+    stellar_1D(2, i) = rho
+    stellar_1D(3, i) = P
+    stellar_1D(4, i) = u
+    stellar_1D(5, i) = T
  enddo
 
  call save_stellarprofile(n, 'stellar_profile1D.dat')
 
 end subroutine calc_stellar_profile
 
+! helper: print inner BC without duplicating init_atmosphere logic
+subroutine init_atmosphere_print()
+ type(stellar_state) :: state
+ call init_atmosphere(state)
+end subroutine init_atmosphere_print
+
 !-----------------------------------------------------------------------
 !
-!  Interpolate stellar profile at given radius
+!  Interpolate stellar profile at given radius (code units)
 !
 !-----------------------------------------------------------------------
 subroutine interp_stellar_profile(r, rho, P, u, T)
@@ -323,8 +323,7 @@ end subroutine interp_stellar_profile
 !
 !-----------------------------------------------------------------------
 subroutine save_stellarprofile(n, filename)
- use physcon, only:au
- use io,      only:iverbose
+ use io, only:iverbose
  integer, intent(in) :: n
  character(*), intent(in) :: filename
  integer :: i, nwrite
@@ -336,7 +335,6 @@ subroutine save_stellarprofile(n, filename)
 
  open(unit=iunit, file=filename, status='replace')
  call filewrite_stellar_header(iunit, nwrite)
-
  do i = 1, n
     call filewrite_stellar_state(iunit, nwrite, i)
  enddo
