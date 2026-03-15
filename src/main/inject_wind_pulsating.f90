@@ -6,20 +6,7 @@
 !--------------------------------------------------------------------------!
 module inject
 !
-! Handles initial setup of stellar atmosphere with pulsating boundary layers.
-!
-! Variable-resolution atmosphere: each shell carries a number of particles
-! proportional to the local density, so that all gas particles share a
-! single common mass and all boundary particles share a (generally
-! different) common mass.  This naturally accommodates steep density
-! profiles (rho_power >> 2) without creating an excessive number of
-! boundary particles.
-!
-! Gas and boundary shells are built on independent radial grids: the
-! spacing of each grid is derived iteratively from the local per-shell
-! particle count via get_fibonacci_spacing, so that the inter-particle
-! distance is isotropic everywhere.  The ratio of boundary to gas
-! all particles share a single common mass.
+! Handles pulsating AGB stars 
 !
 ! :References: None
 !
@@ -28,7 +15,6 @@ module inject
 ! :Runtime parameters:
 !   - iboundary_spheres   : *number of boundary spheres (integer)*
 !   - n_profile_points    : *number of points in stellar profile calculation (integer)*
-!   - n_particles         : *total number of gas particles (integer, not used if n_shells > 0)*
 !   - n_shells            : *total number of shells (integer, if <0 determined automatically from n_particles)*
 !   - rho_power           : *density profile exponent: rho ~ r^(-rho_power)*
 !   - r_min_on_rstar      : *inner radius as fraction of R_star*
@@ -61,7 +47,6 @@ module inject
 
  integer :: iboundary_spheres     = 5
  integer :: n_profile_points      = 10000
- integer :: n_particles           = 500000
  integer :: n_shells              = 25
  real    :: rho_power_in          = 10.0
  real    :: r_min_on_rstar        = 0.9
@@ -141,7 +126,6 @@ subroutine set_default_options_inject(flag)
 
  iboundary_spheres     = 5
  n_profile_points      = 10000
- n_particles           = 500000
  n_shells              = 25
  rho_power_in          = 10.0
  r_min_on_rstar        = 0.9
@@ -168,17 +152,16 @@ end subroutine set_default_options_inject
 subroutine init_inject(ierr)
  use io,            only:fatal
  use physcon,       only:pi,days,au,solarm,km,years
- use icosahedron,   only:compute_matrices,compute_corners
  use eos,           only:gmw,gamma
  use units,         only:utime,umass,unit_velocity,unit_luminosity
- use part,          only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff,iLum
+ use part,          only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff,iLum,xyzh,npartoftype
  use injectutils,   only:get_parts_per_sphere, get_fibonacci_spacing
  use wind_pulsating,only:setup_star,calc_stellar_profile,region_mass,interp_stellar_profile
  use dust_formation,only:calc_kappa_max
 
  integer, intent(out) :: ierr
  real    :: Mstar_cgs, Rstar_cgs, Tstar, Lstar_cgs
- real    :: current_radius, dr, dr_new, r_c, rho, P, u, T, m_shell
+ real    :: current_radius, dr, dr_new, r_c, rho, P, u, T, m_shell, rho_prev, rho_cur
  integer :: shell_index, max_shells, n_first, n_shell
  integer :: expected_measurements, i, iter
  integer, parameter  :: max_shells_tmp = 2000
@@ -187,6 +170,7 @@ subroutine init_inject(ierr)
  real    :: tmp_dr(max_shells_tmp), tmp_r(max_shells_tmp)
  integer :: tmp_n(max_shells_tmp)
  logical :: converged, file_exists
+ integer :: iunit
 
  ierr = 0
 
@@ -204,6 +188,12 @@ subroutine init_inject(ierr)
  Msink = Mtotal
 
  inquire(file='mass_loss_rate.dat', exist=file_exists)
+
+ if ( npartoftype(igas) > 100 .and. file_exists) then
+       print *, 'Existing mass loss data file found, but this is a fresh start, so delete'
+       open(newunit=iunit, file='mass_loss_rate.dat', status='old', iostat=ierr)
+       close(iunit, status='delete')
+ endif 
 
  if (.not. file_exists) then
     xyzmh_ptmass(4, wind_emitting_sink) = Msink
@@ -236,8 +226,8 @@ subroutine init_inject(ierr)
     max_shells = 200
  endif
 
- call setup_star(Msink * umass, r_max_on_rstar * Rstar * au, r_min_on_rstar * Rstar * au, &
-                gmw, gamma, rho_inner, rho_power_in)
+ call setup_star(Msink * umass, Tstar, r_max_on_rstar * Rstar * au, r_min_on_rstar * Rstar * au, & 
+               gmw, gamma, rho_inner, rho_power_in)
 
  r_min = r_min_on_rstar * Rstar
 
@@ -245,115 +235,50 @@ subroutine init_inject(ierr)
 
  call calc_stellar_profile(n_profile_points)
 
- ! ================================================================
- ! GAS GRID: single forward-building loop from r_min.
- !
- ! Free parameter: n_first (particle count of the first shell).
- ! Outer loop increments n_first until the shell count or total
- ! particle budget target is reached.
- !
- ! Per shell, a fixed-point inner loop finds the self-consistent dr:
- !   N_shell = max(1, round(4*pi * rho(r_c) * r_c^2 * dr / m_gas))
- !   dr_new  = wss * r_inner * fibonacci(N_shell)
- ! where m_gas = M([r_min, r_max]) / n_particles (for n_shells<0)
- ! or is determined after convergence (for n_shells>0).
- !
- ! For n_shells>0: m_gas is not known a priori, so we use n_first
- ! directly as the particle count of the first shell and propagate
- ! forward using the density ratio between adjacent shell centres.
- ! ================================================================
-
- if (n_shells < 0) then
-    ! m_gas is known: total mass / target particle count
-    mass_of_gas_particle = region_mass(r_min, r_max_on_rstar * Rstar) / real(n_particles)
-
-    n_first   = 1
-    converged = .false.
-    do while (.not. converged)
-       n_first        = n_first + 1
-       current_radius = r_min
-       shell_index    = 0
-
-       do while (current_radius < r_max_on_rstar * Rstar)
-          shell_index = shell_index + 1
-          if (shell_index > max_shells_tmp) call fatal(label,'gas shell tmp array too small')
-
-          ! fixed-point loop for self-consistent dr
-          dr = wss * current_radius * get_fibonacci_spacing(n_first)
-          do iter = 1, max_iter_dr
-             r_c    = current_radius + 0.5 * dr
-             call interp_stellar_profile(r_c, rho, P, u, T)
-             m_shell = 4.0 * pi * rho * r_c**2 * dr
-             n_shell = max(1, nint(m_shell / mass_of_gas_particle))
-             dr_new  = wss * current_radius * get_fibonacci_spacing(n_shell)
-             if (abs(dr_new - dr) < tol_dr * dr) then
-                dr = dr_new
-                exit
-             endif
-             dr = dr_new
-          enddo
-
-          tmp_dr(shell_index) = dr
-          tmp_r(shell_index)  = current_radius + 0.5 * dr
-          tmp_n(shell_index)  = n_shell
-          current_radius          = current_radius + dr
-       enddo
-
-       if (sum(tmp_n(1:shell_index)) >= n_particles) converged = .true.
+ n_first   = 100
+ converged = .false.
+ 
+ do while (.not. converged)
+    n_first        = n_first + 10
+    current_radius = r_min
+    shell_index    = 0
+    call interp_stellar_profile(current_radius, rho_prev, P, u, T)
+ 
+    do
+       shell_index = shell_index + 1
+       if (shell_index > max_shells_tmp) &
+          call fatal(label,'max_shells_tmp exceeded; increase max_shells_tmp')
+ 
+       if (shell_index == 1) then
+          n_shell = n_first
+       else
+          call interp_stellar_profile(current_radius, rho_cur, P, u, T)
+          n_shell = max(1, nint(real(tmp_n(shell_index-1))* ( current_radius / tmp_r(shell_index-1))** (2 - rho_power_in)))
+          rho_prev = rho_cur
+       endif
+ 
+       dr = wss * current_radius * get_fibonacci_spacing(n_shell)
+ 
+       if (current_radius + dr > r_max_on_rstar * Rstar) then
+          shell_index = shell_index - 1
+          exit
+       endif
+ 
+       tmp_dr(shell_index) = dr
+       tmp_r(shell_index)  = current_radius + 0.5*dr
+       tmp_n(shell_index)  = n_shell
+       current_radius      = current_radius + dr
     enddo
+ 
+    if (shell_index >= n_shells) converged = .true.
+ enddo
 
- else
-    ! m_gas not known a priori; use n_first as first-shell count and
-    ! propagate N forward via density ratio between shell centres.
-    n_first   = 1
-    converged = .false.
-    do while (.not. converged)
-       n_first        = n_first + 1
-       current_radius = r_min
-       shell_index    = 0
+ do i = 1, shell_index
+    print *, 'Shell ', i,' Rstar, N_particles=', tmp_n(i)
+ enddo
 
-       do while (current_radius < r_max_on_rstar * Rstar)
-          shell_index = shell_index + 1
-          if (shell_index > max_shells_tmp) call fatal(label,'gas shell tmp array too small')
+ mass_of_gas_particle = region_mass(r_min, r_max_on_rstar * Rstar) / real(sum(tmp_n(1:shell_index)))
 
-          if (shell_index == 1) then
-             n_shell = n_first
-          else
-             call interp_stellar_profile(tmp_r(shell_index-1), rho, P, u, T)
-             m_shell = 4.0 * pi * rho * tmp_r(shell_index-1)**2 * tmp_dr(shell_index-1)
-             mass_of_gas_particle = m_shell / real(tmp_n(shell_index-1))
-          endif
-
-          dr = wss * current_radius * get_fibonacci_spacing(n_shell)
-          do iter = 1, max_iter_dr
-             r_c    = current_radius + 0.5 * dr
-             call interp_stellar_profile(r_c, rho, P, u, T)
-             m_shell = 4.0 * pi * rho * r_c**2 * dr
-             if (shell_index > 1) then
-                n_shell = max(1, nint(m_shell / mass_of_gas_particle))
-             endif
-             dr_new  = wss * current_radius * get_fibonacci_spacing(n_shell)
-             if (abs(dr_new - dr) < tol_dr * dr) then
-                dr = dr_new
-                exit
-             endif
-             dr = dr_new
-          enddo
-
-          tmp_dr(shell_index) = dr
-          tmp_r(shell_index)  = current_radius + 0.5 * dr
-          tmp_n(shell_index)  = n_shell
-          current_radius          = current_radius + dr
-       enddo
-
-       if (shell_index >= max_shells) converged = .true.
-    enddo
-
-    mass_of_gas_particle = region_mass(r_min, r_max_on_rstar * Rstar) / real(sum(tmp_n(1:shell_index)))
- endif
-
- ! All shells share one grid and one particle mass.
- ! The first iboundary_spheres shells are labelled boundary, the rest gas.
  n_shells_total = shell_index
  n_shells_bnd   = min(iboundary_spheres, n_shells_total)
 
@@ -388,8 +313,10 @@ subroutine init_inject(ierr)
  massoftype(igas)      = mass_of_gas_particle
  massoftype(iboundary) = mass_of_boundary_particle
 
- if (file_exists) call read_mass_loss_data()
-
+ if (file_exists) then
+    call read_mass_loss_data()
+ endif 
+ 
  print *, ''
  print *, ' rho_power                        :', rho_power_in
  print *, ' rho_inner (cgs)                  :', rho_inner
@@ -601,8 +528,7 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  old_npart      = npart
  n_reinjections = n_reinjections + 1
 
- call inject_fibonacci_sphere(n_shells_total + n_reinjections, npart + 1, particles_to_inject, &
-                               r_inject, r_dot, u, rho, &
+ call inject_fibonacci_sphere(n_shells_total + n_reinjections, npart + 1, particles_to_inject, r_inject, r_dot, u, rho, &
                                npart, npartoftype, xyzh, vxyzu, igas, x0, v0)
 
  mass_injected = real(npart - old_npart) * mass_of_gas_particle
@@ -874,7 +800,6 @@ subroutine write_options_inject(iunit)
 
  call write_inopt(n_profile_points,     'n_profile_points',    'number of points in stellar profile',iunit)
  call write_inopt(iboundary_spheres,    'iboundary_spheres',   'number of boundary spheres (piston layers)',iunit)
- call write_inopt(n_particles,          'n_particles',         'target total gas particles',iunit)
  call write_inopt(n_shells,             'n_shells',            'number of gas shells (if <0 determined from n_particles)',iunit)
  call write_inopt(rho_power_in,         'rho_power',           'density profile exponent: rho ~ r^(-rho_power)',iunit)
  call write_inopt(r_min_on_rstar,       'r_min_on_rstar',      'gas atmosphere inner radius as fraction of R_star',iunit)
@@ -904,7 +829,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save      :: ngot = 0
- integer, parameter :: noptions = 22
+ integer, parameter :: noptions = 21
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -924,10 +849,6 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) iboundary_spheres
     ngot = ngot + 1
     if (iboundary_spheres < 0) call fatal(label,'iboundary_spheres must be >= 0')
- case('n_particles')
-    read(valstring,*,iostat=ierr) n_particles
-    ngot = ngot + 1
-    if (n_particles < 1) call fatal(label,'n_particles must be >= 1')
  case('n_shells')
     read(valstring,*,iostat=ierr) n_shells
     ngot = ngot + 1
