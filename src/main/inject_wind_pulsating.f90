@@ -188,8 +188,8 @@ subroutine init_inject(ierr)
  Msink = Mtotal
 
  inquire(file='mass_loss_rate.dat', exist=file_exists)
-
- if ( npartoftype(igas) > 100 .and. file_exists) then
+ 
+ if ( npartoftype(igas) < 100 .and. file_exists) then
        print *, 'Existing mass loss data file found, but this is a fresh start, so delete'
        open(newunit=iunit, file='mass_loss_rate.dat', status='old', iostat=ierr)
        close(iunit, status='delete')
