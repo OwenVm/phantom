@@ -86,6 +86,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use setbinary, only: set_binary
  use io,        only: master
  use options, only  : nfulldump, ieos
+ use eos, only      : gmw
  use timestep,       only:tmax,dtmax
  
  integer,           intent(in)    :: id
@@ -101,10 +102,11 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  integer :: ierr,k
  logical :: iexist
 
- tmax = 30
+!  tmax = 30
  dtmax = 0.1
  nfulldump = 1
  ieos = 5
+ gmw = 1.26
  
  call set_units(mass=solarm,dist=au,G=1.)
  call set_default_parameters_wind()
