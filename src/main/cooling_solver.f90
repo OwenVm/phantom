@@ -358,7 +358,7 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, r,
  dlnQ_molec        = 0.
 
  if (excitation_HI  == 1) call cooling_neutral_hydrogen(T, rho_cgs, r, r_min_cool, delta_r, cool_loc, Q_H0, dlnQ_H0)
- if (relax_Bowen    == 1) call cooling_Bowen_relaxation(T, Teq, rho_cgs, mu, gamma, &
+ if (relax_Bowen    == 1) call cooling_Bowen_relaxation(T, Teq,r, r_min_cool, rho_cgs, mu, gamma, &
                                                         Q_relax_Bowen, dlnQ_relax_Bowen)
  if (dust_collision == 1 .and. K2 > 0.) call cooling_dust_collision(T, Teq, rho_cgs, K2,&
                                                         mu, Q_col_dust, dlnQ_col_dust)
