@@ -167,7 +167,7 @@ subroutine cooling_neutral_hydrogen(T, rho_cgs, r, r_min_cool, delta_r, cool_loc
     endif
    !  print *, "Cooling neutral H active at r=", r, " cm, factor=", factor
     nH = rho_cgs/(1.4*mass_proton_cgs)
-    ne = calc_eps_e(T)*nH
+    ne = min(1.,calc_eps_e(T))*nH
     !the term 1/(1+sqrt(T)) comes from Cen (1992, ApjS, 78, 341)
     Q_cgs  = -f*7.3d-19*ne*nH*exp(-118400./T)/rho_cgs/(1.+sqrt(T/1.d5)) * factor   
     dlnQ_dlnT = (-118400./T+log(nH*calc_eps_e(1.001*T)/ne)/log(1.001) &
@@ -550,7 +550,7 @@ real function cool_HI(T_gas, rho_gas, mu, nH, nHe)
  ! all hydrogen atomic, so nH = n_gas
  ! Dalgarno & McCray (1972) provide data starting at 3000K
  ! (1+sqrt(T_gas/1.d5))**(-1) correction factor added by Cen 1992
- if (T_gas > 3000.) then
+ if (T_gas > 200000.) then
     n_gas   = rho_gas/(mu*mass_proton_cgs)
     !nH      = XH*n_gas
     cool_HI = 7.3d-19*n_e(T_gas, rho_gas, mu, nH, nHe)*n_gas/(1.+sqrt(T_gas/1.d5))*exp(-118400./T_gas)
