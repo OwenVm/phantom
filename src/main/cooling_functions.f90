@@ -156,7 +156,7 @@ subroutine cooling_neutral_hydrogen(T, rho_cgs, r, r_min_cool, delta_r, cool_loc
 !  print *, r, r_min_cool
 
  ! Only activate cooling if T > 3000 AND beyond r_min_cool from primary star
- if (T > 3000.) then
+ if (T > 3000. .and. T < 1.2e4) then
     !  print *, "Cooling neutral H active at r=", r, " cm"
     if (cool_loc == 1) then
         factor = 1 / (1 + exp(( r_min_cool - r ) / delta_r))

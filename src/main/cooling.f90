@@ -47,9 +47,9 @@ module cooling
  logical, public :: cooling_in_step  = .false.
 
  !--Minimum temperature (failsafe to prevent u < 0); optional for ALL cooling options
- real,    public :: Tfloor = 0.                     ! [K]; set in .in file.  On if Tfloor > 0.
+ real,    public :: Tfloor = 10.                     ! [K]; set in .in file.  On if Tfloor > 0.
  real,    public :: ufloor = 0.                     ! [code units]; set in init_cooling
- real,    public :: r_min_cool = 3.0, delta_r = 0.1                ! [AU]; minimum cooling radius (cooling off if r < r_min_cool)
+ real,    public :: r_min_cool = 3.0, delta_r = 0.001                ! [AU]; minimum cooling radius (cooling off if r < r_min_cool)
  integer, public :: cool_loc = 1                ! flag to indicate whether cooling is active around the companion of AGB
  public :: T0_value,lambda_shock_cgs ! expose to public
 
