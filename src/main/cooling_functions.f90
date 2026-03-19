@@ -87,8 +87,10 @@ subroutine cooling_Bowen_relaxation(T, Tdust, r, r_min_cool, rho_cgs, mu, gamma,
  real, intent(in)  :: T, Tdust, r, r_min_cool, rho_cgs, mu, gamma
  real, intent(out) :: Q_cgs, dlnQ_dlnT
  real :: r_AGB, factor
+
+ r_AGB = 1.3
  
- factor = max(0.0, (r - r_min_cool - r_AGB) / (r_min_cool - r_AGB))
+ factor = max(0.0, (r - (r_min_cool - r_AGB)) / (r_min_cool - r_AGB))
  if (factor > 1.0) factor = 1.0
 
  Q_cgs     = Rg/((gamma-1.)*mu)*rho_cgs*(Tdust-T)/bowen_Cprime * factor
@@ -171,12 +173,18 @@ subroutine cooling_neutral_hydrogen(T, rho_cgs, r, r_min_cool, delta_r, cool_loc
    !        factor = 1.0
    !  endif
 
-    factor = max(0.0, (r - r_min_cool - r_AGB) / (r_min_cool - r_AGB)) 
-    if (factor > 1.0) factor = 1.0
+   !  factor = max(0.0, (r - (r_min_cool - r_AGB)) / (r_min_cool - r_AGB)) 
+   !  if (factor > 1.0) factor = 1.0
 
    !  print *, factor
 
+   !  print *, 'cooling'
    !  print *, "Cooling neutral H active at r=", r, " cm, factor=", factor
+    factor = 0.
+    if (r > r_min_cool) then
+       factor = 1.0
+    endif
+
     nH = rho_cgs/(1.4*mass_proton_cgs)
     ne = min(1.,calc_eps_e(T))*nH
     !the term 1/(1+sqrt(T)) comes from Cen (1992, ApjS, 78, 341)

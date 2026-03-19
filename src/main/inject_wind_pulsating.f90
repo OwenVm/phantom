@@ -47,15 +47,15 @@ module inject
 
  integer :: iboundary_spheres     = 5
  integer :: n_profile_points      = 10000
- integer :: n_shells              = 25
- real    :: rho_power_in          = 10.0
+ integer :: n_shells              = 15
+ real    :: rho_power_in          = 4.0
  real    :: r_min_on_rstar        = 0.9
  real    :: r_max_on_rstar        = 1.4
  real    :: dtpulsation           = huge(0.)
  real    :: pulsation_period_days = 300.0
  real    :: piston_velocity_km_s  = 4.0
  real    :: time_puls             = -1.0
- real    :: rho_inner             = 1.0e-10
+ real    :: rho_inner             = 1.0e-11
  integer :: iwind                 = 1
  real    :: pulsation_timestep    = 0.02
  real    :: phi0                  = 3.1415926536d0/2.0
@@ -126,12 +126,12 @@ subroutine set_default_options_inject(flag)
 
  iboundary_spheres     = 5
  n_profile_points      = 10000
- n_shells              = 25
- rho_power_in          = 10.0
+ n_shells              = 15
+ rho_power_in          = 4.0
  r_min_on_rstar        = 0.9
  r_max_on_rstar        = 1.4
  dtpulsation           = huge(0.)
- rho_inner             = 1.0e-10
+ rho_inner             = 1.0e-11
  iwind                 = 1
  pulsation_period_days = 300.0
  piston_velocity_km_s  = 4.0

@@ -154,7 +154,7 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  integer,intent(in),optional:: ipart
  real, intent(out)          :: dudt                                ! in code units
  real                       :: mui,gammai,Tgas,Tdust,K2,kappa
- real                       :: r, r_min_cool_code, r_delta_code
+ real                       :: r, r_min_cool_code, r_delta_code, e_kin, e_pot
  real                       :: dx,dy,dz
  integer, parameter         :: iprimary = 1  ! Index of primary star in ptmass array
  integer, parameter         :: icompanion = 2 
@@ -186,8 +186,6 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  ! Convert r_min_cool from AU to code units
  r_min_cool_code = r_min_cool * au / udist
  r_delta_code    = delta_r  * au / udist
-
-!  print *, 'Cooling at r (code units)=', r, ' r_min_cool_code=', r_min_cool_code, ' r_delta_code=', r_delta_code
  
  if (present(gamma_in)) gammai = gamma_in
  if (present(mu_in))    mui        = mu_in
