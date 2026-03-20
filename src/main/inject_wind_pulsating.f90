@@ -116,6 +116,7 @@ module inject
  logical :: mass_loss_rate_calculated   = .false.
  logical :: measurement_active          = .false.
  integer :: particles_to_inject         = 0
+ logical :: update_L                    = .false.
 
  character(len=*), parameter :: label = 'inject_atmosphere'
 
@@ -146,9 +147,15 @@ subroutine set_default_options_inject(flag)
  mass_loss_end         = 3.0
  check_radius_au       = 3.0
  meas_int_days         = 10.0
+ update_L              = .false.
 
 end subroutine set_default_options_inject
 
+!----------------------------------------------------------------
+!+
+!  Initialize everything
+!+
+!----------------------------------------------------------------
 subroutine init_inject(ierr)
  use io,            only:fatal
  use physcon,       only:pi,days,au,solarm,km,years
@@ -345,6 +352,11 @@ subroutine init_inject(ierr)
 
 end subroutine init_inject
 
+!----------------------------------------------------------------
+!+
+!  The actual function that is called by phantom
+!+
+!----------------------------------------------------------------
 subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npart_old,npartoftype,dtinject)
  use part, only:igas,iboundary,iamtype
 
@@ -391,6 +403,11 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
 
 end subroutine inject_particles
 
+!----------------------------------------------------------------
+!+
+!  Checks how much mass has lost the star and calculates the mass loss rate
+!+
+!----------------------------------------------------------------
 subroutine take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoftype)
  use part,   only:igas,iboundary,iphase,iamtype
  use units,  only:utime,umass
@@ -468,6 +485,11 @@ subroutine take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoft
 
 end subroutine take_periodic_mass_measurements
 
+!----------------------------------------------------------------
+!+
+!  Checks when to reinject
+!+
+!----------------------------------------------------------------
 subroutine check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
  use units,  only:utime
  use physcon,only:days
@@ -490,6 +512,11 @@ subroutine check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,np
 
 end subroutine check_continuous_reinject
 
+!----------------------------------------------------------------
+!+
+!  Inject particles throughout the simulation
+!+
+!----------------------------------------------------------------
 subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
  use part,           only:igas,iboundary,iamtype,set_particle_type
  use injectutils,    only:inject_fibonacci_sphere
@@ -543,6 +570,11 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
 
 end subroutine perform_reinjection
 
+!----------------------------------------------------------------
+!+
+!  Build the initial atmospheric setup (i.e. build the shells)
+!+
+!----------------------------------------------------------------
 subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
  use part,           only:igas,iboundary,iphase,iamtype
  use injectutils,    only:inject_fibonacci_sphere
@@ -609,6 +641,11 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
 
 end subroutine setup_initial_atmosphere
 
+!----------------------------------------------------------------
+!+
+!  Reconstructs boundary particle info after resuming from a dump
+!+
+!----------------------------------------------------------------
 subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
  use part,   only:iboundary,iphase,iamtype
  use physcon,only:pi
@@ -649,9 +686,17 @@ subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
 
 end subroutine reconstruct_boundary_info
 
+!----------------------------------------------------------------
+!+
+!  Applies the pulsation to the boundary layers
+!+
+!----------------------------------------------------------------
+
 subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
- use physcon,        only:pi
+ use physcon,        only:pi,solarl
  use wind_pulsating, only:interp_stellar_profile
+ use part,           only:iTeff,iLum,iReff
+ use units,          only:unit_luminosity
 
  real,    intent(in)    :: time
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
@@ -661,6 +706,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  real    :: r_eq, r_new, r_current, phase, piston_velocity_n, deltaR_osc_n
  real    :: x_hat(3), r_dot, x0(3), v0(3)
  real    :: x, y, z, rho, u, T, P
+ real    :: Reff, Teff, Lum
 
  if (.not. allocated(boundary_particle_ids)) return
  if (n_boundary_particles == 0) return
@@ -706,13 +752,50 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
        vxyzu(4,ipart) = u
        xyzh(4,ipart)  = (mass_of_boundary_particle / rho)**(1./3.)
     endif
+
+    if (update_L) then 
+       Reff = xyzmh_ptmass(iReff,1) + deltaR_osc_n * sin(phase)
+       Teff = xyzmh_ptmass(iTeff,1)
+       Lum  = xyzmh_ptmass(iLum,1)
+       call get_lum(Lum,Teff,Reff)
+       xyzmh_ptmass(iLum,1) = Lum
+    endif 
  enddo
 
 end subroutine apply_pulsation
 
-subroutine update_injected_par
+
+!----------------------------------------------------------------
+!+
+!  Placeholder function
+!+
+!----------------------------------------------------------------
+subroutine update_injected_par 
+
 end subroutine update_injected_par
 
+!----------------------------------------------------------------
+!+
+!  Get luminosity 
+!+
+!----------------------------------------------------------------
+subroutine get_lum(Lum,Teff,Reff)
+ use physcon, only:au,steboltz,solarl,pi
+ use units,   only:udist,unit_luminosity
+ real, intent(inout) :: Lum
+ real, intent(in)    :: Reff, Teff
+ real :: lum_lsun
+
+ lum_lsun = 4.*pi*steboltz*Teff**4*(Reff*au)**2/solarl
+ Lum  = lum_lsun*(solarl/unit_luminosity)
+
+end subroutine get_lum
+
+!----------------------------------------------------------------
+!+
+!  Write mass-loss information to file for resume from dump
+!+
+!----------------------------------------------------------------
 subroutine write_mass_loss_data()
  use io, only:iprint
  integer :: iunit, ierr, i
@@ -742,6 +825,11 @@ subroutine write_mass_loss_data()
 
 end subroutine write_mass_loss_data
 
+!----------------------------------------------------------------
+!+
+!  read mass-loss information from file after resuming from dump
+!+
+!----------------------------------------------------------------
 subroutine read_mass_loss_data()
  use io, only:iprint
  integer :: iunit, ierr, i
@@ -780,6 +868,11 @@ subroutine read_mass_loss_data()
 
 end subroutine read_mass_loss_data
 
+!----------------------------------------------------------------
+!+
+!  Use mass-period relation to estimate the pulsation period
+!+
+!----------------------------------------------------------------
 subroutine calculate_period(M, R, pulsation_period_days)
  real, intent(in)  :: M, R
  real, intent(out) :: pulsation_period_days
@@ -794,6 +887,11 @@ subroutine calculate_period(M, R, pulsation_period_days)
 
 end subroutine calculate_period
 
+!----------------------------------------------------------------
+!+
+!  Write options to .in file
+!+
+!----------------------------------------------------------------
 subroutine write_options_inject(iunit)
  use infile_utils, only:write_inopt
  integer, intent(in) :: iunit
@@ -819,9 +917,15 @@ subroutine write_options_inject(iunit)
  call write_inopt(mass_loss_end,        'mass_loss_end',       'end time for mass-loss calculation (years)',iunit)
  call write_inopt(check_radius_au,      'check_radius_au',     'mass-loss counting radius (AU)',iunit)
  call write_inopt(meas_int_days,        'meas_int_days',       'mass measurement interval (days)',iunit)
+ call write_inopt(update_L,             'update_L',           'update luminosity with pulsation (logical)',iunit)
 
 end subroutine write_options_inject
 
+!----------------------------------------------------------------
+!+
+!  Read options from .in file
+!+
+!----------------------------------------------------------------
 subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  use io, only:fatal
  character(len=*), intent(in)  :: name, valstring
@@ -829,7 +933,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save      :: ngot = 0
- integer, parameter :: noptions = 21
+ integer, parameter :: noptions = 22
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -927,6 +1031,9 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) meas_int_days
     ngot = ngot + 1
     if (meas_int_days <= 0.) call fatal(label,'meas_int_days must be > 0')
+ case('update_L')
+    read(valstring,*,iostat=ierr) update_L
+    ngot = ngot + 1
  case default
     imatch = .false.
  end select
