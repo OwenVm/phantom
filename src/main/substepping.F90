@@ -976,7 +976,7 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
  use options,         only:icooling
  use chem,            only:update_abundances,get_dphot
  use dust_formation,  only:evolve_dust,calc_muGamma
- use cooling,         only:energ_cooling,cooling_in_step
+ use cooling,         only:energ_cooling,cooling_in_step,use_bound, esc
  use part,            only:rhoh, xyzmh_ptmass
 #ifdef KROME
  use part,            only: T_gas_cool
@@ -1030,19 +1030,16 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
  ! COOLING
  !
 
- unbound = .false.
- e_pot = - xyzmh_ptmass(4, 1) / sqrt(xyzh(1,i)**2 + xyzh(2,i)**2 + xyzh(3,i)**2)
- e_kin = 0.5 * (vxyzu(1,i)**2 + vxyzu(2,i)**2 + vxyzu(3,i)**2)
- e_therm = vxyzu(4,i)
+ unbound = .true.
+ if (use_bound) then
+    unbound = .false.
+    e_pot = - xyzmh_ptmass(4, 1) / sqrt(xyzh(1,i)**2 + xyzh(2,i)**2 + xyzh(3,i)**2)
+    e_kin = 0.5 * (vxyzu(1,i)**2 + vxyzu(2,i)**2 + vxyzu(3,i)**2)
+    e_therm = esc * vxyzu(4,i)
+    if (e_kin + e_therm + e_pot > 0.) unbound = .true.
+ endif
 
-!  print *, 'e_pot = ', e_pot, ' e_kin = ', e_kin, ' e_therm = ', e_therm
-!  print *, 'total energy = ', e_pot + e_kin + e_therm
-
- if (e_kin + e_therm + e_pot > 0.) unbound = .true.
-!  if (unbound) print *, 'Particle ', i, ' total energy = ', e_pot + e_kin + e_therm, ' unbound = ', unbound
-
- if (icooling > 0 .and. cooling_in_step .and. icooling/=9) then
-   !  print *, 'Particle ', i, ' is unbound'
+ if (icooling > 0 .and. cooling_in_step .and. icooling/=9 .and. unbound) then
     if (h2chemistry) then
        !
        ! Call cooling routine, requiring total density, some distance measure and

@@ -80,21 +80,15 @@ end subroutine piecewise_law
 !  Bowen 1988 cooling prescription
 !+
 !-----------------------------------------------------------------------
-subroutine cooling_Bowen_relaxation(T, Tdust, r, r_min_cool, rho_cgs, mu, gamma, Q_cgs, dlnQ_dlnT)
+subroutine cooling_Bowen_relaxation(T, Tdust, rho_cgs, mu, gamma, Q_cgs, dlnQ_dlnT)
 
  use physcon, only:Rg
 
- real, intent(in)  :: T, Tdust, r, r_min_cool, rho_cgs, mu, gamma
+ real, intent(in)  :: T, Tdust, rho_cgs, mu, gamma
  real, intent(out) :: Q_cgs, dlnQ_dlnT
- real :: r_AGB, factor
 
- r_AGB = 1.3
- 
- factor = max(0.0, (r - (r_min_cool - r_AGB)) / (r_min_cool - r_AGB))
- if (factor > 1.0) factor = 1.0
-
- Q_cgs     = Rg/((gamma-1.)*mu)*rho_cgs*(Tdust-T)/bowen_Cprime * factor
- dlnQ_dlnT = -T/(Tdust-T+1.d-10) * factor
+ Q_cgs     = Rg/((gamma-1.)*mu)*rho_cgs*(Tdust-T)/bowen_Cprime
+ dlnQ_dlnT = -T/(Tdust-T+1.d-10) 
 
 end subroutine cooling_Bowen_relaxation
 
@@ -148,50 +142,26 @@ end subroutine cooling_radiative_relaxation
 !  Cooling due to electron excitation of neutral H (Spitzer 1978)
 !+
 !-----------------------------------------------------------------------
-subroutine cooling_neutral_hydrogen(T, rho_cgs, r, r_min_cool, delta_r, cool_loc, Q_cgs, dlnQ_dlnT)
+subroutine cooling_neutral_hydrogen(T, rho_cgs, Q_cgs, dlnQ_dlnT)
 
  use physcon, only: mass_proton_cgs
 
- real, intent(in)  :: T, rho_cgs, r, r_min_cool, delta_r
- integer, intent(in) :: cool_loc 
+ real, intent(in)  :: T, rho_cgs
  real, intent(out) :: Q_cgs,dlnQ_dlnT
 
  real, parameter   :: f = 1.0d0
- real              :: ne,nH, factor, r_AGB
+ real              :: ne,nH, factor
 
- r_AGB = 1.3
-
-!  print *, r, r_min_cool
- ! Only activate cooling if T > 3000 AND beyond r_min_cool from primary star
+ ! Only activate cooling if T > 3000 
  if (T > 3000.) then
-    !  print *, "Cooling neutral H active at r=", r, " cm"
-   !  if (cool_loc == 1) then
-   !      factor = 1 / (1 + exp(( r_min_cool - r ) / delta_r))
-   !  elseif (cool_loc == 2) then
-   !      factor = 1 / (1 + exp(-( r_min_cool - r ) / delta_r))
-   !  else
-   !        factor = 1.0
-   !  endif
-
-   !  factor = max(0.0, (r - (r_min_cool - r_AGB)) / (r_min_cool - r_AGB)) 
-   !  if (factor > 1.0) factor = 1.0
-
-   !  print *, factor
-
-   !  print *, 'cooling'
-   !  print *, "Cooling neutral H active at r=", r, " cm, factor=", factor
-    factor = 0.
-    if (r > r_min_cool) then
-       factor = 1.0
-    endif
-
+   
     nH = rho_cgs/(1.4*mass_proton_cgs)
     ne = min(1.,calc_eps_e(T))*nH
     !the term 1/(1+sqrt(T)) comes from Cen (1992, ApjS, 78, 341)
-    Q_cgs  = -f*7.3d-19*ne*nH*exp(-118400./T)/rho_cgs/(1.+sqrt(T/1.d5)) * factor   
+    Q_cgs  = -f*7.3d-19*ne*nH*exp(-118400./T)/rho_cgs/(1.+sqrt(T/1.d5)) 
 
     dlnQ_dlnT = (-118400./T+log(nH*calc_eps_e(1.001*T)/ne)/log(1.001) &
-         - 0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5))) * factor
+         - 0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5))) 
  else
     Q_cgs = 0.
     dlnQ_dlnT = 0.
