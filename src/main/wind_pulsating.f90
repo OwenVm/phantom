@@ -44,7 +44,7 @@ subroutine setup_star(Mstar_in, Tstar_in, Rstar_in, r_min, mu_in, gamma_in, rho_
 
  Mstar_cgs     = Mstar_in
  Rstar_cgs     = Rstar_in
- Tstar_cgs     = Tstar_in
+ Tstar_cgs     = Tstar_in / 10
  r_inner       = r_min
  Star_gamma    = gamma_in
  Star_mu       = mu_in
@@ -114,39 +114,34 @@ end function region_mass
 
 !-----------------------------------------------------------------------
 !
-!  Initialize variables for stellar profile integration at r_inner.
+!  Initialize variables for stellar profile integration at r_outer (Rstar).
+!  Anchors pressure at the outer boundary using the ideal gas law at Tstar.
+!  Integration then proceeds inward.
 !
 !-----------------------------------------------------------------------
 subroutine init_atmosphere(state)
- use physcon, only:pi, kboltz, mass_proton_cgs, Gg
+ use physcon, only:kboltz, mass_proton_cgs
  type(stellar_state), intent(out) :: state
- real :: C_rho, P_inner
- real :: rho_outer_cgs, P_outer
+ real :: C_rho, rho_outer_cgs
 
- state%r0    = r_inner
- state%r     = r_inner
- state%Rstar = Rstar_cgs
- state%rho   = rho_inner_cgs
- 
- C_rho = calc_C_rho()
- 
+ C_rho         = calc_C_rho()
  rho_outer_cgs = C_rho / Rstar_cgs**rho_power
- P_outer       = rho_outer_cgs * kboltz * Tstar_cgs / (Star_mu * mass_proton_cgs)
- P_inner       = P_outer + Gg * Mstar_cgs * C_rho / (rho_power + 1.0) &
-                 * (r_inner**(-(rho_power+1.0)) - Rstar_cgs**(-(rho_power+1.0)))
- 
- state%P = P_inner
- state%u = state%P / (state%rho * (Star_gamma - 1.))
- state%T = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
+
+ ! Anchor at outer boundary with ideal gas law
+ state%r   = Rstar_cgs
+ state%r0  = Rstar_cgs
+ state%Rstar = Rstar_cgs
+ state%rho = rho_outer_cgs
+ state%P   = rho_outer_cgs * kboltz * Tstar_cgs / (Star_mu * mass_proton_cgs)
+ state%u   = state%P / (state%rho * (Star_gamma - 1.))
+ state%T   = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
 
  print *, ""
- print *, "Initial inner boundary conditions:"
- print *, " mu          :", Star_mu
- print *, " gamma       :", Star_gamma
- print *, " rho_power   :", rho_power
- print *, " rho (inner) :", rho_inner_cgs
- print *, " P   (inner) :", state%P
- print *, " T   (inner) :", state%T
+ print *, "Outer boundary conditions (integration start):"
+ print *, " r    (outer) :", state%r
+ print *, " rho  (outer) :", state%rho
+ print *, " P    (outer) :", state%P
+ print *, " T    (outer) :", state%T
  print *, ""
 
  state%nsteps = 1
@@ -156,11 +151,12 @@ end subroutine init_atmosphere
 
 !-----------------------------------------------------------------------
 !
-!  Integrate hydrostatic equilibrium over one radial step (outward).
+!  Integrate hydrostatic equilibrium over one radial step.
+!  Works for both inward (dr < 0) and outward (dr > 0) steps.
 !
 !-----------------------------------------------------------------------
 subroutine stellar_step(state, r_new)
- use physcon, only:Gg, pi, Rg, kboltz, mass_proton_cgs
+ use physcon, only:Gg, kboltz, mass_proton_cgs
 
  type(stellar_state), intent(inout) :: state
  real, intent(in) :: r_new
@@ -177,9 +173,8 @@ subroutine stellar_step(state, r_new)
  state%r   = r_new
  state%P   = state%P + dP
  state%rho = C_rho / state%r**rho_power
-
- state%u = state%P / (state%rho * (Star_gamma - 1.))
- state%T = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
+ state%u   = state%P / (state%rho * (Star_gamma - 1.))
+ state%T   = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
 
  state%nsteps = state%nsteps + 1
 
@@ -187,38 +182,56 @@ end subroutine stellar_step
 
 !-----------------------------------------------------------------------
 !
-!  Integrate the hydrostatic equilibrium equation outward from r_inner
+!  Integrate the hydrostatic equilibrium equation inward from Rstar to r_inner,
+!  then reverse the array so it runs from r_inner to Rstar.
 !
 !-----------------------------------------------------------------------
 subroutine calc_stellar_profile(n)
  integer, intent(in) :: n
  type(stellar_state) :: state
+ real, dimension(:,:), allocatable :: tmp
  integer :: i
  real :: r_new, dr
 
  call init_atmosphere(state)
 
- if (allocated(stellar_1D)) deallocate(stellar_1D)
- allocate(stellar_1D(5, n))
+ allocate(tmp(5, n))
 
- dr = (Rstar_cgs - r_inner) / real(n-1)
+ ! dr is negative — stepping inward
+ dr = (r_inner - Rstar_cgs) / real(n-1)
 
- stellar_1D(1, 1) = state%r
- stellar_1D(2, 1) = state%rho
- stellar_1D(3, 1) = state%P
- stellar_1D(4, 1) = state%u
- stellar_1D(5, 1) = state%T
+ tmp(1, 1) = state%r
+ tmp(2, 1) = state%rho
+ tmp(3, 1) = state%P
+ tmp(4, 1) = state%u
+ tmp(5, 1) = state%T
 
  do i = 2, n
-    r_new = r_inner + real(i-1) * dr
+    r_new = Rstar_cgs + real(i-1) * dr
     call stellar_step(state, r_new)
 
-    stellar_1D(1, i) = state%r
-    stellar_1D(2, i) = state%rho
-    stellar_1D(3, i) = state%P
-    stellar_1D(4, i) = state%u
-    stellar_1D(5, i) = state%T
+    tmp(1, i) = state%r
+    tmp(2, i) = state%rho
+    tmp(3, i) = state%P
+    tmp(4, i) = state%u
+    tmp(5, i) = state%T
  enddo
+
+ ! Reverse so stellar_1D runs from r_inner (index 1) to Rstar (index n)
+ if (allocated(stellar_1D)) deallocate(stellar_1D)
+ allocate(stellar_1D(5, n))
+ do i = 1, n
+    stellar_1D(:, i) = tmp(:, n+1-i)
+ enddo
+ deallocate(tmp)
+
+ print *, ""
+ print *, "Inner boundary conditions (after inward integration):"
+ print *, " r    (inner) :", stellar_1D(1, 1)
+ print *, " rho  (inner) :", stellar_1D(2, 1)
+ print *, " P    (inner) :", stellar_1D(3, 1)
+ print *, " T    (inner) :", stellar_1D(5, 1)
+ print *, ""
 
  call save_stellarprofile(n, 'stellar_profile1D.dat')
 

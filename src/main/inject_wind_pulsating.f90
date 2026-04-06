@@ -238,20 +238,14 @@ subroutine init_inject(ierr)
     max_shells = 200
  endif
 
- call setup_star(Msink * umass, Tstar, r_max_on_rstar * Rstar * au, r_min_on_rstar * Rstar * au, &
-               gmw, gamma, rho_inner, rho_power_in)
-
  r_min = r_min_on_rstar * Rstar
 
  if (r_min <= 0.) call fatal(label,'r_min must be > 0')
 
- call calc_stellar_profile(n_profile_points)
-
  if (n_particles_first > 0) then
-    ! Build shells outward from r_min, starting with n_particles_first on first shell.
+
     current_radius = r_min
     shell_index    = 0
-    call interp_stellar_profile(current_radius, rho_prev, P, u, T)
 
     do
        shell_index = shell_index + 1
@@ -261,13 +255,13 @@ subroutine init_inject(ierr)
        if (shell_index == 1) then
           n_shell = n_particles_first
        else
-          call interp_stellar_profile(current_radius, rho_cur, P, u, T)
           n_shell = max(1, nint(real(tmp_n(shell_index-1)) * (current_radius / tmp_r(shell_index-1))**(2 - rho_power_in)))
           rho_prev = rho_cur
        endif
 
        if (shell_index > 1 .and. n_shell < min_particles_shell) then
           shell_index = shell_index - 1
+          r_max_on_rstar = current_radius + 0.5*dr
           exit
        endif
 
@@ -287,7 +281,6 @@ subroutine init_inject(ierr)
        n_first        = n_first + 10
        current_radius = r_min
        shell_index    = 0
-       call interp_stellar_profile(current_radius, rho_prev, P, u, T)
 
        do
           shell_index = shell_index + 1
@@ -297,9 +290,7 @@ subroutine init_inject(ierr)
           if (shell_index == 1) then
              n_shell = n_first
           else
-             call interp_stellar_profile(current_radius, rho_cur, P, u, T)
              n_shell = max(1, nint(real(tmp_n(shell_index-1))* ( current_radius / tmp_r(shell_index-1))** (2 - rho_power_in)))
-             rho_prev = rho_cur
           endif
 
           dr = wss * current_radius * get_fibonacci_spacing(n_shell)
@@ -322,6 +313,10 @@ subroutine init_inject(ierr)
  do i = 1, shell_index
     print *, 'Shell ', i,' Rstar, N_particles=', tmp_n(i)
  enddo
+
+ call setup_star(Msink * umass, Tstar, r_max_on_rstar * Rstar * au, r_min_on_rstar * Rstar * au, &
+               gmw, gamma, rho_inner, rho_power_in)
+ call calc_stellar_profile(n_profile_points)
 
  mass_of_gas_particle = region_mass(r_min, r_max_on_rstar * Rstar) / real(sum(tmp_n(1:shell_index)))
 
@@ -1015,7 +1010,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  case('r_max_on_rstar')
     read(valstring,*,iostat=ierr) r_max_on_rstar
     ngot = ngot + 1
-    if (r_max_on_rstar <= 0. .or. r_max_on_rstar > 10.0) &
+    if (r_max_on_rstar <= 0. .or. r_max_on_rstar > 1000.0) &
        call fatal(label,'r_max_on_rstar must be in (0,10]')
  case('rho_inner')
     read(valstring,*,iostat=ierr) rho_inner
