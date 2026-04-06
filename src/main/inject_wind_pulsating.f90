@@ -16,6 +16,7 @@ module inject
 !   - iboundary_spheres   : *number of boundary spheres (integer)*
 !   - n_profile_points    : *number of points in stellar profile calculation (integer)*
 !   - n_shells            : *total number of shells (integer, if <0 determined automatically from n_particles)*
+!   - n_particles_first   : *particles on first shell (0=disabled, >0 builds shells until <100 particles/shell)*
 !   - rho_power           : *density profile exponent: rho ~ r^(-rho_power)*
 !   - r_min_on_rstar      : *inner radius as fraction of R_star*
 !   - r_max_on_rstar      : *outer radius as fraction of R_star*
@@ -48,6 +49,8 @@ module inject
  integer :: iboundary_spheres     = 5
  integer :: n_profile_points      = 10000
  integer :: n_shells              = 15
+ integer :: n_particles_first     = 0
+ integer :: min_particles_shell  = 100
  real    :: rho_power_in          = 4.0
  real    :: r_min_on_rstar        = 0.9
  real    :: r_max_on_rstar        = 1.4
@@ -128,6 +131,8 @@ subroutine set_default_options_inject(flag)
  iboundary_spheres     = 5
  n_profile_points      = 10000
  n_shells              = 15
+ n_particles_first     = 0
+ min_particles_shell   = 100
  rho_power_in          = 4.0
  r_min_on_rstar        = 0.9
  r_max_on_rstar        = 1.4
@@ -195,12 +200,12 @@ subroutine init_inject(ierr)
  Msink = Mtotal
 
  inquire(file='mass_loss_rate.dat', exist=file_exists)
- 
+
  if ( npartoftype(igas) < 100 .and. file_exists) then
        print *, 'Existing mass loss data file found, but this is a fresh start, so delete'
        open(newunit=iunit, file='mass_loss_rate.dat', status='old', iostat=ierr)
        close(iunit, status='delete')
- endif 
+ endif
 
  if (.not. file_exists) then
     xyzmh_ptmass(4, wind_emitting_sink) = Msink
@@ -233,7 +238,7 @@ subroutine init_inject(ierr)
     max_shells = 200
  endif
 
- call setup_star(Msink * umass, Tstar, r_max_on_rstar * Rstar * au, r_min_on_rstar * Rstar * au, & 
+ call setup_star(Msink * umass, Tstar, r_max_on_rstar * Rstar * au, r_min_on_rstar * Rstar * au, &
                gmw, gamma, rho_inner, rho_power_in)
 
  r_min = r_min_on_rstar * Rstar
@@ -242,43 +247,77 @@ subroutine init_inject(ierr)
 
  call calc_stellar_profile(n_profile_points)
 
- n_first   = 100
- converged = .false.
- 
- do while (.not. converged)
-    n_first        = n_first + 10
+ if (n_particles_first > 0) then
+    ! Build shells outward from r_min, starting with n_particles_first on first shell.
     current_radius = r_min
     shell_index    = 0
     call interp_stellar_profile(current_radius, rho_prev, P, u, T)
- 
+
     do
        shell_index = shell_index + 1
        if (shell_index > max_shells_tmp) &
           call fatal(label,'max_shells_tmp exceeded; increase max_shells_tmp')
- 
+
        if (shell_index == 1) then
-          n_shell = n_first
+          n_shell = n_particles_first
        else
           call interp_stellar_profile(current_radius, rho_cur, P, u, T)
-          n_shell = max(1, nint(real(tmp_n(shell_index-1))* ( current_radius / tmp_r(shell_index-1))** (2 - rho_power_in)))
+          n_shell = max(1, nint(real(tmp_n(shell_index-1)) * (current_radius / tmp_r(shell_index-1))**(2 - rho_power_in)))
           rho_prev = rho_cur
        endif
- 
-       dr = wss * current_radius * get_fibonacci_spacing(n_shell)
- 
-       if (current_radius + dr > r_max_on_rstar * Rstar) then
+
+       if (shell_index > 1 .and. n_shell < min_particles_shell) then
           shell_index = shell_index - 1
           exit
        endif
- 
+
+       dr = wss * current_radius * get_fibonacci_spacing(n_shell)
+
        tmp_dr(shell_index) = dr
        tmp_r(shell_index)  = current_radius + 0.5*dr
        tmp_n(shell_index)  = n_shell
        current_radius      = current_radius + dr
     enddo
- 
-    if (shell_index >= n_shells) converged = .true.
- enddo
+
+ else
+    n_first   = 100
+    converged = .false.
+
+    do while (.not. converged)
+       n_first        = n_first + 10
+       current_radius = r_min
+       shell_index    = 0
+       call interp_stellar_profile(current_radius, rho_prev, P, u, T)
+
+       do
+          shell_index = shell_index + 1
+          if (shell_index > max_shells_tmp) &
+             call fatal(label,'max_shells_tmp exceeded; increase max_shells_tmp')
+
+          if (shell_index == 1) then
+             n_shell = n_first
+          else
+             call interp_stellar_profile(current_radius, rho_cur, P, u, T)
+             n_shell = max(1, nint(real(tmp_n(shell_index-1))* ( current_radius / tmp_r(shell_index-1))** (2 - rho_power_in)))
+             rho_prev = rho_cur
+          endif
+
+          dr = wss * current_radius * get_fibonacci_spacing(n_shell)
+
+          if (current_radius + dr > r_max_on_rstar * Rstar) then
+             shell_index = shell_index - 1
+             exit
+          endif
+
+          tmp_dr(shell_index) = dr
+          tmp_r(shell_index)  = current_radius + 0.5*dr
+          tmp_n(shell_index)  = n_shell
+          current_radius      = current_radius + dr
+       enddo
+
+       if (shell_index >= n_shells) converged = .true.
+    enddo
+ endif
 
  do i = 1, shell_index
     print *, 'Shell ', i,' Rstar, N_particles=', tmp_n(i)
@@ -311,7 +350,6 @@ subroutine init_inject(ierr)
  enddo
  n_shells_total = n_shells_total - n_shells_bnd
 
- ! Combined delta_r_radial (boundary first, then gas)
  if (allocated(delta_r_radial)) deallocate(delta_r_radial)
  allocate(delta_r_radial(n_shells_bnd + n_shells_total))
  if (n_shells_bnd > 0) delta_r_radial(1:n_shells_bnd) = delta_r_boundary
@@ -322,8 +360,8 @@ subroutine init_inject(ierr)
 
  if (file_exists) then
     call read_mass_loss_data()
- endif 
- 
+ endif
+
  print *, ''
  print *, ' rho_power                        :', rho_power_in
  print *, ' rho_inner (cgs)                  :', rho_inner
@@ -691,7 +729,6 @@ end subroutine reconstruct_boundary_info
 !  Applies the pulsation to the boundary layers
 !+
 !----------------------------------------------------------------
-
 subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  use physcon,        only:pi,solarl
  use wind_pulsating, only:interp_stellar_profile
@@ -753,30 +790,29 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
        xyzh(4,ipart)  = (mass_of_boundary_particle / rho)**(1./3.)
     endif
 
-    if (update_L) then 
+    if (update_L) then
        Reff = xyzmh_ptmass(iReff,1) + deltaR_osc_n * sin(phase)
        Teff = xyzmh_ptmass(iTeff,1)
        Lum  = xyzmh_ptmass(iLum,1)
        call get_lum(Lum,Teff,Reff)
        xyzmh_ptmass(iLum,1) = Lum
-    endif 
+    endif
  enddo
 
 end subroutine apply_pulsation
-
 
 !----------------------------------------------------------------
 !+
 !  Placeholder function
 !+
 !----------------------------------------------------------------
-subroutine update_injected_par 
+subroutine update_injected_par
 
 end subroutine update_injected_par
 
 !----------------------------------------------------------------
 !+
-!  Get luminosity 
+!  Get luminosity
 !+
 !----------------------------------------------------------------
 subroutine get_lum(Lum,Teff,Reff)
@@ -827,7 +863,7 @@ end subroutine write_mass_loss_data
 
 !----------------------------------------------------------------
 !+
-!  read mass-loss information from file after resuming from dump
+!  Read mass-loss information from file after resuming from dump
 !+
 !----------------------------------------------------------------
 subroutine read_mass_loss_data()
@@ -899,6 +935,8 @@ subroutine write_options_inject(iunit)
  call write_inopt(n_profile_points,     'n_profile_points',    'number of points in stellar profile',iunit)
  call write_inopt(iboundary_spheres,    'iboundary_spheres',   'number of boundary spheres (piston layers)',iunit)
  call write_inopt(n_shells,             'n_shells',            'number of gas shells (if <0 determined from n_particles)',iunit)
+ call write_inopt(n_particles_first,    'n_particles_first',   'particles on first shell (0=disabled)',iunit)
+ call write_inopt(min_particles_shell,  'min_particles_shell', 'minimum particles per shell when using n_particles_first',iunit)
  call write_inopt(rho_power_in,         'rho_power',           'density profile exponent: rho ~ r^(-rho_power)',iunit)
  call write_inopt(r_min_on_rstar,       'r_min_on_rstar',      'gas atmosphere inner radius as fraction of R_star',iunit)
  call write_inopt(r_max_on_rstar,       'r_max_on_rstar',      'gas atmosphere outer radius as fraction of R_star',iunit)
@@ -917,7 +955,7 @@ subroutine write_options_inject(iunit)
  call write_inopt(mass_loss_end,        'mass_loss_end',       'end time for mass-loss calculation (years)',iunit)
  call write_inopt(check_radius_au,      'check_radius_au',     'mass-loss counting radius (AU)',iunit)
  call write_inopt(meas_int_days,        'meas_int_days',       'mass measurement interval (days)',iunit)
- call write_inopt(update_L,             'update_L',           'update luminosity with pulsation (logical)',iunit)
+ call write_inopt(update_L,             'update_L',            'update luminosity with pulsation (logical)',iunit)
 
 end subroutine write_options_inject
 
@@ -933,7 +971,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save      :: ngot = 0
- integer, parameter :: noptions = 22
+ integer, parameter :: noptions = 24
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -957,6 +995,14 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) n_shells
     ngot = ngot + 1
     if (n_shells < -10) call fatal(label,'n_shells must be >= -10')
+ case('n_particles_first')
+    read(valstring,*,iostat=ierr) n_particles_first
+    ngot = ngot + 1
+    if (n_particles_first < 0) call fatal(label,'n_particles_first must be >= 0')
+ case('min_particles_shell')
+    read(valstring,*,iostat=ierr) min_particles_shell
+    ngot = ngot + 1
+    if (min_particles_shell < 1) call fatal(label,'min_particles_shell must be >= 1')
  case('rho_power')
     read(valstring,*,iostat=ierr) rho_power_in
     ngot = ngot + 1
