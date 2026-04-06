@@ -49,8 +49,8 @@ module cooling
  !--Minimum temperature (failsafe to prevent u < 0); optional for ALL cooling options
  real,    public :: Tfloor = 10.                    ! [K]; set in .in file.  On if Tfloor > 0.
  real,    public :: ufloor = 0.                     ! [code units]; set in init_cooling
- real,    public :: r_min_cool = 3.0                ! [AU]; minimum cooling radius (cooling off if r < r_min_cool)
- logical, public :: use_bound = .false.             ! if true, use bound on cooling rate to prevent u < ufloor
+ real,    public :: r_min_cool = -1.0                ! [AU]; minimum cooling radius (cooling off if r < r_min_cool)
+ logical, public :: use_bound = .true.             ! if true, use bound on cooling rate to prevent u < ufloor
  real,    public :: esc = 1.0                       ! percentage of u_therm to take into account
  public :: T0_value,lambda_shock_cgs ! expose to public
 
