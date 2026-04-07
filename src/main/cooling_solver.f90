@@ -25,6 +25,7 @@ module cooling_solver
 !   - relax_bowen    : *Bowen (diffusive) relaxation (1=on/0=off)*
 !   - relax_stefan   : *radiative relaxation (1=on/0=off)*
 !   - shock_problem  : *piecewise formulation for analytic shock solution (1=on/0=off)*
+!   - SPEX_DM        : *SPEX+DM optically thin radiative cooling (1=on/0=off)*
 !
 ! :Dependencies: cooling_functions, infile_utils, io, physcon, timestep,
 !   units
@@ -33,7 +34,8 @@ module cooling_solver
  use cooling_functions, only:bowen_Cprime,lambda_shock_cgs,T0_value,T1_factor
  implicit none
  character(len=*), parameter :: label = 'cooling_library'
- integer, public :: excitation_HI = 0, relax_Bowen = 0, dust_collision = 0, relax_Stefan = 0, shock_problem = 0
+ integer, public :: excitation_HI = 0, relax_Bowen = 0, dust_collision = 0, &
+                    relax_Stefan = 0, shock_problem = 0, SPEX_DM = 0
  integer, public :: icool_method  = 0
  integer, parameter :: nTg  = 64
  real :: Tref = 1.d7 !higher value of the temperature grid (for exact cooling)
@@ -65,7 +67,7 @@ subroutine init_cooling_solver(ierr)
     ierr = 1
  endif
  !if no cooling flag activated, disable cooling
- if ( (excitation_HI+relax_Bowen+dust_collision+relax_Stefan+shock_problem) == 0) then
+ if ( (excitation_HI+relax_Bowen+dust_collision+relax_Stefan+shock_problem+SPEX_DM) == 0) then
     print *,'ERROR: no cooling prescription activated'
     ierr = 2
  endif
@@ -323,20 +325,22 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, r,
  use physcon, only:mass_proton_cgs
  use cooling_functions, only:cooling_neutral_hydrogen,&
      cooling_Bowen_relaxation,cooling_dust_collision,&
-     cooling_radiative_relaxation,piecewise_law,testing_cooling_functions
- !use cooling_molecular, only:do_molecular_cooling,calc_cool_molecular
+     cooling_radiative_relaxation,piecewise_law,testing_cooling_functions,&
+     cooling_SPEX_DM
 
  real, intent(in)  :: rho, T, Teq     !rho in code units
  real, intent(in)  :: mu, gamma
  real, intent(in)  :: K2, kappa , r, r_min_cool     !cgs
  real, intent(out) :: Q, dlnQ_dlnT    !code units
 
- real :: Q_cgs,Q_H0, Q_relax_Bowen, Q_col_dust, Q_relax_Stefan, Q_molec, Q_shock
- real :: dlnQ_H0, dlnQ_relax_Bowen, dlnQ_col_dust, dlnQ_relax_Stefan, dlnQ_molec, dlnQ_shock
+ real :: Q_cgs
+ real :: Q_H0,          Q_relax_Bowen,  Q_col_dust, Q_relax_Stefan, Q_molec, Q_shock, Q_SPEX_DM
+ real :: dlnQ_H0,       dlnQ_relax_Bowen, dlnQ_col_dust, dlnQ_relax_Stefan
+ real :: dlnQ_molec,    dlnQ_shock,     dlnQ_SPEX_DM
  real :: rho_cgs, ndens
 
- rho_cgs           = rho*unit_density
- ndens             = rho_cgs/mass_proton_cgs
+ rho_cgs = rho*unit_density
+ ndens   = rho_cgs/mass_proton_cgs
 
  Q_H0              = 0.
  Q_relax_Bowen     = 0.
@@ -344,6 +348,7 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, r,
  Q_relax_Stefan    = 0.
  Q_shock           = 0.
  Q_molec           = 0.
+ Q_SPEX_DM         = 0.
 
  dlnQ_H0           = 0.
  dlnQ_relax_Bowen  = 0.
@@ -351,33 +356,41 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, r,
  dlnQ_relax_Stefan = 0.
  dlnQ_shock        = 0.
  dlnQ_molec        = 0.
+ dlnQ_SPEX_DM      = 0.
 
  if (r_min_cool > 0.) then
-    if (excitation_HI  == 1 .and. r > r_min_cool) call cooling_neutral_hydrogen(T, rho_cgs, Q_H0, dlnQ_H0)
-    if (relax_Bowen    == 1 .and. r > r_min_cool) call cooling_Bowen_relaxation(T, Teq, rho_cgs, mu, gamma, &
-                                                        Q_relax_Bowen, dlnQ_relax_Bowen)
+    if (excitation_HI == 1 .and. r > r_min_cool) &
+       call cooling_neutral_hydrogen(T, rho_cgs, Q_H0, dlnQ_H0)
+    if (relax_Bowen   == 1 .and. r > r_min_cool) &
+       call cooling_Bowen_relaxation(T, Teq, rho_cgs, mu, gamma, Q_relax_Bowen, dlnQ_relax_Bowen)
+    if (SPEX_DM       == 1 .and. r > r_min_cool) &
+       call cooling_SPEX_DM(T, rho_cgs, Q_SPEX_DM, dlnQ_SPEX_DM)
  else
-    if (excitation_HI  == 1) call cooling_neutral_hydrogen(T, rho_cgs, Q_H0, dlnQ_H0)
-    if (relax_Bowen    == 1) call cooling_Bowen_relaxation(T, Teq, rho_cgs, mu, gamma, &
-                                                        Q_relax_Bowen, dlnQ_relax_Bowen)
+    if (excitation_HI == 1) call cooling_neutral_hydrogen(T, rho_cgs, Q_H0, dlnQ_H0)
+    if (relax_Bowen   == 1) call cooling_Bowen_relaxation(T, Teq, rho_cgs, mu, gamma, &
+                                                           Q_relax_Bowen, dlnQ_relax_Bowen)
+    if (SPEX_DM       == 1) call cooling_SPEX_DM(T, rho_cgs, Q_SPEX_DM, dlnQ_SPEX_DM)
  endif
 
- if (dust_collision == 1 .and. K2 > 0.) call cooling_dust_collision(T, Teq, rho_cgs, K2,&
+ if (dust_collision == 1 .and. K2 > 0.) call cooling_dust_collision(T, Teq, rho_cgs, K2, &
                                                         mu, Q_col_dust, dlnQ_col_dust)
- if (relax_Stefan   == 1) call cooling_radiative_relaxation(T, Teq, kappa, Q_relax_Stefan,&
+ if (relax_Stefan   == 1) call cooling_radiative_relaxation(T, Teq, kappa, Q_relax_Stefan, &
                                                         dlnQ_relax_Stefan)
  if (shock_problem  == 1) call piecewise_law(T, T0_value, rho_cgs, ndens, Q_H0, dlnQ_H0)
 
  if (excitation_HI  == 99) call testing_cooling_functions(int(K2), T, Q_H0, dlnQ_H0)
  !if (do_molecular_cooling) call calc_cool_molecular(T, r, rho_cgs, Q_molec, dlnQ_molec)
 
- Q_cgs = Q_H0 + Q_relax_Bowen + Q_col_dust + Q_relax_Stefan + Q_molec + Q_shock
+ Q_cgs = Q_H0 + Q_relax_Bowen + Q_col_dust + Q_relax_Stefan + Q_molec + Q_shock + Q_SPEX_DM
+
  if (Q_cgs == 0.) then
     dlnQ_dlnT = 0.
  else
-    dlnQ_dlnT = (Q_H0*dlnQ_H0 + Q_relax_Bowen*dlnQ_relax_Bowen + Q_col_dust*dlnQ_col_dust&
-   + Q_relax_Stefan*dlnQ_relax_Stefan + Q_molec*dlnQ_molec + Q_shock*dlnQ_shock)/Q_cgs
+    dlnQ_dlnT = (Q_H0*dlnQ_H0 + Q_relax_Bowen*dlnQ_relax_Bowen + Q_col_dust*dlnQ_col_dust &
+               + Q_relax_Stefan*dlnQ_relax_Stefan + Q_molec*dlnQ_molec + Q_shock*dlnQ_shock &
+               + Q_SPEX_DM*dlnQ_SPEX_DM) / Q_cgs
  endif
+
  !limit exponent to prevent overflow
  dlnQ_dlnT = sign(min(50.,abs(dlnQ_dlnT)),dlnQ_dlnT)
  Q         = Q_cgs/(unit_ergg/utime)
@@ -464,7 +477,6 @@ real function calc_dlnQdlnT(T_gas, rho_gas, mu, nH, nH2, nHe, nCO, nH2O, nOH, ka
  dQdT      = (Q1-Q2)/(2.*dT)
  dlnQ_dlnT = (T_gas/Qtot)*dQdT
 
-! gradient can become large at discontinuous physical temperature boundaries (see e.g. atomic and chemical cooling)
  if (dlnQ_dlnT > bignumber) then
     dlnQ_dlnT = 0.
  endif
@@ -522,6 +534,7 @@ subroutine write_options_cooling_solver(iunit)
  call write_inopt(relax_stefan,'relax_stefan','radiative relaxation (1=on/0=off)',iunit)
  call write_inopt(dust_collision,'dust_collision','dust collision (1=on/0=off)',iunit)
  call write_inopt(shock_problem,'shock_problem','piecewise formulation for analytic shock solution (1=on/0=off)',iunit)
+ call write_inopt(SPEX_DM,'SPEX_DM','SPEX+DM optically thin radiative cooling (1=on/0=off)',iunit)
  if (shock_problem == 1) then
     call write_inopt(lambda_shock_cgs,'lambda_shock','Cooling rate parameter for analytic shock solution',iunit)
     call write_inopt(T1_factor,'T1_factor','factor by which T0 is increased (T1= T1_factor*T0)',iunit)
@@ -565,6 +578,9 @@ subroutine read_options_cooling_solver(name,valstring,imatch,igotall,ierr)
  case('shock_problem')
     read(valstring,*,iostat=ierr) shock_problem
     ngot = ngot + 1
+ case('SPEX_DM')
+    read(valstring,*,iostat=ierr) SPEX_DM
+    ngot = ngot + 1
  case('lambda_shock')
     read(valstring,*,iostat=ierr) lambda_shock_cgs
     ngot = ngot + 1
@@ -582,24 +598,18 @@ subroutine read_options_cooling_solver(name,valstring,imatch,igotall,ierr)
     ierr = 0
  end select
  if (shock_problem == 1) then
-    nn = 10
+    nn = 11   ! 8 standard + 3 shock-specific
  else
-    nn = 7
+    nn = 8    ! icool_method + 5 flags + SPEX_DM + bowen_Cprime
  endif
  if (ngot >= nn) igotall = .true.
 
 end subroutine read_options_cooling_solver
 
 !=======================================================================
-!=======================================================================
-!=======================================================================
-!\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\
 !
 !  Test routine for cooling functions
 !
-!\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\
-!=======================================================================
-!=======================================================================
 !=======================================================================
 
 subroutine testfunc()
@@ -645,7 +655,9 @@ subroutine print_cooling_rates(T_gas, rho_gas, mu, nH, nH2, nHe, nCO, nH2O, nOH,
  real, intent(in)  :: T_gas, rho_gas, mu, nH, nH2, nHe, nCO, nH2O, nOH, kappa_gas
  real, intent(in)  :: T_dust, v_drift, d2g, a, rho_grain, kappa_dust
  real, intent(in)  :: JL
- real :: Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Q13, Q14, Q15, Q16, Q17, Qtot, dlnQ_dlnT, nH_tot
+ real :: Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Q13, Q14, Q15, Q16, Q17
+ real :: Q_spex, dlnQ_spex
+ real :: Qtot, dlnQ_dlnT, nH_tot
 
  !nH_tot = nH+2.*nH2
  nH_tot = 1.
@@ -688,6 +700,10 @@ subroutine print_cooling_rates(T_gas, rho_gas, mu, nH, nH2, nHe, nCO, nH2O, nOH,
  print*, 'Q16  = ', Q16/nH_tot
  Q17 = heat_H2_recombination(T_gas, rho_gas, mu, nH, nH2, T_dust)
  print*, 'Q17  = ', Q17/nH_tot
+
+ call cooling_SPEX_DM(T_gas, rho_gas, Q_spex, dlnQ_spex)
+ print*, 'Q_SPEX_DM    = ', Q_spex/nH_tot
+ print*, 'dlnQ_SPEX_DM = ', dlnQ_spex
 
  Qtot = calc_Q(T_gas, rho_gas, mu, nH, nH2, nHe, nCO, nH2O, nOH, kappa_gas, &
                      T_dust, v_drift, d2g, a, rho_grain, kappa_dust, JL)

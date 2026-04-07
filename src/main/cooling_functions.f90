@@ -10,6 +10,8 @@ module cooling_functions
 !  Contributed by Lionel Siess and Ward Homan
 !
 ! :References:
+!   Schure et al. (2009), A&A 508, 751 (SPEX curve)
+!   Dalgarno & McCray (1972), ARA&A 10, 375 (low-T DM curve)
 !
 ! :Owner: Daniel Price
 !
@@ -37,6 +39,7 @@ module cooling_functions
            cooling_Bowen_relaxation, &
            cooling_dust_collision, &
            cooling_radiative_relaxation, &
+           cooling_SPEX_DM, &
            testing_cooling_functions
 
  private
@@ -88,7 +91,7 @@ subroutine cooling_Bowen_relaxation(T, Tdust, rho_cgs, mu, gamma, Q_cgs, dlnQ_dl
  real, intent(out) :: Q_cgs, dlnQ_dlnT
 
  Q_cgs     = Rg/((gamma-1.)*mu)*rho_cgs*(Tdust-T)/bowen_Cprime
- dlnQ_dlnT = -T/(Tdust-T+1.d-10) 
+ dlnQ_dlnT = -T/(Tdust-T+1.d-10)
 
 end subroutine cooling_Bowen_relaxation
 
@@ -152,22 +155,154 @@ subroutine cooling_neutral_hydrogen(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  real, parameter   :: f = 1.0d0
  real              :: ne,nH, factor
 
- ! Only activate cooling if T > 3000 
+ ! Only activate cooling if T > 3000
  if (T > 3000.) then
-   
+
     nH = rho_cgs/(1.4*mass_proton_cgs)
     ne = min(1.,calc_eps_e(T))*nH
     !the term 1/(1+sqrt(T)) comes from Cen (1992, ApjS, 78, 341)
-    Q_cgs  = -f*7.3d-19*ne*nH*exp(-118400./T)/rho_cgs/(1.+sqrt(T/1.d5)) 
+    Q_cgs  = -f*7.3d-19*ne*nH*exp(-118400./T)/rho_cgs/(1.+sqrt(T/1.d5))
 
     dlnQ_dlnT = (-118400./T+log(nH*calc_eps_e(1.001*T)/ne)/log(1.001) &
-         - 0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5))) 
+         - 0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5)))
  else
     Q_cgs = 0.
     dlnQ_dlnT = 0.
  endif
 
 end subroutine cooling_neutral_hydrogen
+
+!-----------------------------------------------------------------------
+!+
+!  SPEX_DM optically thin radiative cooling curve
+!
+!  Composite curve combining:
+!    - Dalgarno & McCray (1972) at low T (log T = 1.00 to 3.96),
+!      with ionisation fraction 1e-3, as tabulated by Schure et al. (2009)
+!    - SPEX solar-metallicity curve (Schure et al. 2009) at high T
+!      (log T = 4.00 to 8.16), with ne/nH correction pre-applied
+!
+!  The cooling rate formula is:
+!    Q = -nH^2 * Lambda(T) / rho    [erg/s/g]
+!  where nH = rho / (1.4 * mp) and Lambda(T) is in erg cm^3 / s.
+!  The ne/nH ratio is already folded into the tabulated Lambda values.
+!
+!  Above the table maximum (log T > 8.16), Bremsstrahlung (Lambda ~ T^0.5)
+!  is assumed. Below the table minimum (log T < 1.00), the table floor
+!  value is extrapolated with the same Bremsstrahlung slope.
+!
+! :References:
+!   Schure et al. (2009), A&A 508, 751
+!   Dalgarno & McCray (1972), ARA&A 10, 375
+!+
+!-----------------------------------------------------------------------
+subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
+
+ use physcon, only: mass_proton_cgs
+
+ real, intent(in)  :: T, rho_cgs
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+
+ !
+ ! Combined SPEX_DM table: log10(Lambda) in CGS [erg cm^3 / s]
+ ! 180 points, log10(T) from 1.00 to 8.16, uniform step of 0.04
+ !
+ ! Segment 1 (indices 1-75):  Dalgarno & McCray (1972), log T = 1.00 to 3.96
+ !   ionisation fraction 1e-3 pre-folded into Lambda
+ ! Segment 2 (indices 76-180): SPEX solar metallicity, log T = 4.00 to 8.16
+ !   ne/nH ratio (nenh_SPEX from Schure+2009) pre-folded: values are
+ !   log10(Lambda_SPEX) + log10(nenh_SPEX), i.e. Lambda includes the ne factor
+ !
+ integer, parameter :: ntab     = 180
+ real,    parameter :: logtmin  = 1.00
+ real,    parameter :: logtstep = 0.04
+
+ real, parameter :: ltab(ntab) = (/ &
+   ! --- DM_2 segment: log T = 1.00 to 3.96 ---
+   -30.0377, -29.7062, -29.4055, -29.1331, -28.8864,   &
+   -28.6631, -28.4614, -28.2791, -28.1146, -27.9662,   &
+   -27.8330, -27.7129, -27.6052, -27.5088, -27.4225,   &
+   -27.3454, -27.2767, -27.2153, -27.1605, -27.1111,   &
+   -27.0664, -27.0251, -26.9863, -26.9488, -26.9119,   &
+   -26.8742, -26.8353, -26.7948, -26.7523, -26.7080,   &
+   -26.6619, -26.6146, -26.5666, -26.5183, -26.4702,   &
+   -26.4229, -26.3765, -26.3317, -26.2886, -26.2473,   &
+   -26.2078, -26.1704, -26.1348, -26.1012, -26.0692,   &
+   -26.0389, -26.0101, -25.9825, -25.9566, -25.9318,   &
+   -25.9083, -25.8857, -25.8645, -25.8447, -25.8259,   &
+   -25.8085, -25.7926, -25.7778, -25.7642, -25.7520,   &
+   -25.7409, -25.7310, -25.7222, -25.7142, -25.7071,   &
+   -25.7005, -25.6942, -25.6878, -25.6811, -25.6733,   &
+   -25.6641, -25.6525, -25.6325, -25.6080, -25.5367,   &
+   ! --- SPEX segment: log T = 4.00 to 8.16 ---
+   ! Values are l_SPEX(i) + log10(nenh_SPEX(i)), i = 6..110
+   -25.2890, -24.2684, -23.3834, -22.5977, -21.9689,   &
+   -21.5972, -21.4615, -21.4789, -21.5497, -21.6211,   &
+   -21.6595, -21.6426, -21.5688, -21.4771, -21.3755,   &
+   -21.2693, -21.1644, -21.0658, -20.9778, -20.8986,   &
+   -20.8281, -20.7700, -20.7223, -20.6888, -20.6739,   &
+   -20.6815, -20.7051, -20.7229, -20.7208, -20.7058,   &
+   -20.6896, -20.6797, -20.6749, -20.6709, -20.6748,   &
+   -20.7089, -20.8031, -20.9647, -21.1482, -21.2932,   &
+   -21.3767, -21.4129, -21.4291, -21.4538, -21.5055,   &
+   -21.5740, -21.6300, -21.6615, -21.6766, -21.6886,   &
+   -21.7073, -21.7304, -21.7491, -21.7607, -21.7701,   &
+   -21.7877, -21.8243, -21.8875, -21.9738, -22.0671,   &
+   -22.1537, -22.2265, -22.2821, -22.3213, -22.3462,   &
+   -22.3587, -22.3622, -22.3590, -22.3512, -22.3420,   &
+   -22.3342, -22.3312, -22.3346, -22.3445, -22.3595,   &
+   -22.3780, -22.4007, -22.4289, -22.4625, -22.4995,   &
+   -22.5353, -22.5659, -22.5895, -22.6059, -22.6161,   &
+   -22.6208, -22.6213, -22.6184, -22.6126, -22.6045,   &
+   -22.5945, -22.5831, -22.5707, -22.5573, -22.5434,   &
+   -22.5287, -22.5140, -22.4992, -22.4844, -22.4695,   &
+   -22.4543, -22.4392, -22.4238, -22.4088, -22.3929    &
+   /)
+
+ real :: logT, Lambda_cgs, nH, frac, logtmax
+ real :: dlnLdlnT
+ integer :: jl
+
+ logtmax = logtmin + (ntab - 1) * logtstep  ! = 8.16
+
+ ! No cooling below 10 K
+ if (T <= 10.) then
+    Q_cgs     = 0.
+    dlnQ_dlnT = 0.
+    return
+ endif
+
+ logT = log10(T)
+
+ if (logT < logtmin) then
+    ! Below table: extrapolate with Bremsstrahlung slope (Lambda ~ T^0.5)
+    Lambda_cgs = 10.**(ltab(1)) * sqrt(T / 10.**(logtmin))
+    dlnLdlnT   = 0.5
+
+ elseif (logT >= logtmax) then
+    ! Above table: extrapolate with Bremsstrahlung slope (Lambda ~ T^0.5)
+    Lambda_cgs = 10.**(ltab(ntab)) * sqrt(T / 10.**(logtmax))
+    dlnLdlnT   = 0.5
+
+ else
+    ! Linear interpolation in log10(T) -- log10(Lambda) space
+    jl   = int((logT - logtmin) / logtstep) + 1
+    jl   = max(1, min(jl, ntab - 1))
+    frac = (logT - (logtmin + (jl - 1) * logtstep)) / logtstep
+
+    Lambda_cgs = 10.**(ltab(jl) + frac * (ltab(jl+1) - ltab(jl)))
+
+    ! dlnQ/dlnT = d(log10 Lambda)/d(log10 T)  [chain rule: ln factors cancel]
+    dlnLdlnT = (ltab(jl+1) - ltab(jl)) / logtstep
+ endif
+
+ ! nH = rho / (1.4 * mp)  [cm^-3]  -- standard cosmic H/He abundance
+ ! Q  = -nH^2 * Lambda / rho       [erg/s/g], negative = cooling
+ nH        = rho_cgs / (1.4 * mass_proton_cgs)
+ Q_cgs     = -nH**2 * Lambda_cgs / rho_cgs
+ dlnQ_dlnT = dlnLdlnT
+
+end subroutine cooling_SPEX_DM
 
 !-----------------------------------------------------------------------
 !+
@@ -225,9 +360,6 @@ subroutine testing_cooling_functions(ifunct, T, Q, dlnQ_dlnT)
  end select
 
 end subroutine testing_cooling_functions
-
-
-
 
 
 !-----------------------------------------------------------------------
@@ -333,29 +465,11 @@ real function n_dust(rho_gas, d2g, a, rho_grain)
 end function n_dust
 
 
-
-
-
-
-
-
 !=======================================================================
-!=======================================================================
-!=======================================================================
-!\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\
 !
 !  Cooling functions    **** ALL IN cgs  ****
 !
-!\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\
 !=======================================================================
-!=======================================================================
-!=======================================================================
-
-
-
-
-
-
 
 
 !-----------------------------------------------------------------------
