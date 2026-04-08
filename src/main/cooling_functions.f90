@@ -294,7 +294,7 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  logT = log10(T)
 
  ! No cooling below 10 K
- if (logT <= 10. .or. logT >= 8.16) then
+ if (logT <= 1. .or. logT >= 8.16) then
     Q_cgs     = 0.
     dlnQ_dlnT = 0.
  else
