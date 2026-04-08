@@ -310,7 +310,7 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  ! nH = rho / (1.4 * mp) 
  ! Q  = -nH^2 * Lambda / rho 
  nH        = rho_cgs / (1.4 * mass_proton_cgs)
- Q_cgs     = -nH**2 * Lambda_cgs / rho_cgs
+ Q_cgs     = -nH**2 * Lambda_cgs 
  dlnQ_dlnT = dlnLdlnT
 
 end subroutine cooling_SPEX_DM
