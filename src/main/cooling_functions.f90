@@ -280,12 +280,12 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
 
  ! Lambda_hd = (ne/nH) * Lambda_N  =>  log10(Lambda_hd) = log10(Lambda_N) + log10(ne/nH)
  ! Eq. 1 of Schure et al. (2009)
- real, parameter :: l_SPEX_hd(nspex_hd) = l_SPEX_N + log10(nenh_SPEX)
+ real, parameter :: l_SPEX_hd(nspex_hd) = l_SPEX_N ! + log10(nenh_SPEX)
 
  ! Combined table used at runtime
  real, parameter :: ltab(ntab) = (/ l_DM2, l_SPEX_hd /)
 
- real :: logT, Lambda_cgs, nH, frac, logtmax
+ real :: logT, Lambda_cgs, nH, frac, logtmax, ne
  real :: dlnLdlnT
  integer :: jl
 
@@ -310,8 +310,12 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  ! nH = rho / (1.4 * mp) 
  ! Q  = -nH^2 * Lambda / rho 
  nH        = rho_cgs / (1.4 * mass_proton_cgs)
- Q_cgs     = -nH**2 * Lambda_cgs 
- dlnQ_dlnT = dlnLdlnT
+ ne        = min(1.,calc_eps_e(T))*nH
+
+ print *, "cooling_SPEX_DM: T=", T, " logT=", logT, " Lambda_cgs=", Lambda_cgs, " nH=", nH, " ne/nH=", ne/nH
+
+ Q_cgs     = -nH**2 * nH/ne * Lambda_cgs 
+ dlnQ_dlnT = dlnLdlnT 
 
 end subroutine cooling_SPEX_DM
 
