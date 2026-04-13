@@ -132,7 +132,7 @@ end subroutine init_cooling
 !
 !-----------------------------------------------------------------------
 
-subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2_in,kappa_in,abund_in,duhydro,ipart)
+subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2_in,kappa_in,abund_in,duhydro,ipart,i)
  use io,      only:fatal
  use dim,     only:nabundances
  use eos,     only:gmw,gamma,ieos,get_temperature_from_u
@@ -153,7 +153,8 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  real, intent(in), optional :: Tdust_in,mu_in,gamma_in,K2_in,kappa_in   ! in cgs
  real, intent(in), optional :: abund_in(nabn),duhydro
  integer,intent(in),optional:: ipart
- real, intent(out)          :: dudt                                ! in code units
+ integer, intent(in), optional :: i   
+ real, intent(out)          :: dudt          
  real                       :: mui,gammai,Tgas,Tdust,K2,kappa
  real                       :: r, r_min_cool_code
  real                       :: dx,dy,dz
@@ -205,7 +206,7 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
     call radcool_update_du(ipart,xi,yi,zi,rho,ui,duhydro,Tfloor)
  case default
     ! Pass r and r_min_cool_code to the cooling solver
-    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,r,r_min_cool_code)
+    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,r,r_min_cool_code,i)
  end select
 
 end subroutine energ_cooling

@@ -67,7 +67,8 @@ subroutine write_fulldump_fortran(t,dumpfile,ntotal,iorder,sphNG)
                  VrelVf_label,dustgasprop,dustgasprop_label,filfac,filfac_label,dust_temp,pxyzu,pxyzu_label,dens,& !,dvdx,dvdx_label
                  rad,rad_label,radprop,radprop_label,do_radiation,maxirad,maxradprop,itemp,igasP,igamma,&
                  iorig,iX,iZ,imu,nucleation,nucleation_label,n_nucleation,tau,itau_alloc,tau_lucy,itauL_alloc,&
-                 luminosity,eta_nimhd,eta_nimhd_label,apr_level
+                 luminosity,eta_nimhd,eta_nimhd_label,apr_level,&
+                 cool_rate,icool_alloc
  use part,  only:metrics,metricderivs,tmunus
  use options,    only:use_dustfrac,use_porosity,use_var_comp,icooling
  use dump_utils, only:tag,open_dumpfile_w,allocate_header,&
@@ -301,6 +302,9 @@ subroutine write_fulldump_fortran(t,dumpfile,ntotal,iorder,sphNG)
        endif
        If (itauL_alloc == 1) then
           call write_array(1,tau_lucy,'tau_lucy',npart,k,ipass,idump,nums,nerr)
+       endif
+       if (icool_alloc == 1) then
+          call write_array(1,cool_rate,'cool_rate',npart,k,ipass,idump,nums,nerr)
        endif
        if (store_dust_temperature) then
           call write_array(1,dust_temp,'Tdust',npart,k,ipass,idump,nums,nerr)
@@ -1001,7 +1005,8 @@ subroutine read_phantom_arrays(i1,i2,noffset,narraylengths,nums,npartread,nparto
                       VrelVf,VrelVf_label,dustgasprop,dustgasprop_label,filfac,filfac_label,pxyzu,pxyzu_label,dust_temp, &
                       rad,rad_label,radprop,radprop_label,do_radiation,maxirad,maxradprop,ifluxx,ifluxy,ifluxz, &
                       nucleation,nucleation_label,n_nucleation,ikappa,tau,itau_alloc,tau_lucy,itauL_alloc,&
-                      ithick,ilambda,iorig,dt_in,krome_nmols,T_gas_cool,apr_level
+                      ithick,ilambda,iorig,dt_in,krome_nmols,T_gas_cool,apr_level,&
+                      cool_rate,icool_alloc
  use sphNGutils, only:mass_sphng,got_mass,set_gas_particle_mass
  use options,    only:use_porosity
  integer, intent(in)   :: i1,i2,noffset,narraylengths,nums(:,:),npartread,npartoftype(:),idisk1,iprint
@@ -1018,7 +1023,7 @@ subroutine read_phantom_arrays(i1,i2,noffset,narraylengths,nums,npartread,nparto
  logical               :: got_eosvars(maxeosvars),got_nucleation(n_nucleation),got_ray_tracer
  logical               :: got_psi,got_Tdust,got_dustprop(2),got_VrelVf,got_dustgasprop(4)
  logical               :: got_filfac,got_divcurlv(4),got_rad(maxirad),got_radprop(maxradprop),got_pxyzu(4),&
-                          got_iorig,got_apr_level
+                          got_iorig,got_apr_level,got_cool_rate
  character(len=lentag) :: tag,tagarr(64)
  integer :: k,i,iarr,ik,ndustfraci
  real, allocatable :: tmparray(:)
@@ -1056,6 +1061,7 @@ subroutine read_phantom_arrays(i1,i2,noffset,narraylengths,nums,npartread,nparto
  got_pxyzu       = .false.
  got_iorig       = .false.
  got_apr_level   = .false.
+ got_cool_rate   = .false.
 
  ndustfraci = 0
  if (use_dust .or. mhd) allocate(tmparray(max(size(dustfrac,2),size(Bevol,2))))
@@ -1115,6 +1121,9 @@ subroutine read_phantom_arrays(i1,i2,noffset,narraylengths,nums,npartread,nparto
              endif
              if (itauL_alloc == 1) then
                 call read_array(tau_lucy,'tau_lucy',got_ray_tracer,ik,i1,i2,noffset,idisk1,tag,match,ierr)
+             endif
+             if (icool_alloc == 1) then
+                call read_array(cool_rate,'cool_rate',got_cool_rate,ik,i1,i2,noffset,idisk1,tag,match,ierr)
              endif
              if (store_dust_temperature) then
                 call read_array(dust_temp,'Tdust',got_Tdust,ik,i1,i2,noffset,idisk1,tag,match,ierr)

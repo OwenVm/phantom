@@ -33,7 +33,7 @@ module part
                maxphase,maxgradh,maxan,maxdustan,maxmhdan,maxneigh,maxprad,maxp_nucleation,&
                maxTdust,store_dust_temperature,use_krome,maxp_krome, &
                do_radiation,gr,maxgr,maxgran,n_nden_phantom,do_nucleation,&
-               inucleation,itau_alloc,itauL_alloc,use_apr,apr_maxlevel,maxp_apr,maxptmassgr,&
+               inucleation,itau_alloc,itauL_alloc,icool_alloc,use_apr,apr_maxlevel,maxp_apr,maxptmassgr,&
                use_sinktree
  use dtypekdtree, only:kdnode
 #ifdef KROME
@@ -252,6 +252,11 @@ module part
 !
  real, allocatable :: tau(:)
  real, allocatable :: tau_lucy(:)
+!
+!--Cooling rate storage
+!
+ real, allocatable :: cool_rate(:)
+ character(len=*), parameter :: cool_rate_label = 'cool_rate'
 !
 !--Dust formation - theory of moments
 !
@@ -537,6 +542,7 @@ subroutine allocate_part
  call allocate_array('nucleation', nucleation, n_nucleation, maxp_nucleation*inucleation)
  call allocate_array('tau', tau, maxp*itau_alloc)
  call allocate_array('tau_lucy', tau_lucy, maxp*itauL_alloc)
+ call allocate_array('cool_rate', cool_rate, maxp*icool_alloc)
  if (use_krome) then
     call allocate_array('abundance', abundance, krome_nmols, maxp_krome)
  else
@@ -623,6 +629,7 @@ subroutine deallocate_part
  if (allocated(nucleation))   deallocate(nucleation)
  if (allocated(tau))          deallocate(tau)
  if (allocated(tau_lucy))     deallocate(tau_lucy)
+ if (allocated(cool_rate))    deallocate(cool_rate)
  if (allocated(T_gas_cool))   deallocate(T_gas_cool)
  if (allocated(dust_temp))    deallocate(dust_temp)
  if (allocated(rad))          deallocate(rad,radpred,drad,radprop)
@@ -1287,6 +1294,7 @@ subroutine copy_particle(src,dst,new_part)
  if (do_nucleation) nucleation(:,dst) = nucleation(:,src)
  if (itau_alloc == 1) tau(dst) = tau(src)
  if (itauL_alloc == 1) tau_lucy(dst) = tau_lucy(src)
+ if (icool_alloc == 1) cool_rate(dst) = cool_rate(src)
 
  if (new_part) then
     norig      = norig + 1
@@ -1389,6 +1397,7 @@ subroutine copy_particle_all(src,dst,new_part)
  if (do_nucleation) nucleation(:,dst) = nucleation(:,src)
  if (itau_alloc == 1) tau(dst) = tau(src)
  if (itauL_alloc == 1) tau_lucy(dst) = tau_lucy(src)
+ if (icool_alloc == 1) cool_rate(dst) = cool_rate(src)
 
  if (use_krome) then
     T_gas_cool(dst)       = T_gas_cool(src)
@@ -1606,8 +1615,9 @@ subroutine fill_sendbuf(i,xtemp,nbuf)
     if (do_nucleation) then
        call fill_buffer(xtemp, nucleation(:,i),nbuf)
     endif
-    if (itau_alloc == 1)  call fill_buffer(xtemp, tau(i),nbuf)
-    if (itauL_alloc == 1) call fill_buffer(xtemp, tau_lucy(i),nbuf)
+    if (itau_alloc == 1)  call fill_buffer(xtemp, tau(i), nbuf)
+    if (itauL_alloc == 1) call fill_buffer(xtemp, tau_lucy(i), nbuf)
+    if (icool_alloc == 1) call fill_buffer(xtemp, cool_rate(i), nbuf)
 
     if (maxgrav==maxp) then
        call fill_buffer(xtemp, poten(i),nbuf)
@@ -1693,8 +1703,9 @@ subroutine unfill_buffer(ipart,xbuf)
  if (do_nucleation) then
     nucleation(:,ipart) = unfill_buf(xbuf,j,n_nucleation)
  endif
- if (itau_alloc == 1)  tau(ipart) = unfill_buf(xbuf,j)
- if (itauL_alloc == 1) tau_lucy(ipart) = unfill_buf(xbuf,j)
+ if (itau_alloc == 1)  tau(ipart) = unfill_buf(xbuf, j)
+ if (itauL_alloc == 1) tau_lucy(ipart) = unfill_buf(xbuf, j)
+ if (icool_alloc == 1) cool_rate(ipart) = unfill_buf(xbuf, j)
  if (maxgrav==maxp) then
     poten(ipart)        = real(unfill_buf(xbuf,j),kind=kind(poten))
  endif

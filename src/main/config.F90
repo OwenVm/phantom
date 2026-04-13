@@ -290,6 +290,7 @@ module dim
  integer :: itau_alloc     = 0
  integer :: itauL_alloc    = 0
  integer :: inucleation    = 0
+ integer :: icool_alloc    = 0
  !number of elements considered in the nucleation chemical network
  integer, parameter :: nElements = 10
 #ifdef DUST_NUCLEATION

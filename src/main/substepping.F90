@@ -1047,21 +1047,21 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
        ! abundances in the 'abund' format
        !
        call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,&
-                 dust_temp(i),eos_vars(imu,i), eos_vars(igamma,i),abund_in=abundi)
+                 dust_temp(i),eos_vars(imu,i), eos_vars(igamma,i),abund_in=abundi, i=i)
     elseif (store_dust_temperature) then
        ! cooling with stored dust temperature
        if (do_nucleation) then
           call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,&
-                    dust_temp(i),nucleation(idmu,i),nucleation(idgamma,i),nucleation(idK2,i),nucleation(idkappa,i))
+                    dust_temp(i),nucleation(idmu,i),nucleation(idgamma,i),nucleation(idK2,i),nucleation(idkappa,i), i=i)
        elseif (update_muGamma) then
           call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,&
-                    dust_temp(i),eos_vars(imu,i), eos_vars(igamma,i))
+                    dust_temp(i),eos_vars(imu,i), eos_vars(igamma,i), i=i)
        else
-          call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,dust_temp(i))
+          call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,dust_temp(i), i=i)
        endif
     else
        ! cooling without stored dust temperature
-       call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool)
+       call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,i=i)
     endif
  endif
 #endif

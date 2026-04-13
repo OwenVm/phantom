@@ -153,22 +153,23 @@ subroutine cooling_neutral_hydrogen(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  real, intent(out) :: Q_cgs,dlnQ_dlnT
 
  real, parameter   :: f = 1.0d0
- real              :: ne,nH, factor
+ real              :: ne,nH, factor, T_temp
 
- ! Only activate cooling if T > 3000
- if (T > 3000.) then
-
+ if (T > 100.) then
     nH = rho_cgs/(1.4*mass_proton_cgs)
-    ne = min(1.,calc_eps_e(T))*nH
-    !the term 1/(1+sqrt(T)) comes from Cen (1992, ApjS, 78, 341)
-    Q_cgs  = -f*7.3d-19*ne*nH*exp(-118400./T)/rho_cgs/(1.+sqrt(T/1.d5))
-
-    dlnQ_dlnT = (-118400./T+log(nH*calc_eps_e(1.001*T)/ne)/log(1.001) &
-         - 0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5)))
- else
+    T_temp = max(T, 6000.)
+    ne = min(1., calc_eps_e(T_temp)) * nH
+    Q_cgs = -f*7.3d-19*ne*nH*exp(-118400./T_temp)/rho_cgs/(1.+sqrt(T_temp/1.d5))
+    if (T > 6000.) then
+        dlnQ_dlnT = (-118400./T + log(nH*calc_eps_e(1.001*T)/ne)/log(1.001) &
+                    - 0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5)))
+    else
+        dlnQ_dlnT = 0.
+    endif
+else
     Q_cgs = 0.
     dlnQ_dlnT = 0.
- endif
+endif
 
 end subroutine cooling_neutral_hydrogen
 
@@ -223,7 +224,7 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
    -25.7409, -25.7310, -25.7222, -25.7142, -25.7071,   &
    -25.7005, -25.6942, -25.6878, -25.6811, -25.6733,   &
    -25.6641, -25.6525, -25.6325, -25.6080, -25.5367    &
-   /)
+   /) - 3 
 
  ! SPEX segment: log T = 4.00 to 8.16, step 0.04 (105 points)
  ! l_SPEX_N: log10(Lambda_N) from Table 2 of Schure et al. (2009)
@@ -280,7 +281,7 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
 
  ! Lambda_hd = (ne/nH) * Lambda_N  =>  log10(Lambda_hd) = log10(Lambda_N) + log10(ne/nH)
  ! Eq. 1 of Schure et al. (2009)
- real, parameter :: l_SPEX_hd(nspex_hd) = l_SPEX_N ! + log10(nenh_SPEX)
+ real, parameter :: l_SPEX_hd(nspex_hd) = l_SPEX_N  + log10(nenh_SPEX)
 
  ! Combined table used at runtime
  real, parameter :: ltab(ntab) = (/ l_DM2, l_SPEX_hd /)
@@ -294,7 +295,7 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  logT = log10(T)
 
  ! No cooling below 10 K
- if (logT <= 1. .or. logT >= 8.16) then
+ if (logT <= 3. .or. logT >= 8.16) then
     Q_cgs     = 0.
     dlnQ_dlnT = 0.
  else
@@ -305,17 +306,13 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
     Lambda_cgs = 10.**(ltab(jl) + frac * (ltab(jl+1) - ltab(jl)))
 
     dlnLdlnT = (ltab(jl+1) - ltab(jl)) / logtstep
+
+    nH        = rho_cgs / (1.4 * mass_proton_cgs)
+    ne        = min(1.,calc_eps_e(T))*nH
+
+    Q_cgs     = -nH**2 * Lambda_cgs / rho_cgs
+    dlnQ_dlnT = dlnLdlnT 
  endif
-
- ! nH = rho / (1.4 * mp) 
- ! Q  = -nH^2 * Lambda / rho 
- nH        = rho_cgs / (1.4 * mass_proton_cgs)
- ne        = min(1.,calc_eps_e(T))*nH
-
-!  print *, "cooling_SPEX_DM: T=", T, " logT=", logT, " Lambda_cgs=", Lambda_cgs, " nH=", nH, " ne/nH=", ne/nH
-
- Q_cgs     = -nH**2 * ne/nH * Lambda_cgs 
- dlnQ_dlnT = dlnLdlnT 
 
 end subroutine cooling_SPEX_DM
 
