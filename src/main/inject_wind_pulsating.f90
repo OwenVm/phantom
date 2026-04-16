@@ -154,6 +154,7 @@ subroutine set_default_options_inject(flag)
  check_radius_au       = 3.0
  meas_int_days         = 10.0
  update_L              = .false.
+ verbose               = .true.
 
 end subroutine set_default_options_inject
 
@@ -973,6 +974,7 @@ subroutine write_options_inject(iunit)
  call write_inopt(check_radius_au,      'check_radius_au',     'mass-loss counting radius (AU)',iunit)
  call write_inopt(meas_int_days,        'meas_int_days',       'mass measurement interval (days)',iunit)
  call write_inopt(update_L,             'update_L',            'update luminosity with pulsation (logical)',iunit)
+ call write_inopt(verbose,              'verbose',             'enable verbose output (logical)',iunit)
 
 end subroutine write_options_inject
 
@@ -988,7 +990,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save      :: ngot = 0
- integer, parameter :: noptions = 24
+ integer, parameter :: noptions = 25
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -1096,6 +1098,9 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     if (meas_int_days <= 0.) call fatal(label,'meas_int_days must be > 0')
  case('update_L')
     read(valstring,*,iostat=ierr) update_L
+    ngot = ngot + 1
+ case('verbose')
+    read(valstring,*,iostat=ierr) verbose
     ngot = ngot + 1
  case default
     imatch = .false.
