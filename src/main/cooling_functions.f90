@@ -41,6 +41,7 @@ module cooling_functions
            cooling_radiative_relaxation, &
            cooling_SPEX_DM, &
            cooling_H2, &
+           piece_wise_SPEX_DM, &
            testing_cooling_functions
 
  private
@@ -166,32 +167,6 @@ subroutine cooling_neutral_hydrogen(T, rho_cgs, Q_cgs, dlnQ_dlnT)
     Q_cgs = 0.
     dlnQ_dlnT = 0.
  endif
-
-!  if (T > 3000.) then
-!     nH = rho_cgs/(1.4*mass_proton_cgs)
-!    !  T_temp = max(T, 6000.)
-!     ne = min(1., calc_eps_e(T_temp)) * nH
-!     Q_cgs = -f*7.3d-19*ne*nH*exp(-118400./T)/rho_cgs/(1.+sqrt(T/1.d5))
-!  else
-!     Q_cgs = 0.
-!     dlnQ_dlnT = 0.
-!  endif
-
-!  if (T > 100.) then
-!     nH = rho_cgs/(1.4*mass_proton_cgs)
-!     T_temp = max(T, 6000.)
-!     ne = min(1., calc_eps_e(T_temp)) * nH
-!     Q_cgs = -f*7.3d-19*ne*nH*exp(-118400./T_temp)/rho_cgs/(1.+sqrt(T_temp/1.d5))
-!     if (T > 6000.) then
-!         dlnQ_dlnT = (-118400./T + log(nH*calc_eps_e(1.001*T)/ne)/log(1.001) &
-!                     - 0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5)))
-!     else
-!         dlnQ_dlnT = 0.
-!     endif
-!  else
-!     Q_cgs = 0.
-!     dlnQ_dlnT = 0.
-!  endif
 
 end subroutine cooling_neutral_hydrogen
 
@@ -342,6 +317,104 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  endif
 
 end subroutine cooling_SPEX_DM
+
+!-----------------------------------------------------------------------
+!+
+!  Piece wise power law fit to SPEX_DM cooling curve
+!
+! :References:
+!   PhD thesis Joris Hermans Appendix A
+!+
+!-----------------------------------------------------------------------
+subroutine piece_wise_SPEX_DM(T, rho_cgs, fine, Q_cgs, dlnQ_dlnT)
+
+ use physcon, only: mass_proton_cgs
+
+ real, intent(in)  :: T, rho_cgs
+ integer, intent(in) :: fine
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+
+ real, parameter   :: f = 1.0d0
+ real              :: nH2
+
+ nH2 = 0.5 * rho_cgs/(1.4*mass_proton_cgs)
+
+ if (fine == 1) then
+    if ( 10 < T .and. T < 10**1.572) then
+       Q_cgs = -10**(-34.286) * T **4.560 * nH2**2 / rho_cgs
+       dlnQ_dlnT = 4.560 
+    elseif (10**1.572 <= T .and. T < 10**3.992) then
+       Q_cgs = -10**(-28.282) * T**0.740 * nH2**2 / rho_cgs
+       dlnQ_dlnT = 0.740
+    elseif (10**3.992 <= T .and. T < 10**4.165) then
+       Q_cgs = -10**(-108.273) * T**20.777 * nH2**2 / rho_cgs
+       dlnQ_dlnT = 20.777
+    elseif (10**4.165 <= T .and. T < 10**5.221) then
+       Q_cgs = -10**(-26.662) * T**1.182 * nH2**2 / rho_cgs
+       dlnQ_dlnT = 1.182
+    elseif (10**5.221 <= T .and. T < 10**5.751) then
+       Q_cgs = -10**(-9.729) * T**(-2.061) * nH2**2 / rho_cgs
+       dlnQ_dlnT = -2.061
+    elseif (10**5.751 <= T .and. T < 10**7.295) then
+       Q_cgs = -10**(-17.550) * T**(-0.701) * nH2**2 / rho_cgs
+       dlnQ_dlnT = -0.701
+    elseif (10**7.295 <= T .and. T < 10**8.160) then
+       Q_cgs = -10**(-24.767) * T**0.228 * nH2**2 / rho_cgs
+       dlnQ_dlnT = 0.228
+    else
+       Q_cgs = 0.
+       dlnQ_dlnT = 0.
+    endif
+ else
+   if ( 10 < T .and. T < 10**1.422) then
+      Q_cgs = -10**(-35.314) * T **5.452 * nH2**2 / rho_cgs
+      dlnQ_dlnT = 5.452
+   elseif (10**1.422 <= T .and. T < 10**2.806) then
+      Q_cgs = -10**(-29.195) * T**1.150 * nH2**2 / rho_cgs
+      dlnQ_dlnT = 1.150
+   elseif (10**2.806 <= T .and. T < 10**3.980) then
+      Q_cgs = -10**(-26.912) * T**0.337 * nH2**2 / rho_cgs
+      dlnQ_dlnT = 0.337
+   elseif (10**3.980 <= T .and. T < 10**4.177) then
+      Q_cgs = -10**(-108.273) * T**20.777 * nH2**2 / rho_cgs
+      dlnQ_dlnT = 20.777
+   elseif (10**4.177 <= T .and. T < 10**4.443) then
+      Q_cgs = -10**(-18.971) * T**(-0.602) * nH2**2 / rho_cgs
+      dlnQ_dlnT = -0.602
+   elseif (10**4.443 <= T .and. T < 10**4.832) then
+      Q_cgs = -10**(-32.195) * T**2.374 * nH2**2 / rho_cgs
+      dlnQ_dlnT = 2.374
+   elseif (10**4.832 <= T .and. T < 10**5.397) then
+      Q_cgs = -10**(-21.217) * T**0.102 * nH2**2 / rho_cgs
+      dlnQ_dlnT = 0.102
+   elseif (10**5.397 <= T .and. T < 10**5.570) then
+      Q_cgs = -10**(-0.247) * T**(-3.784) * nH2**2 / rho_cgs
+      dlnQ_dlnT = -3.784
+   elseif (10**5.570 <= T .and. T < 10**5.890) then
+      Q_cgs = -10**(-15.415) * T**(-1.061) * nH2**2 / rho_cgs
+      dlnQ_dlnT = -1.061
+   elseif (10**5.890 <= T .and. T < 10**6.232) then
+      Q_cgs = -10**(-19.275) * T**(-0.406) * nH2**2 / rho_cgs
+      dlnQ_dlnT = -0.406
+   elseif (10**6.232 <= T .and. T < 10**6.505) then
+      Q_cgs = -10**(-9.387) * T**(-1.992) * nH2**2 / rho_cgs
+      dlnQ_dlnT = -1.992
+   elseif (10**6.505 <= T .and. T < 10**6.941) then
+      Q_cgs = -10**(-22.476) * T**0.020 * nH2**2 / rho_cgs
+      dlnQ_dlnT = 0.020  
+   elseif (10**6.941 <= T .and. T < 10**7.385) then
+      Q_cgs = -10**(-17.437) * T**(-0.706) * nH2**2 / rho_cgs
+      dlnQ_dlnT = -0.706
+   elseif (10**7.385 <= T .and. T < 10**8.160) then
+      Q_cgs = -10**(-25.026) * T**0.321 * nH2**2 / rho_cgs
+      dlnQ_dlnT = 0.321
+   else
+      Q_cgs = 0.
+      dlnQ_dlnT = 0.
+   endif
+ endif 
+
+end subroutine piece_wise_SPEX_DM
 
 !-----------------------------------------------------------------------
 !+
