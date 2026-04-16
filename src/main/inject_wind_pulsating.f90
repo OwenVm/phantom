@@ -120,6 +120,7 @@ module inject
  logical :: measurement_active          = .false.
  integer :: particles_to_inject         = 0
  logical :: update_L                    = .false.
+ logical :: verbose                     = .true.
 
  character(len=*), parameter :: label = 'inject_atmosphere'
 
@@ -170,6 +171,7 @@ subroutine init_inject(ierr)
  use injectutils,   only:get_parts_per_sphere, get_fibonacci_spacing
  use wind_pulsating,only:setup_star,calc_stellar_profile,region_mass,interp_stellar_profile
  use dust_formation,only:calc_kappa_max
+ use timestep,       only:tmax,dtmax
 
  integer, intent(out) :: ierr
  real    :: Mstar_cgs, Rstar_cgs, Tstar, Lstar_cgs
@@ -219,6 +221,9 @@ subroutine init_inject(ierr)
  omega_pulsation  = 2.0*pi / pulsation_period
  piston_velocity  = piston_velocity_km_s * (km / unit_velocity)
  deltaR_osc       = pulsation_period * piston_velocity / (2.0*pi)
+
+!  dtmax = 1 * pulsation_period
+!  print *, 'dtmax: ', pulsation_period * (utime / days)
 
  reinject_period        = reinject_period_days * (days / utime)
  mass_loss_start_time   = mass_loss_start  * (years / utime)
@@ -310,10 +315,6 @@ subroutine init_inject(ierr)
     enddo
  endif
 
- do i = 1, shell_index
-    print *, 'Shell ', i,' Rstar, N_particles=', tmp_n(i)
- enddo
-
  call setup_star(Msink * umass, Tstar, r_max_on_rstar * Rstar * au, r_min_on_rstar * Rstar * au, &
                gmw, gamma, rho_inner, rho_power_in)
  call calc_stellar_profile(n_profile_points)
@@ -357,31 +358,35 @@ subroutine init_inject(ierr)
     call read_mass_loss_data()
  endif
 
- print *, ''
- print *, ' rho_power                        :', rho_power_in
- print *, ' rho_inner (cgs)                  :', rho_inner
- print *, ' Atmosphere [r_min, r_max] / Rstar:', r_min_on_rstar, r_max_on_rstar
- print *, ' M_atmos / M_total                :', region_mass(r_min, r_max_on_rstar*Rstar) / Mtotal
- print *, ' M_atmos (Msun)                   :', region_mass(r_min, r_max_on_rstar * Rstar)
- print *, ' Boundary shells                  :', n_shells_bnd
- print *, ' Gas shells                       :', n_shells_total
- print *, ' Total boundary particles         :', sum(npart_per_boundary_shell)
- print *, ' Total gas particles              :', sum(npart_per_shell)
- print *, ' Innermost boundary N_per_shell   :', npart_per_boundary_shell(1)
- print *, ' Outermost boundary N_per_shell   :', npart_per_boundary_shell(n_shells_bnd)
- print *, ' Innermost gas      N_per_shell   :', npart_per_shell(1)
- print *, ' Outermost gas      N_per_shell   :', npart_per_shell(n_shells_total)
- print *, ' Particle mass (Msun)             :', mass_of_gas_particle
- print *, ''
+ if (verbose) then
+    print *, ''
+    print *, ' rho_power                        :', rho_power_in
+    print *, ' rho_inner (cgs)                  :', rho_inner
+    print *, ' Atmosphere [r_min, r_max] / Rstar:', r_min_on_rstar, r_max_on_rstar
+    print *, ' M_atmos / M_total                :', region_mass(r_min, r_max_on_rstar*Rstar) / Mtotal
+    print *, ' M_atmos (Msun)                   :', region_mass(r_min, r_max_on_rstar * Rstar)
+    print *, ' Boundary shells                  :', n_shells_bnd
+    print *, ' Gas shells                       :', n_shells_total
+    print *, ' Total boundary particles         :', sum(npart_per_boundary_shell)
+    print *, ' Total gas particles              :', sum(npart_per_shell)
+    print *, ' Innermost boundary N_per_shell   :', npart_per_boundary_shell(1)
+    print *, ' Outermost boundary N_per_shell   :', npart_per_boundary_shell(n_shells_bnd)
+    print *, ' Innermost gas      N_per_shell   :', npart_per_shell(1)
+    print *, ' Outermost gas      N_per_shell   :', npart_per_shell(n_shells_total)
+    print *, ' Particle mass (Msun)             :', mass_of_gas_particle
+    print *, ''
+ endif
 
- do i = 1, n_shells_bnd
-    print *, 'Boundary shell ', i, ': r=', shell_radii_bnd(i)/Rstar, ' Rstar, dr=', delta_r_boundary(i)/Rstar, &
-             ' Rstar, N_particles=', npart_per_boundary_shell(i)
- enddo
- do i = 1, n_shells_total
-    print *, 'Gas shell      ', i, ': r=', shell_radii_gas(i)/Rstar, ' Rstar, dr=', delta_r_gas(i)/Rstar, &
-             ' Rstar, N_particles=', npart_per_shell(i)
- enddo
+ if (verbose) then
+    do i = 1, n_shells_bnd
+       print *, 'Boundary shell ', i, ': r=', shell_radii_bnd(i)/Rstar, ' Rstar, dr=', delta_r_boundary(i)/Rstar, &
+                ' Rstar, N_particles=', npart_per_boundary_shell(i)
+    enddo
+    do i = 1, n_shells_total
+       print *, 'Gas shell      ', i, ': r=', shell_radii_gas(i)/Rstar, ' Rstar, dr=', delta_r_gas(i)/Rstar, &
+                ' Rstar, N_particles=', npart_per_shell(i)
+    enddo
+ endif
 
 end subroutine init_inject
 
@@ -406,6 +411,7 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
  endif
 
  if (.not. atmosphere_setup_complete) then
+    print *, ''
     print *, 'Setting up stellar atmosphere with ', n_shells_total, ' shells.'
     call setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
     atmosphere_setup_complete = .true.
@@ -534,12 +540,14 @@ subroutine check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,np
 
  if ((time - time_last_reinject) < reinject_period .and. time >= mass_loss_start_time) return
 
- print *, ''
- print *, '-----------------------------------------'
- print *, 'Reinjection triggered at time: ', time
- print *, 'Time since last reinject: ', (time - time_last_reinject)*utime/days
- print *, '-----------------------------------------'
- print *, ''
+ if (verbose) then
+    print *, ''
+    print *, '-----------------------------------------'
+    print *, 'Reinjection triggered at time: ', time * (utime / days), ' days'
+    print *, 'Time since last reinject: ', (time - time_last_reinject)*utime/days, ' days'
+    print *, '-----------------------------------------'
+    print *, '' 
+ endif
 
  reinjection_needed = .true.
 
@@ -594,12 +602,14 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  mass_injected = real(npart - old_npart) * mass_of_gas_particle
  xyzmh_ptmass(4, wind_emitting_sink) = xyzmh_ptmass(4, wind_emitting_sink) - mass_injected
 
- print *, ''
- print *, ' Particles injected         :', (npart - old_npart)
- print *, ' Injection radius           :', r_inject
- print *, ' New total particles        :', npart
- print *, 'Reinjection complete.'
- print *, ''
+ if (verbose) then
+    print *, ''
+    print *, ' Particles injected         :', (npart - old_npart)
+    print *, ' Injection radius           :', r_inject
+    print *, ' New total particles        :', npart
+    print *, 'Reinjection complete.'
+    print *, ''
+ endif
 
 end subroutine perform_reinjection
 
@@ -684,10 +694,10 @@ subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
  use physcon,only:pi
 
  real,    intent(in) :: time
- real,    intent(in) :: xyzh(:,:),xyzmh_ptmass(:,:)
+ real,    intent(inout) :: xyzh(:,:),xyzmh_ptmass(:,:)
  integer, intent(in) :: npart
  integer :: i, j
- real    :: x0(3), r_current, phase
+ real    :: x0(3), r_current, phase, h_boundary_equilibrium
 
  x0    = xyzmh_ptmass(1:3, wind_emitting_sink)
  phase = omega_pulsation * time + phi0
@@ -706,10 +716,12 @@ subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
        if (iamtype(iphase(i)) == iboundary) then
           j = j + 1
           boundary_particle_ids(j) = i
+         !  h_boundary_equilibrium = xyzh(4,i)
           r_current = sqrt((xyzh(1,i)-x0(1))**2 + &
                            (xyzh(2,i)-x0(2))**2 + &
                            (xyzh(3,i)-x0(3))**2)
           r_boundary_equilibrium(j) = r_current - deltaR_osc * sin(phase)
+         !  xyzh(4,i) = h_boundary_equilibrium
        endif
     enddo
 
@@ -785,6 +797,12 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
        xyzh(4,ipart)  = (mass_of_boundary_particle / rho)**(1./3.)
     endif
 
+   !  if (.not. var_boundary .and. time == 0.0) then
+   !     call interp_stellar_profile(r_new, rho, P, u, T)
+   !     vxyzu(4,ipart) = u
+   !     xyzh(4,ipart)  = (mass_of_boundary_particle / rho)**(1./3.)
+   !  endif
+
     if (update_L) then
        Reff = xyzmh_ptmass(iReff,1) + deltaR_osc_n * sin(phase)
        Teff = xyzmh_ptmass(iTeff,1)
@@ -852,7 +870,9 @@ subroutine write_mass_loss_data()
  enddo
  close(iunit)
 
+ print *, ''
  write(iprint,*) 'Mass-loss rate data written to mass_loss_rate.dat'
+ print *, ' '
 
 end subroutine write_mass_loss_data
 
@@ -891,11 +911,13 @@ subroutine read_mass_loss_data()
  endif
  close(iunit)
 
- write(iprint,*) 'Mass-loss rate data read from mass_loss_rate.dat'
- write(iprint,*) ' Mean mass-loss rate          :', mean_mass_loss_rate
- write(iprint,*) ' Gas particle mass            :', mass_of_gas_particle
- write(iprint,*) ' Boundary particle mass       :', mass_of_boundary_particle
- write(iprint,*) ' Particles to inject          :', particles_to_inject
+ if (verbose) then 
+    write(iprint,*) 'Mass-loss rate data read from mass_loss_rate.dat'
+    write(iprint,*) ' Mean mass-loss rate          :', mean_mass_loss_rate
+    write(iprint,*) ' Gas particle mass            :', mass_of_gas_particle
+    write(iprint,*) ' Boundary particle mass       :', mass_of_boundary_particle
+    write(iprint,*) ' Particles to inject          :', particles_to_inject
+ endif
 
 end subroutine read_mass_loss_data
 
