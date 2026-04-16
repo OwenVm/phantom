@@ -102,9 +102,9 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  integer :: ierr,k
  logical :: iexist
 
+ nfulldump = 1
 !  tmax = 30
  dtmax = 0.1
- nfulldump = 1
  ieos = 5
  gmw = 1.26
  
