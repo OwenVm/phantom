@@ -40,6 +40,7 @@ module cooling_functions
            cooling_dust_collision, &
            cooling_radiative_relaxation, &
            cooling_SPEX_DM, &
+           cooling_H2, &
            testing_cooling_functions
 
  private
@@ -155,23 +156,73 @@ subroutine cooling_neutral_hydrogen(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  real, parameter   :: f = 1.0d0
  real              :: ne,nH, factor, T_temp
 
- if (T > 100.) then
+ if (T > 3000.) then
     nH = rho_cgs/(1.4*mass_proton_cgs)
-    T_temp = max(T, 6000.)
+   !  T_temp = max(T, 6000.)
     ne = min(1., calc_eps_e(T_temp)) * nH
-    Q_cgs = -f*7.3d-19*ne*nH*exp(-118400./T_temp)/rho_cgs/(1.+sqrt(T_temp/1.d5))
-    if (T > 6000.) then
-        dlnQ_dlnT = (-118400./T + log(nH*calc_eps_e(1.001*T)/ne)/log(1.001) &
-                    - 0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5)))
-    else
-        dlnQ_dlnT = 0.
-    endif
-else
+    Q_cgs = -f*7.3d-19*ne*nH*exp(-118400./T)/rho_cgs/(1.+sqrt(T/1.d5))
+   !  Q_cgs = min(Q_cgs, -1e3) 
+ else
     Q_cgs = 0.
     dlnQ_dlnT = 0.
-endif
+ endif
+
+!  if (T > 3000.) then
+!     nH = rho_cgs/(1.4*mass_proton_cgs)
+!    !  T_temp = max(T, 6000.)
+!     ne = min(1., calc_eps_e(T_temp)) * nH
+!     Q_cgs = -f*7.3d-19*ne*nH*exp(-118400./T)/rho_cgs/(1.+sqrt(T/1.d5))
+!  else
+!     Q_cgs = 0.
+!     dlnQ_dlnT = 0.
+!  endif
+
+!  if (T > 100.) then
+!     nH = rho_cgs/(1.4*mass_proton_cgs)
+!     T_temp = max(T, 6000.)
+!     ne = min(1., calc_eps_e(T_temp)) * nH
+!     Q_cgs = -f*7.3d-19*ne*nH*exp(-118400./T_temp)/rho_cgs/(1.+sqrt(T_temp/1.d5))
+!     if (T > 6000.) then
+!         dlnQ_dlnT = (-118400./T + log(nH*calc_eps_e(1.001*T)/ne)/log(1.001) &
+!                     - 0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5)))
+!     else
+!         dlnQ_dlnT = 0.
+!     endif
+!  else
+!     Q_cgs = 0.
+!     dlnQ_dlnT = 0.
+!  endif
 
 end subroutine cooling_neutral_hydrogen
+
+!-----------------------------------------------------------------------
+!+
+!  Cooling by H2 molecules
+!
+! :References:
+!   Groenenwegen (1994), A&A 290, 531
+!+
+!-----------------------------------------------------------------------
+subroutine cooling_H2(T, rho_cgs, Q_cgs, dlnQ_dlnT)
+
+ use physcon, only: mass_proton_cgs
+
+ real, intent(in)  :: T, rho_cgs
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+
+ real, parameter   :: f = 1.0d0
+ real              :: nH2
+
+ if (T < 1000.) then
+    nH2 = 0.5 * rho_cgs/(1.4*mass_proton_cgs)
+    Q_cgs = -f*2.61111e-21 * nH2 * (T/1000.)**(4.74) / rho_cgs
+    dlnQ_dlnT = 4.74
+ else
+    Q_cgs = 0.
+    dlnQ_dlnT = 0.
+ endif
+
+end subroutine cooling_H2
 
 !-----------------------------------------------------------------------
 !+
@@ -189,25 +240,13 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  real, intent(in)  :: T, rho_cgs
  real, intent(out) :: Q_cgs, dlnQ_dlnT
 
- !
- ! Combined SPEX_DM table: log10(Lambda_hd) in CGS [erg cm^3 / s]
- ! 180 points, log10(T) from 1.00 to 8.16, uniform step of 0.04
- !
- !   l_DM2(1:75):      Dalgarno & McCray (1972), log T = 1.00 to 3.96
- !                     ionisation fraction 1e-3 folded in
- !
- !   l_SPEX_hd(1:105): SPEX solar metallicity, log T = 4.00 to 8.16
- !                     log10(Lambda_hd) taken verbatim from Table 2 of
- !                     Schure et al. (2009), where Lambda_hd = (ne/nH)*Lambda_N
- !
  integer, parameter :: ntab     = 180
- integer, parameter :: ndm2     = 75
- integer, parameter :: nspex_hd = 105
+ integer, parameter :: ndm2     = 70
+ integer, parameter :: nspex_hd = 110
  real,    parameter :: logtmin  = 1.00
  real,    parameter :: logtstep = 0.04
 
- ! DM_2 segment: log T = 1.00 to 3.96, step 0.04 (75 points)
- ! Dalgarno & McCray (1972) with ionisation fraction 1e-3
+ ! DM_2 segment: log T = 1.00 to 3.76, step 0.04 (70 points)
  real, parameter :: l_DM2(ndm2) = (/ &
    -30.0377, -29.7062, -29.4055, -29.1331, -28.8864,   &
    -28.6631, -28.4614, -28.2791, -28.1146, -27.9662,   &
@@ -222,14 +261,12 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
    -25.9083, -25.8857, -25.8645, -25.8447, -25.8259,   &
    -25.8085, -25.7926, -25.7778, -25.7642, -25.7520,   &
    -25.7409, -25.7310, -25.7222, -25.7142, -25.7071,   &
-   -25.7005, -25.6942, -25.6878, -25.6811, -25.6733,   &
-   -25.6641, -25.6525, -25.6325, -25.6080, -25.5367    &
-   /) - 3 
+   -25.7005, -25.6942, -25.6878, -25.6811, -25.6733    &
+   /) 
 
- ! SPEX segment: log T = 4.00 to 8.16, step 0.04 (105 points)
- ! l_SPEX_N: log10(Lambda_N) from Table 2 of Schure et al. (2009)
- ! Lambda_N is the SPEX cooling rate per nH*ne  [erg cm^3 / s]
+ ! SPEX segment: log T = 3.80 to 8.16, step 0.04 (110 points)
  real, parameter :: l_SPEX_N(nspex_hd) = (/ &
+   -25.7331, -25.0383, -24.4059, -23.8288, -23.3027,   &
    -22.8242, -22.3917, -22.0067, -21.6818, -21.4529,   &
    -21.3246, -21.3459, -21.4305, -21.5293, -21.6138,   &
    -21.6615, -21.6551, -21.5919, -21.5092, -21.4124,   &
@@ -253,49 +290,42 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
    -22.5367, -22.5216, -22.5062, -22.4912, -22.4753    &
    /)
 
- ! nenh_SPEX: ne/nH ratio at each temperature, from Table 2 of Schure et al. (2009)
- ! Used to convert Lambda_N -> Lambda_hd = (ne/nH) * Lambda_N
  real, parameter :: nenh_SPEX(nspex_hd) = (/ &
-   3.4295E-3,  1.3283E-2,  4.2008E-2,  1.2138E-1,  3.0481E-1,  &
-   5.3386E-1,  7.6622E-1,  8.9459E-1,  9.5414E-1,  9.8342E-1,  &
-   1.0046,     1.0291,     1.0547,     1.0767,     1.0888,      &
-   1.0945,     1.0972,     1.0988,     1.1004,     1.1034,      &
-   1.1102,     1.1233,     1.1433,     1.1638,     1.1791,      &
-   1.1885,     1.1937,     1.1966,     1.1983,     1.1993,      &
-   1.1999,     1.2004,     1.2008,     1.2012,     1.2015,      &
-   1.2020,     1.2025,     1.2030,     1.2035,     1.2037,      &
-   1.2039,     1.2040,     1.2041,     1.2042,     1.2044,      &
-   1.2045,     1.2046,     1.2047,     1.2049,     1.2050,      &
-   1.2051,     1.2053,     1.2055,     1.2056,     1.2058,      &
-   1.2060,     1.2062,     1.2065,     1.2067,     1.2070,      &
-   1.2072,     1.2075,     1.2077,     1.2078,     1.2079,      &
-   1.2080,     1.2081,     1.2082,     1.2083,     1.2083,      &
-   1.2084,     1.2084,     1.2085,     1.2085,     1.2086,      &
-   1.2086,     1.2087,     1.2087,     1.2088,     1.2088,      &
-   1.2089,     1.2089,     1.2089,     1.2089,     1.2089,      &
-   1.2090,     1.2090,     1.2090,     1.2090,     1.2090,      &
-   1.2090,     1.2090,     1.2090,     1.2090,     1.2090,      &
-   1.2090,     1.2090,     1.2090,     1.2090,     1.2090,      &
-   1.2090,     1.2090,     1.2090,     1.2090,     1.2090       &
+   1.3264e-5, 4.2428e-5, 8.8276e-5, 1.7967e-4, 8.4362e-4,  &
+   3.4295e-3, 1.3283e-2, 4.2008e-2, 1.2138e-1, 3.0481e-1,  &
+   5.3386e-1, 7.6622e-1, 8.9459e-1, 9.5414e-1, 9.8342e-1,  &
+   1.0046,    1.0291,    1.0547,    1.0767,    1.0888,      &
+   1.0945,    1.0972,    1.0988,    1.1004,    1.1034,      &
+   1.1102,    1.1233,    1.1433,    1.1638,    1.1791,      &
+   1.1885,    1.1937,    1.1966,    1.1983,    1.1993,      &
+   1.1999,    1.2004,    1.2008,    1.2012,    1.2015,      &
+   1.2020,    1.2025,    1.2030,    1.2035,    1.2037,      &
+   1.2039,    1.2040,    1.2041,    1.2042,    1.2044,      &
+   1.2045,    1.2046,    1.2047,    1.2049,    1.2050,      &
+   1.2051,    1.2053,    1.2055,    1.2056,    1.2058,      &
+   1.2060,    1.2062,    1.2065,    1.2067,    1.2070,      &
+   1.2072,    1.2075,    1.2077,    1.2078,    1.2079,      &
+   1.2080,    1.2081,    1.2082,    1.2083,    1.2083,      &
+   1.2084,    1.2084,    1.2085,    1.2085,    1.2086,      &
+   1.2086,    1.2087,    1.2087,    1.2088,    1.2088,      &
+   1.2089,    1.2089,    1.2089,    1.2089,    1.2089,      &
+   1.2090,    1.2090,    1.2090,    1.2090,    1.2090,      &
+   1.2090,    1.2090,    1.2090,    1.2090,    1.2090,      &
+   1.2090,    1.2090,    1.2090,    1.2090,    1.2090,      &
+   1.2090,    1.2090,    1.2090,    1.2090,    1.2090       &
    /)
 
- ! Lambda_hd = (ne/nH) * Lambda_N  =>  log10(Lambda_hd) = log10(Lambda_N) + log10(ne/nH)
- ! Eq. 1 of Schure et al. (2009)
- real, parameter :: l_SPEX_hd(nspex_hd) = l_SPEX_N  + log10(nenh_SPEX)
+ real, parameter :: l_SPEX_hd(nspex_hd) = l_SPEX_N + log10(nenh_SPEX)
 
- ! Combined table used at runtime
  real, parameter :: ltab(ntab) = (/ l_DM2, l_SPEX_hd /)
 
- real :: logT, Lambda_cgs, nH, frac, logtmax, ne
+ real :: logT, Lambda_cgs, nH, frac
  real :: dlnLdlnT
  integer :: jl
 
- logtmax = logtmin + (ntab - 1) * logtstep
-
  logT = log10(T)
 
- ! No cooling below 10 K
- if (logT <= 3. .or. logT >= 8.16) then
+ if (logT <= 1. .or. logT >= 8.16) then
     Q_cgs     = 0.
     dlnQ_dlnT = 0.
  else
@@ -304,14 +334,11 @@ subroutine cooling_SPEX_DM(T, rho_cgs, Q_cgs, dlnQ_dlnT)
     frac = (logT - (logtmin + (jl - 1) * logtstep)) / logtstep
 
     Lambda_cgs = 10.**(ltab(jl) + frac * (ltab(jl+1) - ltab(jl)))
-
-    dlnLdlnT = (ltab(jl+1) - ltab(jl)) / logtstep
+    dlnLdlnT   = (ltab(jl+1) - ltab(jl)) / logtstep
 
     nH        = rho_cgs / (1.4 * mass_proton_cgs)
-    ne        = min(1.,calc_eps_e(T))*nH
-
     Q_cgs     = -nH**2 * Lambda_cgs / rho_cgs
-    dlnQ_dlnT = dlnLdlnT 
+    dlnQ_dlnT = dlnLdlnT
  endif
 
 end subroutine cooling_SPEX_DM

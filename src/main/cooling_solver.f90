@@ -35,7 +35,7 @@ module cooling_solver
  implicit none
  character(len=*), parameter :: label = 'cooling_library'
  integer, public :: excitation_HI = 0, relax_Bowen = 0, dust_collision = 0, &
-                    relax_Stefan = 0, shock_problem = 0, SPEX_DM = 0
+                    relax_Stefan = 0, shock_problem = 0, SPEX_DM = 0, H2_cooling = 0
  integer, public :: icool_method  = 0
  integer, parameter :: nTg  = 64
  real :: Tref = 1.d7 !higher value of the temperature grid (for exact cooling)
@@ -328,20 +328,20 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, r,
  use cooling_functions, only:cooling_neutral_hydrogen,&
      cooling_Bowen_relaxation,cooling_dust_collision,&
      cooling_radiative_relaxation,piecewise_law,testing_cooling_functions,&
-     cooling_SPEX_DM
+     cooling_SPEX_DM, cooling_H2
  use dim ,    only:icool_alloc
  use part,    only:cool_rate
 
  real, intent(in)  :: rho, T, Teq     !rho in code units
  real, intent(in)  :: mu, gamma
- real, intent(in)  :: K2, kappa , r, r_min_cool     !cgs
+ real, intent(in)  :: K2, kappa , r, r_min_cool
  real, intent(out) :: Q, dlnQ_dlnT    !code units
  integer, intent(in), optional :: i 
 
  real :: Q_cgs
- real :: Q_H0,          Q_relax_Bowen,  Q_col_dust, Q_relax_Stefan, Q_molec, Q_shock, Q_SPEX_DM
+ real :: Q_H0,          Q_relax_Bowen,  Q_col_dust, Q_relax_Stefan, Q_molec, Q_shock, Q_SPEX_DM, Q_H2
  real :: dlnQ_H0,       dlnQ_relax_Bowen, dlnQ_col_dust, dlnQ_relax_Stefan
- real :: dlnQ_molec,    dlnQ_shock,     dlnQ_SPEX_DM
+ real :: dlnQ_molec,    dlnQ_shock,     dlnQ_SPEX_DM, dlnQ_H2
  real :: rho_cgs, ndens
 
  if (present(i)) then
@@ -358,6 +358,7 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, r,
  Q_shock           = 0.
  Q_molec           = 0.
  Q_SPEX_DM         = 0.
+ Q_H2              = 0.
 
  dlnQ_H0           = 0.
  dlnQ_relax_Bowen  = 0.
@@ -366,21 +367,24 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, r,
  dlnQ_shock        = 0.
  dlnQ_molec        = 0.
  dlnQ_SPEX_DM      = 0.
+ dlnQ_H2           = 0.
 
  if (r_min_cool > 0.) then
-    if (excitation_HI == 1 .and. r > r_min_cool) &
-       call cooling_neutral_hydrogen(T, rho_cgs, Q_H0, dlnQ_H0)
-    if (relax_Bowen   == 1 .and. r > r_min_cool) &
-       call cooling_Bowen_relaxation(T, Teq, rho_cgs, mu, gamma, Q_relax_Bowen, dlnQ_relax_Bowen)
-    if (SPEX_DM       == 1 .and. r > r_min_cool) &
-       call cooling_SPEX_DM(T, rho_cgs, Q_SPEX_DM, dlnQ_SPEX_DM)
+   if (excitation_HI == 1 .and. r > r_min_cool) &
+      call cooling_neutral_hydrogen(T, rho_cgs, Q_H0, dlnQ_H0)
+   if (relax_Bowen   == 1 .and. r > r_min_cool) &
+      call cooling_Bowen_relaxation(T, Teq, rho_cgs, mu, gamma, Q_relax_Bowen, dlnQ_relax_Bowen)
+   if (SPEX_DM       == 1 .and. r > r_min_cool) &
+      call cooling_SPEX_DM(T, rho_cgs, Q_SPEX_DM, dlnQ_SPEX_DM)
+   if (H2_cooling    == 1 .and. r > r_min_cool) &
+      call cooling_H2(T, rho_cgs, Q_H2, dlnQ_H2)
  else
-    if (excitation_HI == 1) call cooling_neutral_hydrogen(T, rho_cgs, Q_H0, dlnQ_H0)
-    if (relax_Bowen   == 1) call cooling_Bowen_relaxation(T, Teq, rho_cgs, mu, gamma, &
-                                                           Q_relax_Bowen, dlnQ_relax_Bowen)
-    if (SPEX_DM       == 1) call cooling_SPEX_DM(T, rho_cgs, Q_SPEX_DM, dlnQ_SPEX_DM)
+   if (excitation_HI == 1) call cooling_neutral_hydrogen(T, rho_cgs, Q_H0, dlnQ_H0)
+   if (relax_Bowen   == 1) call cooling_Bowen_relaxation(T, Teq, rho_cgs, mu, gamma,Q_relax_Bowen, dlnQ_relax_Bowen)
+   if (SPEX_DM       == 1) call cooling_SPEX_DM(T, rho_cgs, Q_SPEX_DM, dlnQ_SPEX_DM)
+   if (H2_cooling    == 1) call cooling_H2(T, rho_cgs, Q_H2, dlnQ_H2)
  endif
-
+ 
  if (dust_collision == 1 .and. K2 > 0.) call cooling_dust_collision(T, Teq, rho_cgs, K2, &
                                                         mu, Q_col_dust, dlnQ_col_dust)
  if (relax_Stefan   == 1) call cooling_radiative_relaxation(T, Teq, kappa, Q_relax_Stefan, &
@@ -390,18 +394,16 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, r,
  if (excitation_HI  == 99) call testing_cooling_functions(int(K2), T, Q_H0, dlnQ_H0)
  !if (do_molecular_cooling) call calc_cool_molecular(T, r, rho_cgs, Q_molec, dlnQ_molec)
 
- Q_cgs = Q_H0 + Q_relax_Bowen + Q_col_dust + Q_relax_Stefan + Q_molec + Q_shock + Q_SPEX_DM
-!  print*, Q_cgs
+ Q_cgs = Q_H0 + Q_relax_Bowen + Q_col_dust + Q_relax_Stefan + Q_molec + Q_shock + Q_SPEX_DM + Q_H2
 
  if (icool_alloc == 1 .and. present(i)) cool_rate(i) = Q_cgs
-!  if (icool_alloc == 1 .and. present(i)) print *, 'cool_rate(',i,') = ', cool_rate(i)
 
  if (Q_cgs == 0.) then
     dlnQ_dlnT = 0.
  else
     dlnQ_dlnT = (Q_H0*dlnQ_H0 + Q_relax_Bowen*dlnQ_relax_Bowen + Q_col_dust*dlnQ_col_dust &
                + Q_relax_Stefan*dlnQ_relax_Stefan + Q_molec*dlnQ_molec + Q_shock*dlnQ_shock &
-               + Q_SPEX_DM*dlnQ_SPEX_DM) / Q_cgs
+               + Q_SPEX_DM*dlnQ_SPEX_DM + Q_H2*dlnQ_H2) / Q_cgs
  endif
 
  !limit exponent to prevent overflow
@@ -548,6 +550,7 @@ subroutine write_options_cooling_solver(iunit)
  call write_inopt(dust_collision,'dust_collision','dust collision (1=on/0=off)',iunit)
  call write_inopt(shock_problem,'shock_problem','piecewise formulation for analytic shock solution (1=on/0=off)',iunit)
  call write_inopt(SPEX_DM,'SPEX_DM','SPEX+DM optically thin radiative cooling (1=on/0=off)',iunit)
+ call write_inopt(H2_cooling,'H2_cooling','H2 cooling (1=on/0=off)',iunit)
  if (shock_problem == 1) then
     call write_inopt(lambda_shock_cgs,'lambda_shock','Cooling rate parameter for analytic shock solution',iunit)
     call write_inopt(T1_factor,'T1_factor','factor by which T0 is increased (T1= T1_factor*T0)',iunit)
@@ -594,6 +597,9 @@ subroutine read_options_cooling_solver(name,valstring,imatch,igotall,ierr)
  case('SPEX_DM')
     read(valstring,*,iostat=ierr) SPEX_DM
     ngot = ngot + 1
+ case('H2_cooling')
+    read(valstring,*,iostat=ierr) H2_cooling
+    ngot = ngot + 1
  case('lambda_shock')
     read(valstring,*,iostat=ierr) lambda_shock_cgs
     ngot = ngot + 1
@@ -613,7 +619,7 @@ subroutine read_options_cooling_solver(name,valstring,imatch,igotall,ierr)
  if (shock_problem == 1) then
     nn = 11   ! 8 standard + 3 shock-specific
  else
-    nn = 8    ! icool_method + 5 flags + SPEX_DM + bowen_Cprime
+    nn = 9   ! icool_method + 8 flags + SPEX_DM + bowen_Cprime
  endif
  if (ngot >= nn) igotall = .true.
 
