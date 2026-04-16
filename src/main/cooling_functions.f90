@@ -42,6 +42,8 @@ module cooling_functions
            cooling_SPEX_DM, &
            cooling_H2, &
            piece_wise_SPEX_DM, &
+           cooling_SPEX_resampled, &
+           build_cooltable_SPEX_DM, &
            testing_cooling_functions
 
  private
@@ -198,6 +200,200 @@ subroutine cooling_H2(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  endif
 
 end subroutine cooling_H2
+
+!-----------------------------------------------------------------------
+!+
+!  Build a resampled cooling table from the SPEX_DM data onto a uniform
+!  log T grid with ncool points, using the same interpolation logic as
+!  AMRVAC (quadratic where smooth, linear across jumps or at edges).
+!+
+!-----------------------------------------------------------------------
+subroutine build_cooltable_SPEX_DM(ncool, tcool, Lcool)
+
+ integer, intent(in)  :: ncool
+ real,    intent(out) :: tcool(ncool)   ! log10(T) grid
+ real,    intent(out) :: Lcool(ncool)   ! log10(Lambda) values
+
+ integer, parameter :: ntab     = 180
+ integer, parameter :: ndm2     = 70
+ integer, parameter :: nspex_hd = 110
+ real,    parameter :: logtmin  = 1.00
+ real,    parameter :: logtstep = 0.04
+
+ real, parameter :: l_DM2(ndm2) = (/ &
+   -30.0377, -29.7062, -29.4055, -29.1331, -28.8864,   &
+   -28.6631, -28.4614, -28.2791, -28.1146, -27.9662,   &
+   -27.8330, -27.7129, -27.6052, -27.5088, -27.4225,   &
+   -27.3454, -27.2767, -27.2153, -27.1605, -27.1111,   &
+   -27.0664, -27.0251, -26.9863, -26.9488, -26.9119,   &
+   -26.8742, -26.8353, -26.7948, -26.7523, -26.7080,   &
+   -26.6619, -26.6146, -26.5666, -26.5183, -26.4702,   &
+   -26.4229, -26.3765, -26.3317, -26.2886, -26.2473,   &
+   -26.2078, -26.1704, -26.1348, -26.1012, -26.0692,   &
+   -26.0389, -26.0101, -25.9825, -25.9566, -25.9318,   &
+   -25.9083, -25.8857, -25.8645, -25.8447, -25.8259,   &
+   -25.8085, -25.7926, -25.7778, -25.7642, -25.7520,   &
+   -25.7409, -25.7310, -25.7222, -25.7142, -25.7071,   &
+   -25.7005, -25.6942, -25.6878, -25.6811, -25.6733    &
+   /)
+
+ real, parameter :: l_SPEX_N(nspex_hd) = (/ &
+   -25.7331, -25.0383, -24.4059, -23.8288, -23.3027,   &
+   -22.8242, -22.3917, -22.0067, -21.6818, -21.4529,   &
+   -21.3246, -21.3459, -21.4305, -21.5293, -21.6138,   &
+   -21.6615, -21.6551, -21.5919, -21.5092, -21.4124,   &
+   -21.3085, -21.2047, -21.1067, -21.0194, -20.9413,   &
+   -20.8735, -20.8205, -20.7805, -20.7547, -20.7455,   &
+   -20.7565, -20.7820, -20.8008, -20.7994, -20.7847,   &
+   -20.7687, -20.7590, -20.7544, -20.7505, -20.7545,   &
+   -20.7888, -20.8832, -21.0450, -21.2286, -21.3737,   &
+   -21.4573, -21.4935, -21.5098, -21.5345, -21.5863,   &
+   -21.6548, -21.7108, -21.7424, -21.7576, -21.7696,   &
+   -21.7883, -21.8115, -21.8303, -21.8419, -21.8514,   &
+   -21.8690, -21.9057, -21.9690, -22.0554, -22.1488,   &
+   -22.2355, -22.3084, -22.3641, -22.4033, -22.4282,   &
+   -22.4408, -22.4443, -22.4411, -22.4334, -22.4242,   &
+   -22.4164, -22.4134, -22.4168, -22.4267, -22.4418,   &
+   -22.4603, -22.4830, -22.5112, -22.5449, -22.5819,   &
+   -22.6177, -22.6483, -22.6719, -22.6883, -22.6985,   &
+   -22.7032, -22.7037, -22.7008, -22.6950, -22.6869,   &
+   -22.6769, -22.6655, -22.6531, -22.6397, -22.6258,   &
+   -22.6111, -22.5964, -22.5816, -22.5668, -22.5519,   &
+   -22.5367, -22.5216, -22.5062, -22.4912, -22.4753    &
+   /)
+
+ real, parameter :: nenh_SPEX(nspex_hd) = (/ &
+   1.3264e-5, 4.2428e-5, 8.8276e-5, 1.7967e-4, 8.4362e-4,  &
+   3.4295e-3, 1.3283e-2, 4.2008e-2, 1.2138e-1, 3.0481e-1,  &
+   5.3386e-1, 7.6622e-1, 8.9459e-1, 9.5414e-1, 9.8342e-1,  &
+   1.0046,    1.0291,    1.0547,    1.0767,    1.0888,      &
+   1.0945,    1.0972,    1.0988,    1.1004,    1.1034,      &
+   1.1102,    1.1233,    1.1433,    1.1638,    1.1791,      &
+   1.1885,    1.1937,    1.1966,    1.1983,    1.1993,      &
+   1.1999,    1.2004,    1.2008,    1.2012,    1.2015,      &
+   1.2020,    1.2025,    1.2030,    1.2035,    1.2037,      &
+   1.2039,    1.2040,    1.2041,    1.2042,    1.2044,      &
+   1.2045,    1.2046,    1.2047,    1.2049,    1.2050,      &
+   1.2051,    1.2053,    1.2055,    1.2056,    1.2058,      &
+   1.2060,    1.2062,    1.2065,    1.2067,    1.2070,      &
+   1.2072,    1.2075,    1.2077,    1.2078,    1.2079,      &
+   1.2080,    1.2081,    1.2082,    1.2083,    1.2083,      &
+   1.2084,    1.2084,    1.2085,    1.2085,    1.2086,      &
+   1.2086,    1.2087,    1.2087,    1.2088,    1.2088,      &
+   1.2089,    1.2089,    1.2089,    1.2089,    1.2089,      &
+   1.2090,    1.2090,    1.2090,    1.2090,    1.2090,      &
+   1.2090,    1.2090,    1.2090,    1.2090,    1.2090,      &
+   1.2090,    1.2090,    1.2090,    1.2090,    1.2090,      &
+   1.2090,    1.2090,    1.2090,    1.2090,    1.2090       &
+   /)
+
+ real, parameter :: l_SPEX_hd(nspex_hd) = l_SPEX_N + log10(nenh_SPEX)
+ real, parameter :: L_table(ntab)        = (/ l_DM2, l_SPEX_hd /)
+
+ real    :: t_table(ntab)
+ real    :: ratt, ti, dL1, dL2, fact1, fact2, fact3
+ logical :: jump
+ integer :: i, j, k
+
+ ! build uniform log T grid for source table at runtime
+ do k = 1, ntab
+    t_table(k) = logtmin + (k-1)*logtstep
+ end do
+
+ ratt = (t_table(ntab) - t_table(1)) / dble(ncool - 1)
+
+ tcool(1)     = t_table(1)
+ Lcool(1)     = L_table(1)
+ tcool(ncool) = t_table(ntab)
+ Lcool(ncool) = L_table(ntab)
+
+ do i = 2, ncool - 1
+
+    ti = tcool(1) + (i-1) * ratt
+
+    do j = 1, ntab - 1
+       if (ti < t_table(j+1)) then
+
+          if (j == ntab - 1) then
+             ! linear at right edge
+             fact1    = (ti - t_table(j+1)) / (t_table(j)   - t_table(j+1))
+             fact2    = (ti - t_table(j))   / (t_table(j+1) - t_table(j))
+             Lcool(i) = L_table(j)*fact1 + L_table(j+1)*fact2
+             exit
+          end if
+
+          dL1  = L_table(j+1) - L_table(j)
+          dL2  = L_table(j+2) - L_table(j+1)
+          jump = (max(abs(dL1), abs(dL2)) > 2.*min(abs(dL1), abs(dL2)))
+
+          if (jump) then
+             ! linear across large gradient change
+             fact1    = (ti - t_table(j+1)) / (t_table(j)   - t_table(j+1))
+             fact2    = (ti - t_table(j))   / (t_table(j+1) - t_table(j))
+             Lcool(i) = L_table(j)*fact1 + L_table(j+1)*fact2
+             exit
+          else
+             ! quadratic Lagrange interpolation
+             fact1 = ((ti - t_table(j+1)) * (ti - t_table(j+2))) &
+                   / ((t_table(j) - t_table(j+1)) * (t_table(j) - t_table(j+2)))
+             fact2 = ((ti - t_table(j))   * (ti - t_table(j+2))) &
+                   / ((t_table(j+1) - t_table(j)) * (t_table(j+1) - t_table(j+2)))
+             fact3 = ((ti - t_table(j))   * (ti - t_table(j+1))) &
+                   / ((t_table(j+2) - t_table(j)) * (t_table(j+2) - t_table(j+1)))
+             Lcool(i) = L_table(j)*fact1 + L_table(j+1)*fact2 + L_table(j+2)*fact3
+             exit
+          end if
+
+       end if
+    end do
+
+    tcool(i) = ti
+
+ end do
+
+end subroutine build_cooltable_SPEX_DM
+
+
+
+!-----------------------------------------------------------------------
+!+
+!  Lookup in the resampled SPEX_DM table
+!+
+!-----------------------------------------------------------------------
+subroutine cooling_SPEX_resampled(T, rho_cgs, tcool, Lcool, ncool, Q_cgs, dlnQ_dlnT)
+
+ use physcon, only: mass_proton_cgs
+
+ real, intent(in)  :: T, rho_cgs
+ integer, intent(in) :: ncool
+ real, intent(in)  :: tcool(ncool)
+ real, intent(in)  :: Lcool(ncool)
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+
+ real    :: logT, frac, Lambda_cgs, nH, dlnLdlnT
+ integer :: i
+
+ logT = log10(T)
+
+ if (logT <= tcool(1) .or. logT >= tcool(ncool)) then
+    Q_cgs     = 0.
+    dlnQ_dlnT = 0.
+    return
+ end if
+
+ ! index directly from uniform grid — O(1), no search needed
+ i    = int((logT - tcool(1)) / (tcool(2) - tcool(1))) + 1
+ i    = max(1, min(i, ncool - 1))
+ frac = (logT - tcool(i)) / (tcool(i+1) - tcool(i))
+
+ Lambda_cgs = 10.**(Lcool(i) + frac * (Lcool(i+1) - Lcool(i)))
+ dlnLdlnT   = (Lcool(i+1) - Lcool(i)) / (tcool(i+1) - tcool(i))
+
+ nH        = rho_cgs / (1.4 * mass_proton_cgs)
+ Q_cgs     = -nH**2 * Lambda_cgs / rho_cgs
+ dlnQ_dlnT = dlnLdlnT
+
+end subroutine cooling_SPEX_resampled
 
 !-----------------------------------------------------------------------
 !+
