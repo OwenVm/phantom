@@ -159,12 +159,13 @@ subroutine cooling_neutral_hydrogen(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  real, parameter   :: f = 1.0d0
  real              :: ne,nH, factor, T_temp
 
- if (T > 3000.) then
+ if (T > 1000.) then
     nH = rho_cgs/(1.4*mass_proton_cgs)
    !  T_temp = max(T, 6000.)
     ne = min(1., calc_eps_e(T_temp)) * nH
     Q_cgs = -f*7.3d-19*ne*nH*exp(-118400./T)/rho_cgs/(1.+sqrt(T/1.d5))
-   !  Q_cgs = min(Q_cgs, -1e3) 
+    dlnQ_dlnT = -118400./T+log(nH*calc_eps_e(1.001*T)/ne)/log(1.001) - 0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5))
+   !  Q_cgs = min(Q_cgs, -10**3.) 
  else
     Q_cgs = 0.
     dlnQ_dlnT = 0.
@@ -352,8 +353,6 @@ subroutine build_cooltable_SPEX_DM(ncool, tcool, Lcool)
  end do
 
 end subroutine build_cooltable_SPEX_DM
-
-
 
 !-----------------------------------------------------------------------
 !+
