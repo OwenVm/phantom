@@ -105,8 +105,8 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  nfulldump = 1
 !  tmax = 30
  dtmax = 0.1
- ieos = 5
- gmw = 1.26
+!  ieos = 5
+!  gmw = 1.26
  
  call set_units(mass=solarm,dist=au,G=1.)
  call set_default_parameters_wind()
