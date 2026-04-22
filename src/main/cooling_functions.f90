@@ -165,7 +165,7 @@ subroutine cooling_neutral_hydrogen(T, rho_cgs, Q_cgs, dlnQ_dlnT)
     ne = min(1., calc_eps_e(T_temp)) * nH
     Q_cgs = -f*7.3d-19*ne*nH*exp(-118400./T)/rho_cgs/(1.+sqrt(T/1.d5))
     dlnQ_dlnT = -118400./T+log(nH*calc_eps_e(1.001*T)/ne)/log(1.001) - 0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5))
-   !  Q_cgs = min(Q_cgs, -10**3.) 
+   !  Q_cgs = min(Q_cgs, -10**4.) 
  else
     Q_cgs = 0.
     dlnQ_dlnT = 0.
