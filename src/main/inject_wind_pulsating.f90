@@ -64,6 +64,8 @@ module inject
  real    :: phi0                  = 3.1415926536d0/2.0
  real    :: wss                   = 1.0
  logical :: var_boundary          = .false.
+ logical :: save_period           = .false.
+ integer :: dumps_p_period        = 10
 
  logical :: reinject_enabled      = .true.
  real    :: reinject_period_days  = 10.0
@@ -147,6 +149,8 @@ subroutine set_default_options_inject(flag)
  phi0                  = 3.1415926536d0/2.0
  wss                   = 1.0
  var_boundary          = .false.
+ save_period           = .false.
+ dumps_p_period        = 10
  reinject_enabled      = .true.
  reinject_period_days  = 10.0
  mass_loss_start       = 1.0
@@ -223,8 +227,10 @@ subroutine init_inject(ierr)
  piston_velocity  = piston_velocity_km_s * (km / unit_velocity)
  deltaR_osc       = pulsation_period * piston_velocity / (2.0*pi)
 
-!  dtmax = 1 * pulsation_period
-!  print *, 'dtmax: ', pulsation_period * (utime / days)
+ if (save_period) then
+    dtmax = 1. / (dumps_p_period) * pulsation_period
+    print *, 'dtmax: ', dtmax
+ endif
 
  reinject_period        = reinject_period_days * (days / utime)
  mass_loss_start_time   = mass_loss_start  * (years / utime)
@@ -967,6 +973,8 @@ subroutine write_options_inject(iunit)
  call write_inopt(phi0,                 'phi0',                'initial phase offset (radians)',iunit)
  call write_inopt(wss,                  'wss',                 'radial/tangential spacing ratio',iunit)
  call write_inopt(var_boundary,         'var_boundary',        'update boundary thermo with pulsation (logical)',iunit)
+ call write_inopt(save_period,          'save_period',         'wether to save dumps as fraction of period',iunit)
+ call write_inopt(dumps_p_period,       'dumps_p_period',      'number of dumps per period (if save_period = T)',iunit)
  call write_inopt(reinject_enabled,     'reinject_enabled',    'enable dynamic reinjection (logical)',iunit)
  call write_inopt(reinject_period_days, 'reinject_period_days','period between reinjections (days)',iunit)
  call write_inopt(mass_loss_start,      'mass_loss_start',     'start time for mass-loss calculation (years)',iunit)
@@ -990,7 +998,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save      :: ngot = 0
- integer, parameter :: noptions = 25
+ integer, parameter :: noptions = 27
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -1073,6 +1081,13 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  case('var_boundary')
     read(valstring,*,iostat=ierr) var_boundary
     ngot = ngot + 1
+ case('save_period')
+    read(valstring,*,iostat=ierr) save_period
+    ngot = ngot + 1
+ case('dumps_p_period')
+    read(valstring,*,iostat=ierr) dumps_p_period
+    ngot = ngot + 1
+    if (dumps_p_period < 0) call fatal(label,'dumps_p_period must be > 0')
  case('reinject_enabled')
     read(valstring,*,iostat=ierr) reinject_enabled
     ngot = ngot + 1
