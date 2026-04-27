@@ -279,7 +279,7 @@ subroutine init_inject(ierr)
 
        if (shell_index > 1 .and. n_shell < int_particles_outer) then
           shell_index = shell_index - 1
-          r_max_on_rstar = current_radius + 0.5*dr
+          r_max_on_rstar = current_radius - 0.5*dr
           exit
        endif
 
@@ -328,7 +328,11 @@ subroutine init_inject(ierr)
     enddo
  endif
 
- call setup_star(Msink * umass, Tstar, r_max_on_rstar * Rstar * au, r_min_on_rstar * Rstar * au, &
+ print *, 'YOOOOOOOO '
+ print *, 'Outer radius: ', r_max_on_rstar
+ print *, 'YOOOOOOOO '
+
+ call setup_star(Msink * umass, Tstar, r_max_on_rstar * au, r_min_on_rstar * Rstar * au, &
                gmw, gamma, rho_inner, rho_power_in)
  call calc_stellar_profile(n_profile_points)
 
