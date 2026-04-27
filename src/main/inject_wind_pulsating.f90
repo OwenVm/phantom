@@ -328,8 +328,14 @@ subroutine init_inject(ierr)
     enddo
  endif
 
- call setup_star(Msink * umass, Tstar, r_max_on_rstar * au, r_min_on_rstar * Rstar * au, &
+ if (n_particles_first > 0 ) then
+    call setup_star(Msink * umass, Tstar, r_max_on_rstar * au, r_min_on_rstar * Rstar * au, &
                gmw, gamma, rho_inner, rho_power_in)
+ else 
+    call setup_star(Msink * umass, Tstar, r_max_on_rstar * Rstar * au, r_min_on_rstar * Rstar * au, &
+               gmw, gamma, rho_inner, rho_power_in)
+ endif
+
  call calc_stellar_profile(n_profile_points)
 
  mass_of_gas_particle = region_mass(r_min, r_max_on_rstar * Rstar) / real(sum(tmp_n(1:shell_index)))

@@ -160,7 +160,7 @@ subroutine stellar_step(state, r_new)
 
  type(stellar_state), intent(inout) :: state
  real, intent(in) :: r_new
- real :: dr, r_mid, rho_mid, dP, C_rho
+ real :: dr, r_mid, rho_mid, dP, C_rho, M_enc
 
  dr    = r_new - state%r
  r_mid = 0.5 * (state%r + r_new)
@@ -168,6 +168,7 @@ subroutine stellar_step(state, r_new)
  C_rho   = calc_C_rho()
  rho_mid = C_rho / r_mid**rho_power
 
+ M_enc = Mstar_cgs + enclosed_env_mass(r_mid, C_rho)
  dP = -Gg * (Mstar_cgs * rho_mid / r_mid**2) * dr
 
  state%r   = r_new
