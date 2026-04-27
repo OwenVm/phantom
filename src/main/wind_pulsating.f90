@@ -169,7 +169,7 @@ subroutine stellar_step(state, r_new)
  rho_mid = C_rho / r_mid**rho_power
 
  M_enc = Mstar_cgs + enclosed_env_mass(r_mid, C_rho)
- dP = -Gg * (Mstar_cgs * rho_mid / r_mid**2) * dr
+ dP = -Gg * (M_enc * rho_mid / r_mid**2) * dr
 
  state%r   = r_new
  state%P   = state%P + dP
