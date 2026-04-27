@@ -50,7 +50,7 @@ module inject
  integer :: n_profile_points      = 10000
  integer :: n_shells              = 15
  integer :: n_particles_first     = 0
- integer :: min_particles_shell  = 100
+ real    :: min_particles_shell   = 100.0
  real    :: rho_power_in          = 4.0
  real    :: r_min_on_rstar        = 0.9
  real    :: r_max_on_rstar        = 1.4
@@ -135,7 +135,7 @@ subroutine set_default_options_inject(flag)
  n_profile_points      = 10000
  n_shells              = 15
  n_particles_first     = 0
- min_particles_shell   = 100
+ min_particles_shell   = 100.0
  rho_power_in          = 4.0
  r_min_on_rstar        = 0.9
  r_max_on_rstar        = 1.4
@@ -187,7 +187,7 @@ subroutine init_inject(ierr)
  integer, parameter  :: max_iter_dr    = 100
  real,    parameter  :: tol_dr         = 1.0e-6
  real    :: tmp_dr(max_shells_tmp), tmp_r(max_shells_tmp)
- integer :: tmp_n(max_shells_tmp)
+ integer :: tmp_n(max_shells_tmp), int_particles_outer
  logical :: converged, file_exists
  integer :: iunit
 
@@ -244,6 +244,12 @@ subroutine init_inject(ierr)
  allocate(mass_loss_rates(expected_measurements))
  mass_loss_rates = 0.0
 
+ if (min_particles_shell < 1.0) then
+    int_particles_outer = nint(min_particles_shell * n_particles_first)
+ else
+    int_particles_outer = nint(min_particles_shell)
+ endif
+
  if (n_shells > 0) then
     max_shells = n_shells
  else
@@ -271,7 +277,7 @@ subroutine init_inject(ierr)
           rho_prev = rho_cur
        endif
 
-       if (shell_index > 1 .and. n_shell < min_particles_shell) then
+       if (shell_index > 1 .and. n_shell < int_particles_outer) then
           shell_index = shell_index - 1
           r_max_on_rstar = current_radius + 0.5*dr
           exit
@@ -1029,7 +1035,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  case('min_particles_shell')
     read(valstring,*,iostat=ierr) min_particles_shell
     ngot = ngot + 1
-    if (min_particles_shell < 1) call fatal(label,'min_particles_shell must be >= 1')
+    if (min_particles_shell < 0) call fatal(label,'min_particles_shell must be >= 0')
  case('rho_power')
     read(valstring,*,iostat=ierr) rho_power_in
     ngot = ngot + 1
@@ -1037,8 +1043,8 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  case('r_min_on_rstar')
     read(valstring,*,iostat=ierr) r_min_on_rstar
     ngot = ngot + 1
-    if (r_min_on_rstar <= 0. .or. r_min_on_rstar >= 1.0) &
-       call fatal(label,'r_min_on_rstar must be in (0,1)')
+    if (r_min_on_rstar <= 0. .or. r_min_on_rstar >= 2.0) &
+       call fatal(label,'r_min_on_rstar must be in (0,2)')
  case('r_max_on_rstar')
     read(valstring,*,iostat=ierr) r_max_on_rstar
     ngot = ngot + 1
