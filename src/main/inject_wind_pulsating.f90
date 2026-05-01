@@ -227,6 +227,9 @@ subroutine init_inject(ierr)
  piston_velocity  = piston_velocity_km_s * (km / unit_velocity)
  deltaR_osc       = pulsation_period * piston_velocity / (2.0*pi)
 
+ r_min          = r_min_on_rstar * Rstar - deltaR_osc * sin(phi0)
+ r_max_on_rstar = r_max_on_rstar - (deltaR_osc * sin(phi0)) / Rstar
+
  if (save_period) then
     dtmax = 1. / (dumps_p_period) * pulsation_period
     print *, 'dtmax: ', dtmax
@@ -255,8 +258,6 @@ subroutine init_inject(ierr)
  else
     max_shells = 200
  endif
-
- r_min = r_min_on_rstar * Rstar
 
  if (r_min <= 0.) call fatal(label,'r_min must be > 0')
 
