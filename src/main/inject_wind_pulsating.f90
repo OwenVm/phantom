@@ -757,7 +757,7 @@ end subroutine reconstruct_boundary_info
 !+
 !----------------------------------------------------------------
 subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
- use physcon,        only:pi,solarl
+  use physcon,        only:pi,solarl
  use wind_pulsating, only:interp_stellar_profile
  use part,           only:iTeff,iLum,iReff
  use units,          only:unit_luminosity
@@ -767,7 +767,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  integer, intent(in)    :: npart
 
  integer :: i, ipart
- real    :: r_eq, r_new, r_current, phase, piston_velocity_n, deltaR_osc_n
+ real    :: r_eq, r_new, r_current, phase, alpha, deltaR_osc
  real    :: x_hat(3), r_dot, x0(3), v0(3)
  real    :: x, y, z, rho, u, T, P
  real    :: Reff, Teff, Lum
@@ -778,21 +778,22 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  x0 = xyzmh_ptmass(1:3, wind_emitting_sink)
  v0 = vxyz_ptmass(1:3,  wind_emitting_sink)
 
- phase = omega_pulsation * time + phi0
+ phase      = omega_pulsation * time + phi0
+ deltaR_osc = pulsation_period * piston_velocity / (2.0 * pi)
 
  if (time < pulsation_period * time_puls .and. time_puls > 0) then
-    piston_velocity_n = time * piston_velocity / (pulsation_period * time_puls)
+    alpha = time / (pulsation_period * time_puls)
  else
-    piston_velocity_n = piston_velocity
+    alpha = 1.0
  endif
 
- deltaR_osc_n = pulsation_period * piston_velocity_n / (2.0*acos(-1.0))
- r_dot        = piston_velocity_n * cos(phase)
+ r_dot = alpha * piston_velocity * cos(phase)
 
  do i = 1, n_boundary_particles
     ipart = boundary_particle_ids(i)
     r_eq  = r_boundary_equilibrium(i)
-    r_new = r_eq + deltaR_osc_n * sin(phase)
+
+    r_new = r_eq + deltaR_osc * (sin(phi0) * (1.0 - alpha) + alpha * sin(phase))
 
     x = xyzh(1,ipart) - x0(1)
     y = xyzh(2,ipart) - x0(2)
@@ -817,23 +818,17 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
        xyzh(4,ipart)  = (mass_of_boundary_particle / rho)**(1./3.)
     endif
 
-   !  if (.not. var_boundary .and. time == 0.0) then
-   !     call interp_stellar_profile(r_new, rho, P, u, T)
-   !     vxyzu(4,ipart) = u
-   !     xyzh(4,ipart)  = (mass_of_boundary_particle / rho)**(1./3.)
-   !  endif
-
     if (update_L) then
-       Reff = xyzmh_ptmass(iReff,1) + deltaR_osc_n * sin(phase)
+       Reff = xyzmh_ptmass(iReff,1) + deltaR_osc * (sin(phi0) * (1.0 - alpha) + alpha * sin(phase))
        Teff = xyzmh_ptmass(iTeff,1)
        Lum  = xyzmh_ptmass(iLum,1)
-       call get_lum(Lum,Teff,Reff)
+       call get_lum(Lum, Teff, Reff)
        xyzmh_ptmass(iLum,1) = Lum
     endif
+
  enddo
 
 end subroutine apply_pulsation
-
 !----------------------------------------------------------------
 !+
 !  Placeholder function
