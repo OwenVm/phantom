@@ -228,7 +228,7 @@ subroutine init_inject(ierr)
  deltaR_osc       = pulsation_period * piston_velocity / (2.0*pi)
 
  r_min = r_min_on_rstar * Rstar + deltaR_osc * sin(phi0)
- r_max = r_max_on_rstar + (deltaR_osc * sin(phi0)) / Rstar
+ r_max = r_max_on_rstar * Rstar + deltaR_osc * sin(phi0)
 
  if (save_period) then
     dtmax = 1. / (dumps_p_period) * pulsation_period
@@ -314,7 +314,7 @@ subroutine init_inject(ierr)
 
           dr = wss * current_radius * get_fibonacci_spacing(n_shell)
 
-          if (current_radius + dr > r_max_on_rstar * Rstar) then
+          if (current_radius + dr > r_max) then
              shell_index = shell_index - 1
              exit
           endif
@@ -330,21 +330,21 @@ subroutine init_inject(ierr)
  endif
 
  if (n_particles_first > 0 ) then
-    call setup_star(Msink * umass, Tstar, r_max_on_rstar * au, r_min_on_rstar * Rstar * au, &
+    call setup_star(Msink * umass, Tstar, r_max * au, r_min  *au, &
                gmw, gamma, rho_inner, rho_power_in)
  else 
-    call setup_star(Msink * umass, Tstar, r_max_on_rstar * Rstar * au, r_min_on_rstar * Rstar * au, &
+    call setup_star(Msink * umass, Tstar, r_max * au, r_min  *au, &
                gmw, gamma, rho_inner, rho_power_in)
  endif
 
  call calc_stellar_profile(n_profile_points)
 
- mass_of_gas_particle = region_mass(r_min, r_max_on_rstar * Rstar) / real(sum(tmp_n(1:shell_index)))
+ mass_of_gas_particle = region_mass(r_min, r_max) / real(sum(tmp_n(1:shell_index)))
 
  n_shells_total = shell_index
  n_shells_bnd   = min(iboundary_spheres, n_shells_total)
 
- mass_of_gas_particle      = region_mass(r_min, r_max_on_rstar * Rstar) / real(sum(tmp_n(1:n_shells_total)))
+ mass_of_gas_particle      = region_mass(r_min, r_max) / real(sum(tmp_n(1:n_shells_total)))
  mass_of_boundary_particle = mass_of_gas_particle
 
  allocate(npart_per_boundary_shell(n_shells_bnd))
@@ -382,9 +382,9 @@ subroutine init_inject(ierr)
     print *, ''
     print *, ' rho_power                        :', rho_power_in
     print *, ' rho_inner (cgs)                  :', rho_inner
-    print *, ' Atmosphere [r_min, r_max] / Rstar:', r_min_on_rstar, r_max_on_rstar
-    print *, ' M_atmos / M_total                :', region_mass(r_min, r_max_on_rstar*Rstar) / Mtotal
-    print *, ' M_atmos (Msun)                   :', region_mass(r_min, r_max_on_rstar * Rstar)
+    print *, ' Atmosphere [r_min, r_max] Rstar  :', r_min, r_max
+    print *, ' M_atmos / M_total                :', region_mass(r_min, r_max) / Mtotal
+    print *, ' M_atmos (Msun)                   :', region_mass(r_min, r_max)
     print *, ' Boundary shells                  :', n_shells_bnd
     print *, ' Gas shells                       :', n_shells_total
     print *, ' Total boundary particles         :', sum(npart_per_boundary_shell)
