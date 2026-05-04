@@ -236,8 +236,8 @@ subroutine init_inject(ierr)
  endif
 
  reinject_period        = reinject_period_days * (days / utime)
- mass_loss_start_time   = mass_loss_start  * (years / utime)
- mass_loss_end_time     = mass_loss_end    * (years / utime)
+ mass_loss_start_time   = mass_loss_start  * pulsation_period 
+ mass_loss_end_time     = mass_loss_end    * pulsation_period 
  mass_loss_check_radius = check_radius_au
  measurement_interval   = meas_int_days   * (days / utime)
  time_next_measurement  = mass_loss_start_time
@@ -990,8 +990,8 @@ subroutine write_options_inject(iunit)
  call write_inopt(dumps_p_period,       'dumps_p_period',      'number of dumps per period (if save_period = T)',iunit)
  call write_inopt(reinject_enabled,     'reinject_enabled',    'enable dynamic reinjection (logical)',iunit)
  call write_inopt(reinject_period_days, 'reinject_period_days','period between reinjections (days)',iunit)
- call write_inopt(mass_loss_start,      'mass_loss_start',     'start time for mass-loss calculation (years)',iunit)
- call write_inopt(mass_loss_end,        'mass_loss_end',       'end time for mass-loss calculation (years)',iunit)
+ call write_inopt(mass_loss_start,      'mass_loss_start',     'start time for mass-loss calculation (periods)',iunit)
+ call write_inopt(mass_loss_end,        'mass_loss_end',       'end time for mass-loss calculation (periods)',iunit)
  call write_inopt(check_radius_au,      'check_radius_au',     'mass-loss counting radius (AU)',iunit)
  call write_inopt(meas_int_days,        'meas_int_days',       'mass measurement interval (days)',iunit)
  call write_inopt(update_L,             'update_L',            'update luminosity with pulsation (logical)',iunit)
