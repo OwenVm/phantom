@@ -44,7 +44,7 @@ subroutine setup_star(Mstar_in, Tstar_in, Rstar_in, r_min, mu_in, gamma_in, rho_
 
  Mstar_cgs     = Mstar_in
  Rstar_cgs     = Rstar_in
- Tstar_cgs     = Tstar_in / 10
+ Tstar_cgs     = Tstar_in 
  r_inner       = r_min
  Star_gamma    = gamma_in
  Star_mu       = mu_in
