@@ -274,22 +274,21 @@ subroutine init_inject(ierr)
        if (shell_index == 1) then
           n_shell = n_particles_first
        else
-          n_shell = max(1, nint(real(tmp_n(shell_index-1)) * (current_radius / tmp_r(shell_index-1))**(2 - rho_power_in)))
-          rho_prev = rho_cur
+          n_shell = max(1, nint(real(tmp_n(shell_index-1)) * (current_radius / tmp_r(shell_index-1))**( 2.*(3.-rho_power_in) / 3.)))
        endif
 
        dr = 0.
 
        if (shell_index > 1 .and. n_shell < int_particles_outer) then
           shell_index = shell_index - 1
-          r_max = current_radius - 0.5*dr
+          r_max = current_radius - dr
           exit
        endif
 
        dr = wss * current_radius * get_fibonacci_spacing(n_shell)
 
        tmp_dr(shell_index) = dr
-       tmp_r(shell_index)  = current_radius + 0.5*dr
+       tmp_r(shell_index)  = current_radius
        tmp_n(shell_index)  = n_shell
        current_radius      = current_radius + dr
     enddo
@@ -311,7 +310,7 @@ subroutine init_inject(ierr)
           if (shell_index == 1) then
              n_shell = n_first
           else
-             n_shell = max(1, nint(real(tmp_n(shell_index-1))* ( current_radius / tmp_r(shell_index-1))** (2 - rho_power_in)))
+             n_shell = max(1, nint(real(tmp_n(shell_index-1))* ( current_radius / tmp_r(shell_index-1))**(2.*(3.-rho_power_in)/3.)))
           endif
 
           dr = wss * current_radius * get_fibonacci_spacing(n_shell)
@@ -322,7 +321,7 @@ subroutine init_inject(ierr)
           endif
 
           tmp_dr(shell_index) = dr
-          tmp_r(shell_index)  = current_radius + 0.5*dr
+          tmp_r(shell_index)  = current_radius
           tmp_n(shell_index)  = n_shell
           current_radius      = current_radius + dr
        enddo
