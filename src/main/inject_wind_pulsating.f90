@@ -172,17 +172,17 @@ subroutine init_inject(ierr)
  use physcon,       only:pi,days,au,solarm,km,years
  use eos,           only:gmw,gamma
  use units,         only:utime,umass,unit_velocity,unit_luminosity
- use part,          only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff,iLum,xyzh,npartoftype
+ use part,          only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff,iLum,npartoftype
  use injectutils,   only:get_parts_per_sphere, get_fibonacci_spacing
  use wind_pulsating,only:setup_star,calc_stellar_profile,region_mass,interp_stellar_profile
  use dust_formation,only:calc_kappa_max
- use timestep,       only:tmax,dtmax
+ use timestep,      only:dtmax
 
  integer, intent(out) :: ierr
  real    :: Mstar_cgs, Rstar_cgs, Tstar, Lstar_cgs
- real    :: current_radius, dr, dr_new, r_c, rho, P, u, T, m_shell, rho_prev, rho_cur
+ real    :: current_radius, dr, rho_prev, rho_cur
  integer :: shell_index, max_shells, n_first, n_shell
- integer :: expected_measurements, i, iter
+ integer :: expected_measurements, i
  integer, parameter  :: max_shells_tmp = 2000
  integer, parameter  :: max_iter_dr    = 100
  real,    parameter  :: tol_dr         = 1.0e-6
@@ -277,6 +277,8 @@ subroutine init_inject(ierr)
           n_shell = max(1, nint(real(tmp_n(shell_index-1)) * (current_radius / tmp_r(shell_index-1))**(2 - rho_power_in)))
           rho_prev = rho_cur
        endif
+
+       dr = 0.
 
        if (shell_index > 1 .and. n_shell < int_particles_outer) then
           shell_index = shell_index - 1
@@ -469,7 +471,6 @@ end subroutine inject_particles
 !----------------------------------------------------------------
 subroutine take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoftype)
  use part,   only:igas,iboundary,iphase,iamtype
- use units,  only:utime,umass
  use physcon,only:solarm,years,days
 
  real,    intent(in) :: time
@@ -649,9 +650,9 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  integer, intent(inout) :: npart
  integer, intent(inout) :: npartoftype(:)
 
- integer :: i, j, first_particle, ipart_type, nboundary
+ integer :: i, j, first_particle, nboundary
  real    :: r, r_cur, rho, u, T, P, x0(3), v0(3), v_radial
- logical :: is_boundary
+
 
  x0 = xyzmh_ptmass(1:3, wind_emitting_sink)
  v0 = vxyz_ptmass(1:3,  wind_emitting_sink)
@@ -717,7 +718,7 @@ subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
  real,    intent(inout) :: xyzh(:,:),xyzmh_ptmass(:,:)
  integer, intent(in) :: npart
  integer :: i, j
- real    :: x0(3), r_current, phase, h_boundary_equilibrium
+ real    :: x0(3), r_current, phase
 
  x0    = xyzmh_ptmass(1:3, wind_emitting_sink)
  phase = omega_pulsation * time + phi0
@@ -736,12 +737,10 @@ subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
        if (iamtype(iphase(i)) == iboundary) then
           j = j + 1
           boundary_particle_ids(j) = i
-         !  h_boundary_equilibrium = xyzh(4,i)
           r_current = sqrt((xyzh(1,i)-x0(1))**2 + &
                            (xyzh(2,i)-x0(2))**2 + &
                            (xyzh(3,i)-x0(3))**2)
           r_boundary_equilibrium(j) = r_current - deltaR_osc * sin(phase)
-         !  xyzh(4,i) = h_boundary_equilibrium
        endif
     enddo
 
@@ -760,7 +759,6 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
   use physcon,        only:pi,solarl
  use wind_pulsating, only:interp_stellar_profile
  use part,           only:iTeff,iLum,iReff
- use units,          only:unit_luminosity
 
  real,    intent(in)    :: time
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
@@ -845,7 +843,7 @@ end subroutine update_injected_par
 !----------------------------------------------------------------
 subroutine get_lum(Lum,Teff,Reff)
  use physcon, only:au,steboltz,solarl,pi
- use units,   only:udist,unit_luminosity
+ use units,   only:unit_luminosity
  real, intent(inout) :: Lum
  real, intent(in)    :: Reff, Teff
  real :: lum_lsun

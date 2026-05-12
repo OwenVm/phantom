@@ -976,7 +976,7 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
  use options,         only:icooling
  use chem,            only:update_abundances,get_dphot
  use dust_formation,  only:evolve_dust,calc_muGamma
- use cooling,         only:energ_cooling,cooling_in_step,use_bound, esc
+ use cooling,         only:energ_cooling,cooling_in_step,use_bound
  use part,            only:rhoh, xyzmh_ptmass, itemp
 #ifdef KROME
  use part,            only: T_gas_cool
@@ -1036,7 +1036,7 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
     e_pot = - xyzmh_ptmass(4, 1) / sqrt( (xyzh(1,i) - xyzmh_ptmass(1, 1))**2 + (xyzh(2,i) - xyzmh_ptmass(2, 1))**2 &
                                        + (xyzh(3,i) - xyzmh_ptmass(3, 1))**2 )
     e_kin = 0.5 * (vxyzu(1,i)**2 + vxyzu(2,i)**2 + vxyzu(3,i)**2)
-    e_therm = esc * vxyzu(4,i)
+    e_therm = vxyzu(4,i)
     if (e_kin + e_therm + e_pot > 0.) unbound = .true.
  endif
 

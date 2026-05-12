@@ -49,9 +49,7 @@ module cooling
  !--Minimum temperature (failsafe to prevent u < 0); optional for ALL cooling options
  real,    public :: Tfloor = 10.                    ! [K]; set in .in file.  On if Tfloor > 0.
  real,    public :: ufloor = 0.                     ! [code units]; set in init_cooling
- real,    public :: r_min_cool = -1.0                ! [AU]; minimum cooling radius (cooling off if r < r_min_cool)
- logical, public :: use_bound = .true.             ! if true, use bound on cooling rate to prevent u < ufloor
- real,    public :: esc = 1.0                       ! percentage of u_therm to take into account
+ logical, public :: use_bound = .true.              ! if true, only cool if e_tot > 0
  public :: T0_value,lambda_shock_cgs ! expose to public
 
  private
@@ -144,8 +142,6 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  use cooling_koyamainutsuka, only:cooling_KoyamaInutsuka_explicit,&
                                   cooling_KoyamaInutsuka_implicit
  use cooling_radapprox,      only:radcool_update_du
- use units,                  only:udist
- use part,                   only:xyzmh_ptmass,nptmass
  use physcon,                only:au
 
  real(kind=4), intent(in)   :: divv               ! in code units
@@ -156,8 +152,6 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  integer, intent(in), optional :: i   
  real, intent(out)          :: dudt          
  real                       :: mui,gammai,Tgas,Tdust,K2,kappa
- real                       :: r, r_min_cool_code
- real                       :: dx,dy,dz
 
  real :: abundi(nabn)
 
@@ -166,14 +160,6 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  gammai = gamma
  kappa  = 0.
  K2     = 0.
- 
- dx = xi - xyzmh_ptmass(1,1)
- dy = yi - xyzmh_ptmass(2,1)
- dz = zi - xyzmh_ptmass(3,1)
- r = sqrt(dx**2 + dy**2 + dz**2)
-  
- ! Convert r_min_cool from AU to code units
- r_min_cool_code = r_min_cool * au / udist
  
  if (present(gamma_in)) gammai = gamma_in
  if (present(mu_in))    mui        = mu_in
@@ -205,8 +191,7 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  case (9)
     call radcool_update_du(ipart,xi,yi,zi,rho,ui,duhydro,Tfloor)
  case default
-    ! Pass r and r_min_cool_code to the cooling solver
-    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,r,r_min_cool_code,i)
+    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,i)
  end select
 
 end subroutine energ_cooling
@@ -246,9 +231,7 @@ subroutine write_options_cooling(iunit)
  end select
  if (icooling > 0) then
     call write_inopt(Tfloor,'Tfloor','temperature floor (K); on if > 0',iunit)
-    call write_inopt(r_min_cool,'r_min_cool','minimum cooling radius (AU); cooling off if r < r_min_cool',iunit)
     call write_inopt(use_bound,'use_bound','if true, use bound on cooling rate to prevent u < ufloor',iunit)
-    call write_inopt(esc,'esc','percentage of u_therm to take into account',iunit)
  endif
 
 end subroutine write_options_cooling
@@ -290,15 +273,9 @@ subroutine read_options_cooling(name,valstring,imatch,igotall,ierr)
  case('Tfloor')
     ! not compulsory to read in
     read(valstring,*,iostat=ierr) Tfloor
- case('r_min_cool')
-    ! not compulsory to read in
-    read(valstring,*,iostat=ierr) r_min_cool
  case('use_bound')
     ! not compulsory to read in
     read(valstring,*,iostat=ierr) use_bound
- case('esc')
-    ! not compulsory to read in
-    read(valstring,*,iostat=ierr) esc
  case default
     imatch = .false.
     select case(icooling)

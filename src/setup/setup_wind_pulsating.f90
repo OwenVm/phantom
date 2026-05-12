@@ -80,14 +80,13 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use part,      only: xyzmh_ptmass, vxyz_ptmass, nptmass, igas, iTeff, iLum, iReff
  use physcon,   only: au, solarm, mass_proton_cgs, kboltz, solarl
  use units,     only: set_units,umass,udist,utime,unit_energ
-!  use inject,    only: set_default_options_inject, inject_particles, init_inject
- use inject ,    only: set_default_options_inject
+ use inject ,   only: set_default_options_inject
  use wind_pulsating, only: setup_star, calc_stellar_profile, save_stellarprofile
  use setbinary, only: set_binary
  use io,        only: master
- use options, only  : nfulldump, ieos
- use eos, only      : gmw
- use timestep,       only:tmax,dtmax
+ use options,   only  : nfulldump !, ieos
+!  use eos,       only      : gmw
+ use timestep,  only:dtmax
  
  integer,           intent(in)    :: id
  integer,           intent(inout) :: npart
@@ -103,7 +102,6 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  logical :: iexist
 
  nfulldump = 1
-!  tmax = 30
  dtmax = 0.1
 !  ieos = 5
 !  gmw = 1.26
