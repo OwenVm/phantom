@@ -9,10 +9,6 @@ module cooling_functions
 ! A library of cooling functions that can be handled by cooling_solver
 !  Contributed by Lionel Siess and Ward Homan
 !
-! :References:
-!   Schure et al. (2009), A&A 508, 751 (SPEX curve)
-!   Dalgarno & McCray (1972), ARA&A 10, 375 (low-T DM curve)
-!
 ! :Owner: Daniel Price
 !
 ! :Runtime parameters: None
