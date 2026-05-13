@@ -180,7 +180,7 @@ subroutine init_inject(ierr)
 
  integer, intent(out) :: ierr
  real    :: Mstar_cgs, Rstar_cgs, Tstar, Lstar_cgs
- real    :: current_radius, dr, rho_prev, rho_cur
+ real    :: current_radius, dr
  integer :: shell_index, max_shells, n_first, n_shell
  integer :: expected_measurements, i
  integer, parameter  :: max_shells_tmp = 2000

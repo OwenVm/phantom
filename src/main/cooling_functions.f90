@@ -149,15 +149,14 @@ subroutine cooling_neutral_hydrogen(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  real, intent(out) :: Q_cgs,dlnQ_dlnT
 
  real, parameter   :: f = 1.0d0
- real              :: ne,nH, factor, T_temp
+ real              :: ne,nH
 
- if (T > 1000.) then
+ if (T > 3000.) then
     nH = rho_cgs/(1.4*mass_proton_cgs)
-   !  T_temp = max(T, 6000.)
-    ne = min(1., calc_eps_e(T_temp)) * nH
+    ne = calc_eps_e(T)*nH
     Q_cgs = -f*7.3d-19*ne*nH*exp(-118400./T)/rho_cgs/(1.+sqrt(T/1.d5))
-    dlnQ_dlnT = -118400./T+log(nH*calc_eps_e(1.001*T)/ne)/log(1.001) - 0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5))
-   !  Q_cgs = min(Q_cgs, -10**4.) 
+    dlnQ_dlnT = -118400./T+log(nH*calc_eps_e(1.001*T)/ne)/log(1.001) - &
+               0.5*sqrt(T/1.d5)/(1.+sqrt(T/1.d5))
  else
     Q_cgs = 0.
     dlnQ_dlnT = 0.
