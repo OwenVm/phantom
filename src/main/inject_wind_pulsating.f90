@@ -68,11 +68,11 @@ module inject
  integer :: dumps_p_period        = 10
 
  integer :: reinject_enabled      = 1
- real    :: reinject_period_days  = 10.0
+ real    :: reinject_period_d     = 0.025
+ real    :: meas_int_d            = 0.025
  real    :: mass_loss_start       = 1.0
  real    :: mass_loss_end         = 3.0
  real    :: check_radius_au       = 3.0
- real    :: meas_int_days         = 10.0
  integer :: update_L              = 0
  integer :: verbose               = 1
 
@@ -153,11 +153,11 @@ subroutine set_default_options_inject(flag)
  save_period           = 0
  dumps_p_period        = 10
  reinject_enabled      = 1
- reinject_period_days  = 10.0
+ reinject_period_d     = 0.025
+ meas_int_d            = 0.025
  mass_loss_start       = 1.0
  mass_loss_end         = 3.0
  check_radius_au       = 3.0
- meas_int_days         = 10.0
  update_L              = 0
  verbose               = 1
 
@@ -236,11 +236,11 @@ subroutine init_inject(ierr)
     print *, 'dtmax: ', dtmax
  endif
 
- reinject_period        = reinject_period_days * (days / utime)
- mass_loss_start_time   = mass_loss_start  * pulsation_period 
- mass_loss_end_time     = mass_loss_end    * pulsation_period 
+ reinject_period        = reinject_period_d * pulsation_period
+ measurement_interval   = meas_int_d        * pulsation_period
+ mass_loss_start_time   = mass_loss_start   * pulsation_period 
+ mass_loss_end_time     = mass_loss_end     * pulsation_period 
  mass_loss_check_radius = check_radius_au
- measurement_interval   = meas_int_days   * (days / utime)
  time_next_measurement  = mass_loss_start_time
  n_measurements         = 0
 
@@ -982,11 +982,11 @@ subroutine write_options_inject(iunit)
  call write_inopt(save_period,          'save_period',         'wether to save dumps as fraction of period (0=off, 1=on)',iunit)
  call write_inopt(dumps_p_period,       'dumps_p_period',      'number of dumps per period (if save_period = 1)',iunit)
  call write_inopt(reinject_enabled,     'reinject_enabled',    'enable dynamic reinjection (0=off, 1=on)',iunit)
- call write_inopt(reinject_period_days, 'reinject_period_days','period between reinjections (days)',iunit)
+ call write_inopt(reinject_period_d,    'reinject_period_d',   'period between reinjections (periods)',iunit)
+ call write_inopt(meas_int_d,          'meas_int_d',          'mass measurement interval (periods)',iunit)
  call write_inopt(mass_loss_start,      'mass_loss_start',     'start time for mass-loss calculation (periods)',iunit)
  call write_inopt(mass_loss_end,        'mass_loss_end',       'end time for mass-loss calculation (periods)',iunit)
  call write_inopt(check_radius_au,      'check_radius_au',     'mass-loss counting radius (AU)',iunit)
- call write_inopt(meas_int_days,        'meas_int_days',       'mass measurement interval (days)',iunit)
  call write_inopt(update_L,             'update_L',            'update luminosity with pulsation (0=off, 1=on)',iunit)
  call write_inopt(verbose,              'verbose',             'enable verbose output (0=off, 1=on)',iunit)
 
@@ -1101,9 +1101,13 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     ngot = ngot + 1
     if (reinject_enabled /= 0 .and. reinject_enabled /= 1) call fatal(label,'reinject_enabled must be 0 or 1')
  case('reinject_period_days')
-    read(valstring,*,iostat=ierr) reinject_period_days
+    read(valstring,*,iostat=ierr) reinject_period_d
     ngot = ngot + 1
-    if (reinject_period_days <= 0.) call fatal(label,'reinject_period_days must be > 0')
+    if (reinject_period_d <= 0.) call fatal(label,'reinject_period_days must be > 0')
+ case('meas_int_days')
+    read(valstring,*,iostat=ierr) meas_int_d
+    ngot = ngot + 1
+    if (meas_int_d <= 0.) call fatal(label,'meas_int_days must be > 0')
  case('mass_loss_start')
     read(valstring,*,iostat=ierr) mass_loss_start
     ngot = ngot + 1
@@ -1116,10 +1120,6 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) check_radius_au
     ngot = ngot + 1
     if (check_radius_au <= 0.) call fatal(label,'check_radius_au must be > 0')
- case('meas_int_days')
-    read(valstring,*,iostat=ierr) meas_int_days
-    ngot = ngot + 1
-    if (meas_int_days <= 0.) call fatal(label,'meas_int_days must be > 0')
  case('update_L')
     read(valstring,*,iostat=ierr) update_L
     ngot = ngot + 1
