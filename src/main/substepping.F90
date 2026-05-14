@@ -1031,7 +1031,7 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
  !
 
  unbound = .true.
- if (use_bound) then
+ if (use_bound == 1) then
     unbound = .false.
     e_pot = - xyzmh_ptmass(4, 1) / sqrt( (xyzh(1,i) - xyzmh_ptmass(1, 1))**2 + (xyzh(2,i) - xyzmh_ptmass(2, 1))**2 &
                                        + (xyzh(3,i) - xyzmh_ptmass(3, 1))**2 )

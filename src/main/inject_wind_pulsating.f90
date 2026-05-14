@@ -466,7 +466,7 @@ end subroutine inject_particles
 
 !----------------------------------------------------------------
 !+
-!  Checks how much mass has lost the star and calculates the mass loss rate
+!  Checks how much mass the star has lost, and calculates the mass loss rate
 !+
 !----------------------------------------------------------------
 subroutine take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoftype)
@@ -871,6 +871,7 @@ subroutine write_mass_loss_data()
  endif
 
  write(iunit,*) '# Mass-loss rate data for restart'
+ write(iunit,*) '# Careful, this output is NOT M_sun/yr, but in code units of mass/time!' 
  write(iunit,*) mass_loss_rate_calculated
  write(iunit,*) mean_mass_loss_rate
  write(iunit,*) Mtotal

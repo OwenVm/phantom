@@ -49,7 +49,7 @@ module cooling
  !--Minimum temperature (failsafe to prevent u < 0); optional for ALL cooling options
  real,    public :: Tfloor = 10.                    ! [K]; set in .in file.  On if Tfloor > 0.
  real,    public :: ufloor = 0.                     ! [code units]; set in init_cooling
- logical, public :: use_bound = .true.              ! if true, only cool if e_tot > 0
+ integer, public :: use_bound = 1                   ! if true, only cool if e_tot > 0
  public :: T0_value,lambda_shock_cgs ! expose to public
 
  private
@@ -231,7 +231,7 @@ subroutine write_options_cooling(iunit)
  end select
  if (icooling > 0) then
     call write_inopt(Tfloor,'Tfloor','temperature floor (K); on if > 0',iunit)
-    call write_inopt(use_bound,'use_bound','if true, use bound on cooling rate to prevent u < ufloor',iunit)
+    call write_inopt(use_bound,'use_bound','use criteria on the energy to activate cooling (0=off, 1=on)',iunit)
  endif
 
 end subroutine write_options_cooling
