@@ -1100,11 +1100,11 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) reinject_enabled
     ngot = ngot + 1
     if (reinject_enabled /= 0 .and. reinject_enabled /= 1) call fatal(label,'reinject_enabled must be 0 or 1')
- case('reinject_period_days')
+ case('reinject_period_d')
     read(valstring,*,iostat=ierr) reinject_period_d
     ngot = ngot + 1
     if (reinject_period_d <= 0.) call fatal(label,'reinject_period_days must be > 0')
- case('meas_int_days')
+ case('meas_int_d')
     read(valstring,*,iostat=ierr) meas_int_d
     ngot = ngot + 1
     if (meas_int_d <= 0.) call fatal(label,'meas_int_days must be > 0')
