@@ -58,21 +58,23 @@ module inject
  real    :: pulsation_period_days = 300.0
  real    :: piston_velocity_km_s  = 4.0
  real    :: time_puls             = -1.0
- real    :: rho_inner             = 1.0e-11
+ real    :: rho_inner             = 1.0e-12
  integer :: iwind                 = 1
  real    :: pulsation_timestep    = 0.02
- real    :: phi0                  = 3.1415926536d0/2.0
+ real    :: phi0                  = -3.1415926536d0/2.0
  real    :: wss                   = 1.0
- logical :: var_boundary          = .false.
- logical :: save_period           = .false.
+ integer :: var_boundary          = 0
+ integer :: save_period           = 0
  integer :: dumps_p_period        = 10
 
- logical :: reinject_enabled      = .true.
+ integer :: reinject_enabled      = 1
  real    :: reinject_period_days  = 10.0
  real    :: mass_loss_start       = 1.0
  real    :: mass_loss_end         = 3.0
  real    :: check_radius_au       = 3.0
  real    :: meas_int_days         = 10.0
+ integer :: update_L              = 0
+ integer :: verbose               = 1
 
  integer, parameter :: wind_emitting_sink = 1
  integer, parameter :: max_measurements   = 10000
@@ -121,8 +123,7 @@ module inject
  logical :: mass_loss_rate_calculated   = .false.
  logical :: measurement_active          = .false.
  integer :: particles_to_inject         = 0
- logical :: update_L                    = .false.
- logical :: verbose                     = .true.
+ 
 
  character(len=*), parameter :: label = 'inject_atmosphere'
 
@@ -140,25 +141,25 @@ subroutine set_default_options_inject(flag)
  r_min_on_rstar        = 0.9
  r_max_on_rstar        = 1.4
  dtpulsation           = huge(0.)
- rho_inner             = 1.0e-11
+ rho_inner             = 1.0e-12
  iwind                 = 1
  pulsation_period_days = 300.0
  piston_velocity_km_s  = 4.0
  time_puls             = -1.0
  pulsation_timestep    = 0.02
- phi0                  = 3.1415926536d0/2.0
+ phi0                  = -3.1415926536d0/2.0
  wss                   = 1.0
- var_boundary          = .false.
- save_period           = .false.
+ var_boundary          = 0
+ save_period           = 0
  dumps_p_period        = 10
- reinject_enabled      = .true.
+ reinject_enabled      = 1
  reinject_period_days  = 10.0
  mass_loss_start       = 1.0
  mass_loss_end         = 3.0
  check_radius_au       = 3.0
  meas_int_days         = 10.0
- update_L              = .false.
- verbose               = .true.
+ update_L              = 0
+ verbose               = 1
 
 end subroutine set_default_options_inject
 
@@ -230,7 +231,7 @@ subroutine init_inject(ierr)
  r_min = r_min_on_rstar * Rstar + deltaR_osc * sin(phi0)
  r_max = r_max_on_rstar * Rstar + deltaR_osc * sin(phi0)
 
- if (save_period) then
+ if (save_period == 1) then
     dtmax = 1. / (dumps_p_period) * pulsation_period
     print *, 'dtmax: ', dtmax
  endif
@@ -379,7 +380,7 @@ subroutine init_inject(ierr)
     call read_mass_loss_data()
  endif
 
- if (verbose) then
+ if (verbose == 1) then
     print *, ''
     print *, ' rho_power                        :', rho_power_in
     print *, ' rho_inner (cgs)                  :', rho_inner
@@ -398,7 +399,7 @@ subroutine init_inject(ierr)
     print *, ''
  endif
 
- if (verbose) then
+ if (verbose == 1) then
     do i = 1, n_shells_bnd
        print *, 'Boundary shell ', i, ': r=', shell_radii_bnd(i)/Rstar, ' Rstar, dr=', delta_r_boundary(i)/Rstar, &
                 ' Rstar, N_particles=', npart_per_boundary_shell(i)
@@ -446,11 +447,11 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
     call read_mass_loss_data()
  endif
 
- if (reinject_enabled .and. .not. mass_loss_rate_calculated) then
+ if (reinject_enabled == 1 .and. .not. mass_loss_rate_calculated) then
     call take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoftype)
  endif
 
- if (reinject_enabled .and. mass_loss_rate_calculated) then
+ if (reinject_enabled == 1 .and. mass_loss_rate_calculated) then
     call check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
     if (reinjection_needed) then
        call perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
@@ -560,7 +561,7 @@ subroutine check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,np
 
  if ((time - time_last_reinject) < reinject_period .and. time >= mass_loss_start_time) return
 
- if (verbose) then
+ if (verbose == 1) then
     print *, ''
     print *, '-----------------------------------------'
     print *, 'Reinjection triggered at time: ', time * (utime / days), ' days'
@@ -622,7 +623,7 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  mass_injected = real(npart - old_npart) * mass_of_gas_particle
  xyzmh_ptmass(4, wind_emitting_sink) = xyzmh_ptmass(4, wind_emitting_sink) - mass_injected
 
- if (verbose) then
+ if (verbose == 1) then
     print *, ''
     print *, ' Particles injected         :', (npart - old_npart)
     print *, ' Injection radius           :', r_inject
@@ -658,7 +659,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
 
  npart = 0
 
- r_cur = shell_radii_bnd(1) - 0.5*delta_r_boundary(1)
+ r_cur = shell_radii_bnd(1) ! - 0.5*delta_r_boundary(1)
  do i = 1, n_shells_bnd
     r     = shell_radii_bnd(i)
     r_cur = r_cur + delta_r_boundary(i)
@@ -809,13 +810,13 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     vxyzu(2,ipart) = r_dot * x_hat(2) + v0(2)
     vxyzu(3,ipart) = r_dot * x_hat(3) + v0(3)
 
-    if (var_boundary) then
+    if (var_boundary == 1) then
        call interp_stellar_profile(r_new, rho, P, u, T)
        vxyzu(4,ipart) = u
        xyzh(4,ipart)  = (mass_of_boundary_particle / rho)**(1./3.)
     endif
 
-    if (update_L) then
+    if (update_L == 1) then
        Reff = xyzmh_ptmass(iReff,1) + deltaR_osc * (sin(phi0) * (1.0 - alpha) + alpha * sin(phase))
        Teff = xyzmh_ptmass(iTeff,1)
        Lum  = xyzmh_ptmass(iLum,1)
@@ -923,7 +924,7 @@ subroutine read_mass_loss_data()
  endif
  close(iunit)
 
- if (verbose) then 
+ if (verbose == 1) then 
     write(iprint,*) 'Mass-loss rate data read from mass_loss_rate.dat'
     write(iprint,*) ' Mean mass-loss rate          :', mean_mass_loss_rate
     write(iprint,*) ' Gas particle mass            :', mass_of_gas_particle
@@ -1086,9 +1087,11 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  case('var_boundary')
     read(valstring,*,iostat=ierr) var_boundary
     ngot = ngot + 1
+    if (var_boundary /= 0 .and. var_boundary /= 1) call fatal(label,'var_boundary must be 0 or 1')
  case('save_period')
     read(valstring,*,iostat=ierr) save_period
     ngot = ngot + 1
+    if (save_period /= 0 .and. save_period /= 1) call fatal(label,'save_period must be 0 or 1')
  case('dumps_p_period')
     read(valstring,*,iostat=ierr) dumps_p_period
     ngot = ngot + 1
@@ -1096,6 +1099,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  case('reinject_enabled')
     read(valstring,*,iostat=ierr) reinject_enabled
     ngot = ngot + 1
+    if (reinject_enabled /= 0 .and. reinject_enabled /= 1) call fatal(label,'reinject_enabled must be 0 or 1')
  case('reinject_period_days')
     read(valstring,*,iostat=ierr) reinject_period_days
     ngot = ngot + 1
@@ -1119,9 +1123,11 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  case('update_L')
     read(valstring,*,iostat=ierr) update_L
     ngot = ngot + 1
+    if (update_L /= 0 .and. update_L /= 1) call fatal(label,'update_L must be 0 or 1')
  case('verbose')
     read(valstring,*,iostat=ierr) verbose
     ngot = ngot + 1
+    if (verbose /= 0 .and. verbose /= 1) call fatal(label,'verbose must be 0 or 1')
  case default
     imatch = .false.
  end select
