@@ -60,7 +60,6 @@ module inject
  real    :: time_puls             = -1.0
  real    :: rho_inner             = 1.0e-12
  integer :: iwind                 = 1
- real    :: pulsation_timestep    = 0.02
  real    :: phi0                  = -3.1415926536d0/2.0
  real    :: wss                   = 1.0
  integer :: var_boundary          = 0
@@ -92,7 +91,7 @@ module inject
  real, allocatable :: shell_radii_bnd(:)
 
  real :: mass_of_gas_particle      = 0.0
- real :: mass_of_boundary_particle = 0.0
+ real :: pulsation_timestep    = 0.02
 
  real, allocatable :: delta_r_radial(:)
 
@@ -146,7 +145,6 @@ subroutine set_default_options_inject(flag)
  pulsation_period_days = 300.0
  piston_velocity_km_s  = 4.0
  time_puls             = -1.0
- pulsation_timestep    = 0.02
  phi0                  = -3.1415926536d0/2.0
  wss                   = 1.0
  var_boundary          = 0
@@ -213,10 +211,6 @@ subroutine init_inject(ierr)
        print *, 'Existing mass loss data file found, but this is a fresh start, so delete'
        open(newunit=iunit, file='mass_loss_rate.dat', status='old', iostat=ierr)
        close(iunit, status='delete')
- endif
-
- if (.not. file_exists) then
-    xyzmh_ptmass(4, wind_emitting_sink) = Msink
  endif
 
  active_boundary_spheres = iboundary_spheres
@@ -341,13 +335,10 @@ subroutine init_inject(ierr)
 
  call calc_stellar_profile(n_profile_points)
 
- mass_of_gas_particle = region_mass(r_min, r_max) / real(sum(tmp_n(1:shell_index)))
-
  n_shells_total = shell_index
  n_shells_bnd   = min(iboundary_spheres, n_shells_total)
 
- mass_of_gas_particle      = region_mass(r_min, r_max) / real(sum(tmp_n(1:n_shells_total)))
- mass_of_boundary_particle = mass_of_gas_particle
+ mass_of_gas_particle  = region_mass(r_min, r_max) / real(sum(tmp_n(1:n_shells_total)))
 
  allocate(npart_per_boundary_shell(n_shells_bnd))
  allocate(delta_r_boundary(n_shells_bnd))
@@ -374,7 +365,7 @@ subroutine init_inject(ierr)
  delta_r_radial(n_shells_bnd+1 : n_shells_bnd+n_shells_total) = delta_r_gas
 
  massoftype(igas)      = mass_of_gas_particle
- massoftype(iboundary) = mass_of_boundary_particle
+ massoftype(iboundary) = mass_of_gas_particle
 
  if (file_exists) then
     call read_mass_loss_data()
@@ -448,12 +439,11 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
  endif
 
  if (reinject_enabled == 1 .and. .not. mass_loss_rate_calculated) then
-    call take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoftype)
+    call take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,npartoftype)
  endif
 
  if (reinject_enabled == 1 .and. mass_loss_rate_calculated) then
-    call check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
-    if (reinjection_needed) then
+    if ((time - time_last_reinject) < reinject_period .and. time >= mass_loss_start_time) then
        call perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
        time_last_reinject = time
        reinjection_needed = .false.
@@ -469,17 +459,17 @@ end subroutine inject_particles
 !  Checks how much mass the star has lost, and calculates the mass loss rate
 !+
 !----------------------------------------------------------------
-subroutine take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoftype)
+subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,npartoftype)
  use part,   only:igas,iboundary,iphase,iamtype
  use physcon,only:solarm,years,days
 
  real,    intent(in) :: time
- real,    intent(in) :: xyzh(:,:),xyzmh_ptmass(:,:)
+ real,    intent(in) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:)
  integer, intent(in) :: npart
  integer, intent(in) :: npartoftype(:)
 
  real    :: current_mass_within_radius, mass_lost, rate_this_interval
- real    :: sink_mass, x0(3), dx, dy, dz, r
+ real    :: sink_mass, x0(3), dx, dy, dz, r, e_pot, e_kin, e_therm
  real    :: sum_rates
  integer :: i
 
@@ -488,17 +478,13 @@ subroutine take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoft
     x0        = xyzmh_ptmass(1:3, wind_emitting_sink)
     sink_mass = xyzmh_ptmass(4,   wind_emitting_sink)
     mass_previous_measurement = sink_mass
-    do i = 1, npart
+    do i = 1, npart 
        dx = xyzh(1,i) - x0(1)
        dy = xyzh(2,i) - x0(2)
        dz = xyzh(3,i) - x0(3)
        r  = sqrt(dx**2 + dy**2 + dz**2)
        if (r <= mass_loss_check_radius) then
-          if (iamtype(iphase(i)) == iboundary) then
-             mass_previous_measurement = mass_previous_measurement + mass_of_boundary_particle
-          else
-             mass_previous_measurement = mass_previous_measurement + mass_of_gas_particle
-          endif
+          mass_previous_measurement = mass_previous_measurement + mass_of_gas_particle
        endif
     enddo
     time_next_measurement = time + measurement_interval
@@ -509,16 +495,12 @@ subroutine take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoft
     sink_mass = xyzmh_ptmass(4,   wind_emitting_sink)
     current_mass_within_radius = sink_mass
     do i = 1, npart
-       dx = xyzh(1,i) - x0(1)
+      dx = xyzh(1,i) - x0(1)
        dy = xyzh(2,i) - x0(2)
        dz = xyzh(3,i) - x0(3)
        r  = sqrt(dx**2 + dy**2 + dz**2)
        if (r <= mass_loss_check_radius) then
-          if (iamtype(iphase(i)) == iboundary) then
-             current_mass_within_radius = current_mass_within_radius + mass_of_boundary_particle
-          else
-             current_mass_within_radius = current_mass_within_radius + mass_of_gas_particle
-          endif
+          current_mass_within_radius = current_mass_within_radius + mass_of_gas_particle
        endif
     enddo
     mass_lost          = mass_previous_measurement - current_mass_within_radius
@@ -544,35 +526,6 @@ subroutine take_periodic_mass_measurements(time,xyzh,npart,xyzmh_ptmass,npartoft
  endif
 
 end subroutine take_periodic_mass_measurements
-
-!----------------------------------------------------------------
-!+
-!  Checks when to reinject
-!+
-!----------------------------------------------------------------
-subroutine check_continuous_reinject(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
- use units,  only:utime
- use physcon,only:days
-
- real,    intent(in)    :: time
- real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
- integer, intent(inout) :: npart
- integer, intent(inout) :: npartoftype(:)
-
- if ((time - time_last_reinject) < reinject_period .and. time >= mass_loss_start_time) return
-
- if (verbose == 1) then
-    print *, ''
-    print *, '-----------------------------------------'
-    print *, 'Reinjection triggered at time: ', time * (utime / days), ' days'
-    print *, 'Time since last reinject: ', (time - time_last_reinject)*utime/days, ' days'
-    print *, '-----------------------------------------'
-    print *, '' 
- endif
-
- reinjection_needed = .true.
-
-end subroutine check_continuous_reinject
 
 !----------------------------------------------------------------
 !+
@@ -813,7 +766,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     if (var_boundary == 1) then
        call interp_stellar_profile(r_new, rho, P, u, T)
        vxyzu(4,ipart) = u
-       xyzh(4,ipart)  = (mass_of_boundary_particle / rho)**(1./3.)
+       xyzh(4,ipart)  = (mass_of_gas_particle / rho)**(1./3.)
     endif
 
     if (update_L == 1) then
@@ -878,7 +831,6 @@ subroutine write_mass_loss_data()
  write(iunit,*) particles_to_inject
  write(iunit,*) n_measurements
  write(iunit,*) mass_of_gas_particle
- write(iunit,*) mass_of_boundary_particle
  do i = 1, n_measurements
     write(iunit,*) mass_loss_rates(i)
  enddo
@@ -914,7 +866,6 @@ subroutine read_mass_loss_data()
  read(iunit,*, iostat=ierr) particles_to_inject
  read(iunit,*, iostat=ierr) n_measurements
  read(iunit,*, iostat=ierr) mass_of_gas_particle
- read(iunit,*, iostat=ierr) mass_of_boundary_particle
 
  if (n_measurements > 0) then
     if (.not. allocated(mass_loss_rates)) allocate(mass_loss_rates(n_measurements))
@@ -929,7 +880,7 @@ subroutine read_mass_loss_data()
     write(iprint,*) 'Mass-loss rate data read from mass_loss_rate.dat'
     write(iprint,*) ' Mean mass-loss rate          :', mean_mass_loss_rate
     write(iprint,*) ' Gas particle mass            :', mass_of_gas_particle
-    write(iprint,*) ' Boundary particle mass       :', mass_of_boundary_particle
+    write(iprint,*) ' Boundary particle mass       :', mass_of_gas_particle
     write(iprint,*) ' Particles to inject          :', particles_to_inject
  endif
 
@@ -976,7 +927,6 @@ subroutine write_options_inject(iunit)
  call write_inopt(pulsation_period_days,'pulsation_period',    'pulsation period (days)',iunit)
  call write_inopt(piston_velocity_km_s, 'piston_velocity',     'piston velocity amplitude (km/s)',iunit)
  call write_inopt(time_puls,            'time_puls',           'time for piston to ramp up (in periods, -1=instant)',iunit)
- call write_inopt(pulsation_timestep,   'pulsation_timestep',  'pulsation timestep as fraction of period',iunit)
  call write_inopt(phi0,                 'phi0',                'initial phase offset (radians)',iunit)
  call write_inopt(wss,                  'wss',                 'radial/tangential spacing ratio',iunit)
  call write_inopt(var_boundary,         'var_boundary',        'update boundary thermo with pulsation (0=off, 1=on)',iunit)
@@ -1005,7 +955,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save      :: ngot = 0
- integer, parameter :: noptions = 27
+ integer, parameter :: noptions = 26
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -1071,11 +1021,6 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) time_puls
     ngot = ngot + 1
     if (time_puls < -1) call fatal(label,'time_puls must be >= -1')
- case('pulsation_timestep')
-    read(valstring,*,iostat=ierr) pulsation_timestep
-    ngot = ngot + 1
-    if (pulsation_timestep <= 0. .or. pulsation_timestep > 1.0) &
-       call fatal(label,'pulsation_timestep must be in (0,1]')
  case('phi0')
     read(valstring,*,iostat=ierr) phi0
     ngot = ngot + 1
