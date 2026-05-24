@@ -64,7 +64,7 @@ module inject
  integer :: n_inject_period       = 40
  real    :: mass_loss_start       = 2.0
  real    :: mass_loss_end         = 4.0
- real    :: check_radius       = 3.0
+ real    :: check_radius          = 3.0
  integer :: update_L              = 0
  integer :: verbose               = 1
 
@@ -143,7 +143,7 @@ subroutine set_default_options_inject(flag)
  n_inject_period       = 40
  mass_loss_start       = 2.0
  mass_loss_end         = 4.0
- check_radius          = 1.0
+ check_radius          = 3.0
  update_L              = 0
  verbose               = 1
 
@@ -259,7 +259,7 @@ subroutine init_inject(ierr)
  mass_loss_start_time   = mass_loss_start * pulsation_period 
  mass_loss_end_time     = mass_loss_end   * pulsation_period 
  time_next_measurement  = mass_loss_start_time
- mass_loss_check_radius = check_radius * r_max
+ mass_loss_check_radius = check_radius * Rstar
  n_measurements         = 0
 
  expected_measurements = ceiling((mass_loss_end_time - mass_loss_start_time) / measurement_interval) + 1
