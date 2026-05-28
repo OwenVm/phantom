@@ -30,7 +30,6 @@ module inject
 !   - n_inject_period     : *number of reinjections per period*
 !   - mass_loss_start     : *start time for mass-loss calculation in years*
 !   - mass_loss_end       : *end time for mass-loss calculation in years*
-!   - check_radius     : *radius within which to count mass (AU)*
 !   - meas_int_days       : *interval for mass measurements in days*
 !
 ! :Dependencies: dim, eos, icosahedron, infile_utils, injectutils, io,
@@ -64,7 +63,6 @@ module inject
  integer :: n_inject_period       = 40
  real    :: mass_loss_start       = 2.0
  real    :: mass_loss_end         = 4.0
- real    :: check_radius          = 3.0
  integer :: update_L              = 0
  integer :: verbose               = 1
 
@@ -102,10 +100,10 @@ module inject
  real    :: time_last_reinject = 0.0
  real    :: reinject_period
  integer :: n_reinjections     = 0
+ integer :: n_escaping_prev = 0
 
  real    :: mass_loss_start_time
  real    :: mass_loss_end_time
- real    :: mass_loss_check_radius
  real    :: measurement_interval
  real    :: time_next_measurement
  real    :: mass_previous_measurement
@@ -143,7 +141,6 @@ subroutine set_default_options_inject(flag)
  n_inject_period       = 40
  mass_loss_start       = 2.0
  mass_loss_end         = 4.0
- check_radius          = 3.0
  update_L              = 0
  verbose               = 1
 
@@ -259,7 +256,6 @@ subroutine init_inject(ierr)
  mass_loss_start_time   = mass_loss_start * pulsation_period 
  mass_loss_end_time     = mass_loss_end   * pulsation_period 
  time_next_measurement  = mass_loss_start_time
- mass_loss_check_radius = check_radius * Rstar
  n_measurements         = 0
 
  expected_measurements = ceiling((mass_loss_end_time - mass_loss_start_time) / measurement_interval) + 1
@@ -272,7 +268,6 @@ subroutine init_inject(ierr)
    print *, 'Measurement period:', measurement_interval
    print *, 'Mass loss measurement start time:', mass_loss_start_time
    print *, 'Mass loss measurement end time  :', mass_loss_end_time
-   print *, 'Mass loss check radius          :', mass_loss_check_radius
    print *, 'Rmax                            :', r_max
    print *, 'Expected number of measurements :', expected_measurements
    print *, ''
@@ -382,7 +377,7 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
  endif
 
  if (reinject_enabled == 1 .and. .not. mass_loss_rate_calculated) then
-    call take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,npartoftype)
+    call take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
  endif
 
  if (reinject_enabled == 1 .and. mass_loss_rate_calculated) then
@@ -402,56 +397,102 @@ end subroutine inject_particles
 !  Checks how much mass the star has lost, and calculates the mass loss rate
 !+
 !----------------------------------------------------------------
-subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,npartoftype)
- use part,   only:igas,iboundary,iamtype
- use physcon,only:solarm,years,days
+subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
+ use part, only:igas,iboundary,iamtype,nptmass
 
  real,    intent(in) :: time
- real,    intent(in) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:)
+ real,    intent(in) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(in) :: npart
  integer, intent(in) :: npartoftype(:)
 
- real    :: current_mass_within_radius, mass_lost, rate_this_interval
- real    :: sink_mass, x0(3), dx, dy, dz, r
- real    :: sum_rates
- integer :: i
+ real    :: rate_this_interval, sum_rates
+ real    :: x0(3), v0(3), dx, dy, dz, r, v2, u_spec, v_esc2, sink_mass
+ real    :: x0_comp(3), dx_comp, dy_comp, dz_comp, r_comp
+ real    :: vx_rel, vy_rel, vz_rel
+ integer :: i, n_escaping, newly_unbound
+
+ x0        = xyzmh_ptmass(1:3, wind_emitting_sink)
+ v0        = vxyz_ptmass(1:3,  wind_emitting_sink)
+ sink_mass = xyzmh_ptmass(4,   wind_emitting_sink)
+
+ if (nptmass > 1) then
+    x0_comp = xyzmh_ptmass(1:3, 2)
+ endif
 
  if (.not. measurement_active .and. time >= mass_loss_start_time) then
-    measurement_active = .true.
-    x0        = xyzmh_ptmass(1:3, wind_emitting_sink)
-    sink_mass = xyzmh_ptmass(4,   wind_emitting_sink)
-    mass_previous_measurement = sink_mass
-    do i = 1, npart 
-       dx = xyzh(1,i) - x0(1)
-       dy = xyzh(2,i) - x0(2)
-       dz = xyzh(3,i) - x0(3)
-       r  = sqrt(dx**2 + dy**2 + dz**2)
-       if (r <= mass_loss_check_radius) then
-          mass_previous_measurement = mass_previous_measurement + mass_of_gas_particle
-       endif
-    enddo
+    measurement_active    = .true.
     time_next_measurement = time + measurement_interval
+
+    ! Count currently unbound particles as baseline so first diff is correct
+    n_escaping_prev = 0
+    do i = 1, npart
+       dx     = xyzh(1,i) - x0(1)
+       dy     = xyzh(2,i) - x0(2)
+       dz     = xyzh(3,i) - x0(3)
+
+       r_comp = 10.
+
+       if (nptmass > 1) then
+          dx_comp = xyzh(1,i) - x0_comp(1)
+          dy_comp = xyzh(2,i) - x0_comp(2)
+          dz_comp = xyzh(3,i) - x0_comp(3)
+          r_comp   = sqrt(dx_comp**2 + dy_comp**2 + dz_comp**2)
+       endif
+       
+       r      = sqrt(dx**2 + dy**2 + dz**2)
+       if (r <= 0.) cycle
+       vx_rel = vxyzu(1,i) - v0(1)
+       vy_rel = vxyzu(2,i) - v0(2)
+       vz_rel = vxyzu(3,i) - v0(3)
+       v2     = vx_rel**2 + vy_rel**2 + vz_rel**2
+      !  u_spec = vxyzu(4,i)
+       v_esc2 = 2.0 * sink_mass / r
+       if (v2 > v_esc2) n_escaping_prev = n_escaping_prev + 1
+    enddo
+
+    if (verbose == 1) print *, ' Baseline unbound particles at measurement start:', n_escaping_prev
  endif
 
  if (measurement_active .and. time >= time_next_measurement .and. time < mass_loss_end_time) then
-    x0        = xyzmh_ptmass(1:3, wind_emitting_sink)
-    sink_mass = xyzmh_ptmass(4,   wind_emitting_sink)
-    current_mass_within_radius = sink_mass
+
+    n_escaping = 0
     do i = 1, npart
-      dx = xyzh(1,i) - x0(1)
-       dy = xyzh(2,i) - x0(2)
-       dz = xyzh(3,i) - x0(3)
-       r  = sqrt(dx**2 + dy**2 + dz**2)
-       if (r <= mass_loss_check_radius) then
-          current_mass_within_radius = current_mass_within_radius + mass_of_gas_particle
+       dx     = xyzh(1,i) - x0(1)
+       dy     = xyzh(2,i) - x0(2)
+       dz     = xyzh(3,i) - x0(3)
+       r      = sqrt(dx**2 + dy**2 + dz**2)
+
+       r_comp = 10.
+
+       if (nptmass > 1) then
+          dx_comp = xyzh(1,i) - x0_comp(1)
+          dy_comp = xyzh(2,i) - x0_comp(2)
+          dz_comp = xyzh(3,i) - x0_comp(3)
+          r_comp   = sqrt(dx_comp**2 + dy_comp**2 + dz_comp**2)
        endif
+
+       if (r <= 0.) cycle
+       vx_rel = vxyzu(1,i) - v0(1)
+       vy_rel = vxyzu(2,i) - v0(2)
+       vz_rel = vxyzu(3,i) - v0(3)
+       v2     = vx_rel**2 + vy_rel**2 + vz_rel**2
+      !  u_spec = vxyzu(4,i)
+       v_esc2 = 2.0 * sink_mass / r
+       if (v2 > v_esc2) n_escaping = n_escaping + 1
     enddo
-    mass_lost          = mass_previous_measurement - current_mass_within_radius
-    rate_this_interval = mass_lost / measurement_interval
-    n_measurements     = n_measurements + 1
+
+    newly_unbound           = max(0, n_escaping - n_escaping_prev)
+    rate_this_interval      = real(newly_unbound) * mass_of_gas_particle / measurement_interval
+    n_escaping_prev         = n_escaping
+    n_measurements          = n_measurements + 1
     mass_loss_rates(n_measurements) = rate_this_interval
-    mass_previous_measurement = current_mass_within_radius
-    time_next_measurement     = time + measurement_interval
+    time_next_measurement   = time + measurement_interval
+
+    if (verbose == 1) then
+       print *, ' Unbound particles this snapshot  :', n_escaping
+       print *, ' Newly unbound since last snapshot:', newly_unbound
+       print *, ' Rate this interval               :', rate_this_interval
+    endif
  endif
 
  if (measurement_active .and. .not. mass_loss_rate_calculated .and. time >= mass_loss_end_time) then
@@ -469,7 +510,6 @@ subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,np
  endif
 
 end subroutine take_periodic_mass_measurements
-
 !----------------------------------------------------------------
 !+
 !  Inject particles throughout the simulation
@@ -740,7 +780,7 @@ subroutine write_mass_loss_data()
  endif
 
  write(iunit,*) '# Mass-loss rate data for restart'
- write(iunit,*) mass_loss_check_radius
+ write(iunit,*) r_max
  write(iunit,*) r_max
  write(iunit,*) mass_loss_rate_calculated
  write(iunit,*) mean_mass_loss_rate / (solarm / umass) / (utime / years)
@@ -776,7 +816,7 @@ subroutine read_mass_loss_data()
  if (ierr /= 0) return
 
  read(iunit,*)
- read(iunit,*, iostat=ierr) mass_loss_check_radius
+ read(iunit,*, iostat=ierr) r_max
  read(iunit,*, iostat=ierr) r_max
  read(iunit,*, iostat=ierr) mass_loss_rate_calculated
  if (ierr /= 0) then; close(iunit); return; endif
@@ -851,7 +891,6 @@ subroutine write_options_inject(iunit)
  call write_inopt(n_inject_period,      'n_inject_period',     'period between reinjections (periods)',iunit)
  call write_inopt(mass_loss_start,      'mass_loss_start',     'start time for mass-loss calculation (periods)',iunit)
  call write_inopt(mass_loss_end,        'mass_loss_end',       'end time for mass-loss calculation (periods)',iunit)
- call write_inopt(check_radius,         'check_radius',     'mass-loss counting radius (in units of r_max)',iunit)
  call write_inopt(update_L,             'update_L',            'update luminosity with pulsation (0=off, 1=on)',iunit)
  call write_inopt(verbose,              'verbose',             'enable verbose output (0=off, 1=on)',iunit)
 
@@ -869,7 +908,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save      :: ngot = 0
- integer, parameter :: noptions = 21
+ integer, parameter :: noptions = 20
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -955,10 +994,6 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) mass_loss_end
     ngot = ngot + 1
     if (mass_loss_end <= 0.) call fatal(label,'mass_loss_end must be > 0')
- case('check_radius')
-    read(valstring,*,iostat=ierr) check_radius
-    ngot = ngot + 1
-    if (check_radius <= 0.) call fatal(label,'check_radius must be > 0')
  case('update_L')
     read(valstring,*,iostat=ierr) update_L
     ngot = ngot + 1
