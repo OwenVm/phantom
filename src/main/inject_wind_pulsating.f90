@@ -67,6 +67,7 @@ module inject
  integer :: verbose               = 1
 
  integer, parameter :: wind_emitting_sink = 1
+ integer, parameter :: companion_sink     = 2
  integer, parameter :: max_measurements   = 10000
 
  real :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity
@@ -406,48 +407,40 @@ subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vx
  integer, intent(in) :: npartoftype(:)
 
  real    :: rate_this_interval, sum_rates
- real    :: x0(3), v0(3), dx, dy, dz, r, v2, u_spec, v_esc2, sink_mass
- real    :: x0_comp(3), dx_comp, dy_comp, dz_comp, r_comp
- real    :: vx_rel, vy_rel, vz_rel
+ real    :: x_agb(3), v_agb(3), x_com(3)
+ real    :: dx1, dy1, dz1, dx2, dy2, dz2, dx_com, dy_com, dz_com
+ real    :: r1, r2, r_com2, r_sep
+ real    :: vx_rel, vy_rel, vz_rel, v2, vr
+ real    :: phi_part, phi_L1, omega_binary
+ real    :: total_mass, M1, M2, e_therm, e_kin, e_pot
  integer :: i, n_escaping, newly_unbound
+ logical :: unbound, outflowing
 
- x0        = xyzmh_ptmass(1:3, wind_emitting_sink)
- v0        = vxyz_ptmass(1:3,  wind_emitting_sink)
- sink_mass = xyzmh_ptmass(4,   wind_emitting_sink)
-
- if (nptmass > 1) then
-    x0_comp = xyzmh_ptmass(1:3, 2)
- endif
+ M1    = xyzmh_ptmass(4, wind_emitting_sink)
+ x_agb = xyzmh_ptmass(1:3, wind_emitting_sink)
+ v_agb = vxyz_ptmass(1:3,  wind_emitting_sink)
 
  if (.not. measurement_active .and. time >= mass_loss_start_time) then
     measurement_active    = .true.
     time_next_measurement = time + measurement_interval
 
-    ! Count currently unbound particles as baseline so first diff is correct
     n_escaping_prev = 0
     do i = 1, npart
-       dx     = xyzh(1,i) - x0(1)
-       dy     = xyzh(2,i) - x0(2)
-       dz     = xyzh(3,i) - x0(3)
+       dx1   = xyzh(1,i) - x_agb(1)
+       dy1   = xyzh(2,i) - x_agb(2)
+       dz1   = xyzh(3,i) - x_agb(3)
+       r1    = sqrt(dx1**2 + dy1**2 + dz1**2)
+       if (r1 <= 0.) cycle
 
-       r_comp = 10.
-
-       if (nptmass > 1) then
-          dx_comp = xyzh(1,i) - x0_comp(1)
-          dy_comp = xyzh(2,i) - x0_comp(2)
-          dz_comp = xyzh(3,i) - x0_comp(3)
-          r_comp   = sqrt(dx_comp**2 + dy_comp**2 + dz_comp**2)
-       endif
-       
-       r      = sqrt(dx**2 + dy**2 + dz**2)
-       if (r <= 0.) cycle
-       vx_rel = vxyzu(1,i) - v0(1)
-       vy_rel = vxyzu(2,i) - v0(2)
-       vz_rel = vxyzu(3,i) - v0(3)
-       v2     = vx_rel**2 + vy_rel**2 + vz_rel**2
-      !  u_spec = vxyzu(4,i)
-       v_esc2 = 2.0 * sink_mass / r
-       if (v2 > v_esc2) n_escaping_prev = n_escaping_prev + 1
+       e_pot = - xyzmh_ptmass(4, 1) / r1
+       e_kin = 0.5 * ( (vxyzu(1,i) - vxyz_ptmass(1, 1))**2 &
+                     + (vxyzu(2,i) - vxyz_ptmass(2, 1))**2 &
+                     + (vxyzu(3,i) - vxyz_ptmass(3, 1))**2 )
+       e_therm = vxyzu(4,i)
+       unbound   = .false.
+       if (e_kin + e_therm + e_pot > 0.) unbound = .true.
+      !  outflowing = (vr > 0.)
+       if (unbound) n_escaping_prev = n_escaping_prev + 1
     enddo
 
     if (verbose == 1) print *, ' Baseline unbound particles at measurement start:', n_escaping_prev
@@ -457,28 +450,21 @@ subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vx
 
     n_escaping = 0
     do i = 1, npart
-       dx     = xyzh(1,i) - x0(1)
-       dy     = xyzh(2,i) - x0(2)
-       dz     = xyzh(3,i) - x0(3)
-       r      = sqrt(dx**2 + dy**2 + dz**2)
+       dx1   = xyzh(1,i) - x_agb(1)
+       dy1   = xyzh(2,i) - x_agb(2)
+       dz1   = xyzh(3,i) - x_agb(3)
+       r1    = sqrt(dx1**2 + dy1**2 + dz1**2)
+       if (r1 <= 0.) cycle
 
-       r_comp = 10.
-
-       if (nptmass > 1) then
-          dx_comp = xyzh(1,i) - x0_comp(1)
-          dy_comp = xyzh(2,i) - x0_comp(2)
-          dz_comp = xyzh(3,i) - x0_comp(3)
-          r_comp   = sqrt(dx_comp**2 + dy_comp**2 + dz_comp**2)
-       endif
-
-       if (r <= 0.) cycle
-       vx_rel = vxyzu(1,i) - v0(1)
-       vy_rel = vxyzu(2,i) - v0(2)
-       vz_rel = vxyzu(3,i) - v0(3)
-       v2     = vx_rel**2 + vy_rel**2 + vz_rel**2
-      !  u_spec = vxyzu(4,i)
-       v_esc2 = 2.0 * sink_mass / r
-       if (v2 > v_esc2) n_escaping = n_escaping + 1
+       e_pot = - xyzmh_ptmass(4, 1) / r1
+       e_kin = 0.5 * ( (vxyzu(1,i) - vxyz_ptmass(1, 1))**2 &
+                     + (vxyzu(2,i) - vxyz_ptmass(2, 1))**2 &
+                     + (vxyzu(3,i) - vxyz_ptmass(3, 1))**2 )
+       e_therm = vxyzu(4,i)
+       unbound   = .false.
+       if (e_kin + e_therm + e_pot > 0.) unbound = .true.
+      !  outflowing = (vr > 0.)
+       if (unbound) n_escaping = n_escaping + 1
     enddo
 
     newly_unbound           = max(0, n_escaping - n_escaping_prev)
@@ -489,7 +475,7 @@ subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vx
     time_next_measurement   = time + measurement_interval
 
     if (verbose == 1) then
-       print *, ' Unbound particles this snapshot  :', n_escaping
+       print *, ' Unbound+outflowing particles     :', n_escaping
        print *, ' Newly unbound since last snapshot:', newly_unbound
        print *, ' Rate this interval               :', rate_this_interval
     endif
@@ -510,6 +496,231 @@ subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vx
  endif
 
 end subroutine take_periodic_mass_measurements
+
+!----------------------------------------------------------------
+!+
+!  Checks how much mass the star has lost, and calculates the mass loss rate
+!+
+!----------------------------------------------------------------
+subroutine take_periodic_mass_measurements_roche(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
+ use part, only:igas,iboundary,iamtype,nptmass
+
+ real,    intent(in) :: time
+ real,    intent(in) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ integer, intent(in) :: npart
+ integer, intent(in) :: npartoftype(:)
+
+ real    :: rate_this_interval, sum_rates
+ real    :: x_agb(3), v_agb(3), x_com(3)
+ real    :: dx1, dy1, dz1, dx2, dy2, dz2, dx_com, dy_com, dz_com
+ real    :: r1, r2, r_com2, r_sep
+ real    :: vx_rel, vy_rel, vz_rel, v2, vr
+ real    :: phi_part, phi_L1, omega_binary
+ real    :: total_mass, M1, M2
+ integer :: i, n_escaping, newly_unbound
+ logical :: unbound, outflowing
+
+ !-- Sink properties (computed once per call) --------------------------
+ M1    = xyzmh_ptmass(4, wind_emitting_sink)
+ x_agb = xyzmh_ptmass(1:3, wind_emitting_sink)
+ v_agb = vxyz_ptmass(1:3,  wind_emitting_sink)
+
+ !-- Binary properties: omega and L1 (instantaneous) -------------------
+ if (nptmass >= 2) then
+    M2         = xyzmh_ptmass(4, companion_sink)
+    total_mass = M1 + M2
+
+    ! Centre of mass position
+    x_com = (M1 * xyzmh_ptmass(1:3, wind_emitting_sink) &
+           + M2 * xyzmh_ptmass(1:3, companion_sink)) / total_mass
+
+    ! Current separation and orbital angular velocity (G=1)
+    r_sep        = sqrt(sum((xyzmh_ptmass(1:3,wind_emitting_sink) &
+                           - xyzmh_ptmass(1:3,companion_sink))**2))
+    omega_binary = sqrt(total_mass / r_sep**3)
+
+    ! L1 potential (recomputed for eccentric orbit at current positions)
+    call find_L1(xyzmh_ptmass, omega_binary, x_com, phi_L1)
+ else
+    ! Single star: binary terms vanish
+    M2           = 0.
+    total_mass   = M1
+    x_com        = x_agb
+    omega_binary = 0.
+    phi_L1       = 0.
+ endif
+
+ if (.not. measurement_active .and. time >= mass_loss_start_time) then
+    measurement_active    = .true.
+    time_next_measurement = time + measurement_interval
+
+    n_escaping_prev = 0
+    do i = 1, npart
+       dx1   = xyzh(1,i) - x_agb(1)
+       dy1   = xyzh(2,i) - x_agb(2)
+       dz1   = xyzh(3,i) - x_agb(3)
+       r1    = sqrt(dx1**2 + dy1**2 + dz1**2)
+       if (r1 <= 0.) cycle
+
+       vx_rel = vxyzu(1,i) - v_agb(1)
+       vy_rel = vxyzu(2,i) - v_agb(2)
+       vz_rel = vxyzu(3,i) - v_agb(3)
+       v2     = vx_rel**2 + vy_rel**2 + vz_rel**2
+       vr     = (vx_rel*dx1 + vy_rel*dy1 + vz_rel*dz1) / r1
+
+       phi_part = -M1 / r1
+       if (nptmass >= 2) then
+          dx2      = xyzh(1,i) - xyzmh_ptmass(1, companion_sink)
+          dy2      = xyzh(2,i) - xyzmh_ptmass(2, companion_sink)
+          dz2      = xyzh(3,i) - xyzmh_ptmass(3, companion_sink)
+          r2       = sqrt(dx2**2 + dy2**2 + dz2**2)
+          dx_com   = xyzh(1,i) - x_com(1)
+          dy_com   = xyzh(2,i) - x_com(2)
+          dz_com   = xyzh(3,i) - x_com(3)
+          r_com2   = dx_com**2 + dy_com**2 + dz_com**2
+          phi_part = phi_part - M2/r2 - 0.5*omega_binary**2 * r_com2
+       endif
+
+       unbound    = (v2 + 2.0*phi_part > 2.0*phi_L1)
+       outflowing = (vr > 0.)
+       if (unbound .and. outflowing) n_escaping_prev = n_escaping_prev + 1
+    enddo
+
+    if (verbose == 1) print *, ' Baseline unbound particles at measurement start:', n_escaping_prev
+ endif
+
+ !-- Periodic measurement ----------------------------------------------
+ if (measurement_active .and. time >= time_next_measurement .and. time < mass_loss_end_time) then
+
+    n_escaping = 0
+    do i = 1, npart
+       dx1   = xyzh(1,i) - x_agb(1)
+       dy1   = xyzh(2,i) - x_agb(2)
+       dz1   = xyzh(3,i) - x_agb(3)
+       r1    = sqrt(dx1**2 + dy1**2 + dz1**2)
+       if (r1 <= 0.) cycle
+
+       vx_rel = vxyzu(1,i) - v_agb(1)
+       vy_rel = vxyzu(2,i) - v_agb(2)
+       vz_rel = vxyzu(3,i) - v_agb(3)
+       v2     = vx_rel**2 + vy_rel**2 + vz_rel**2
+       vr     = (vx_rel*dx1 + vy_rel*dy1 + vz_rel*dz1) / r1
+
+       phi_part = -M1 / r1
+       if (nptmass >= 2) then
+          dx2      = xyzh(1,i) - xyzmh_ptmass(1, companion_sink)
+          dy2      = xyzh(2,i) - xyzmh_ptmass(2, companion_sink)
+          dz2      = xyzh(3,i) - xyzmh_ptmass(3, companion_sink)
+          r2       = sqrt(dx2**2 + dy2**2 + dz2**2)
+          dx_com   = xyzh(1,i) - x_com(1)
+          dy_com   = xyzh(2,i) - x_com(2)
+          dz_com   = xyzh(3,i) - x_com(3)
+          r_com2   = dx_com**2 + dy_com**2 + dz_com**2
+          phi_part = phi_part - M2/r2 - 0.5*omega_binary**2 * r_com2
+       endif
+
+       unbound    = (v2 + 2.0*phi_part > 2.0*phi_L1)
+       outflowing = (vr > 0.)
+       if (unbound .and. outflowing) n_escaping = n_escaping + 1
+    enddo
+
+    newly_unbound           = max(0, n_escaping - n_escaping_prev)
+    rate_this_interval      = real(newly_unbound) * mass_of_gas_particle / measurement_interval
+    n_escaping_prev         = n_escaping
+    n_measurements          = n_measurements + 1
+    mass_loss_rates(n_measurements) = rate_this_interval
+    time_next_measurement   = time + measurement_interval
+
+    if (verbose == 1) then
+       print *, ' Unbound+outflowing particles     :', n_escaping
+       print *, ' Newly unbound since last snapshot:', newly_unbound
+       print *, ' Rate this interval               :', rate_this_interval
+    endif
+ endif
+
+ !-- Finalise when measurement window closes ---------------------------
+ if (measurement_active .and. .not. mass_loss_rate_calculated .and. time >= mass_loss_end_time) then
+    if (n_measurements > 0) then
+       sum_rates = 0.0
+       do i = 1, n_measurements
+          sum_rates = sum_rates + mass_loss_rates(i)
+       enddo
+       mean_mass_loss_rate = sum_rates / real(n_measurements)
+       particles_to_inject = nint((mean_mass_loss_rate * reinject_period) / mass_of_gas_particle)
+       if (particles_to_inject < 1) particles_to_inject = 1
+       mass_loss_rate_calculated = .true.
+       call write_mass_loss_data()
+    endif
+ endif
+
+end subroutine take_periodic_mass_measurements_roche
+
+!----------------------------------------------------------------
+!+
+!  Find L1 point and its effective potential via bisection
+!  along the line joining the two sinks
+!+
+!----------------------------------------------------------------
+subroutine find_L1(xyzmh_ptmass, omega, x_com, phi_L1)
+ use part, only:nptmass
+
+ real, intent(in)  :: xyzmh_ptmass(:,:), omega, x_com(3)
+ real, intent(out) :: phi_L1
+
+ real    :: x1(3), x2(3), xL1(3), xmid(3), lo_pt(3)
+ real    :: M1, M2, r1, r2, r_com2
+ real    :: f_lo, f_hi, f_mid
+ real    :: lo, hi, mid, frac
+ integer :: iter
+ integer, parameter :: max_iter = 100
+ real,    parameter :: tol      = 1.0e-10
+
+ x1 = xyzmh_ptmass(1:3, wind_emitting_sink)
+ x2 = xyzmh_ptmass(1:3, companion_sink)
+ M1 = xyzmh_ptmass(4,   wind_emitting_sink)
+ M2 = xyzmh_ptmass(4,   companion_sink)
+
+ ! Bisect along parameter frac in [0,1]: x = x1 + frac*(x2-x1)
+ lo = 0.01
+ hi = 0.99
+
+ do iter = 1, max_iter
+    mid  = 0.5*(lo + hi)
+    xmid = x1 + mid*(x2 - x1)
+
+    ! d(phi_eff)/d(frac) along the axis — proportional to force component
+    r1    = sqrt(sum((xmid - x1)**2)); if (r1 <= 0.) r1 = tiny(r1)
+    r2    = sqrt(sum((xmid - x2)**2)); if (r2 <= 0.) r2 = tiny(r2)
+    r_com2 = sum((xmid - x_com)**2)
+
+    ! Force along axis (positive = toward x2)
+    f_mid = -M1/r1**2 + M2/r2**2 + omega**2 * dot_product(xmid - x_com, x2 - x1) / sqrt(sum((x2-x1)**2))
+
+    lo_pt = x1 + lo*(x2 - x1)
+    r1    = sqrt(sum((lo_pt - x1)**2)); if (r1 <= 0.) r1 = tiny(r1)
+    r2    = sqrt(sum((lo_pt - x2)**2)); if (r2 <= 0.) r2 = tiny(r2)
+    f_lo  = -M1/r1**2 + M2/r2**2 + omega**2 * dot_product(lo_pt - x_com, x2 - x1) / sqrt(sum((x2-x1)**2))
+
+    if (f_lo * f_mid < 0.) then
+       hi = mid
+    else
+       lo = mid
+    endif
+
+    if (abs(hi - lo) < tol) exit
+ enddo
+
+ ! L1 position and its effective potential
+ frac = 0.5*(lo + hi)
+ xL1  = x1 + frac*(x2 - x1)
+ r1   = sqrt(sum((xL1 - x1)**2)); if (r1 <= 0.) r1 = tiny(r1)
+ r2   = sqrt(sum((xL1 - x2)**2)); if (r2 <= 0.) r2 = tiny(r2)
+ r_com2 = sum((xL1 - x_com)**2)
+
+ phi_L1 = -M1/r1 - M2/r2 - 0.5*omega**2 * r_com2
+
+end subroutine find_L1
+
 !----------------------------------------------------------------
 !+
 !  Inject particles throughout the simulation
