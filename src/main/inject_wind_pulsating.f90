@@ -6,7 +6,7 @@
 !--------------------------------------------------------------------------!
 module inject
 !
-! Handles pulsating AGB stars 
+! Handles pulsating AGB stars
 !
 ! :References: None
 !
@@ -31,6 +31,7 @@ module inject
 !   - mass_loss_start     : *start time for mass-loss calculation in years*
 !   - mass_loss_end       : *end time for mass-loss calculation in years*
 !   - meas_int_days       : *interval for mass measurements in days*
+!   - use_file_mdot       : *skip measurement phase and use mass_loss_rate.dat directly (0=off, 1=on)*
 !
 ! :Dependencies: dim, eos, icosahedron, infile_utils, injectutils, io,
 !   part, partinject, physcon, units, set_star
@@ -46,7 +47,7 @@ module inject
  integer :: iboundary_spheres     = 5
  integer :: n_profile_points      = 10000
  integer :: n_particles_first     = 20000
- real    :: min_mass_fraction     = 0.05
+ real    :: min_mass_fraction     = 0.01
  real    :: rho_power_in          = 6.0
  real    :: r_min_on_rstar        = 1.0
  real    :: dtpulsation           = huge(0.)
@@ -61,10 +62,11 @@ module inject
 
  integer :: reinject_enabled      = 1
  integer :: n_inject_period       = 40
- real    :: mass_loss_start       = 2.0
- real    :: mass_loss_end         = 4.0
+ real    :: mass_loss_start       = 6.0
+ real    :: mass_loss_end         = 8.0
  integer :: update_L              = 0
  integer :: verbose               = 1
+ integer :: use_file_mdot         = 0   ! when 1: read mass_loss_rate.dat at init and skip measurement
 
  integer, parameter :: wind_emitting_sink = 1
  integer, parameter :: companion_sink     = 2
@@ -114,7 +116,6 @@ module inject
  logical :: mass_loss_rate_calculated   = .false.
  logical :: measurement_active          = .false.
  integer :: particles_to_inject         = 0
- 
 
  character(len=*), parameter :: label = 'inject_atmosphere'
 
@@ -126,7 +127,7 @@ subroutine set_default_options_inject(flag)
  iboundary_spheres     = 5
  n_profile_points      = 10000
  n_particles_first     = 20000
- min_mass_fraction     = 0.05
+ min_mass_fraction     = 0.01
  rho_power_in          = 6.0
  r_min_on_rstar        = 1.0
  dtpulsation           = huge(0.)
@@ -140,10 +141,11 @@ subroutine set_default_options_inject(flag)
  dumps_p_period        = 10
  reinject_enabled      = 1
  n_inject_period       = 40
- mass_loss_start       = 2.0
- mass_loss_end         = 4.0
+ mass_loss_start       = 6.0
+ mass_loss_end         = 8.0
  update_L              = 0
  verbose               = 1
+ use_file_mdot         = 0
 
 end subroutine set_default_options_inject
 
@@ -193,10 +195,11 @@ subroutine init_inject(ierr)
 
  inquire(file='mass_loss_rate.dat', exist=file_exists)
 
- if ( npartoftype(igas) < 100 .and. file_exists) then
+ if ( npartoftype(igas) < 100 .and. file_exists .and. use_file_mdot == 0) then
        print *, 'Existing mass loss data file found, but this is a fresh start, so delete'
        open(newunit=iunit, file='mass_loss_rate.dat', status='old', iostat=ierr)
        close(iunit, status='delete')
+       file_exists = .false.
  endif
 
  active_boundary_spheres = iboundary_spheres
@@ -234,7 +237,7 @@ subroutine init_inject(ierr)
     endif
 
     dr = wss * current_radius * get_fibonacci_spacing(n_shell)
-    
+
     if (shell_index > 2 .and. ( real(n_tot + n_shell) / real(n_tot) - 1) < real(min_mass_fraction)) then
        shell_index = shell_index - 1
        r_max = current_radius - dr
@@ -253,9 +256,9 @@ subroutine init_inject(ierr)
  call calc_stellar_profile(n_profile_points)
 
  reinject_period        = pulsation_period / real(n_inject_period)
- measurement_interval   = reinject_period 
- mass_loss_start_time   = mass_loss_start * pulsation_period 
- mass_loss_end_time     = mass_loss_end   * pulsation_period 
+ measurement_interval   = reinject_period
+ mass_loss_start_time   = mass_loss_start * pulsation_period
+ mass_loss_end_time     = mass_loss_end   * pulsation_period
  time_next_measurement  = mass_loss_start_time
  n_measurements         = 0
 
@@ -263,16 +266,16 @@ subroutine init_inject(ierr)
  allocate(mass_loss_rates(expected_measurements))
  mass_loss_rates = 0.0
 
- if (verbose == 1) then 
+ if (verbose == 1) then
    print *, ''
-   print *, 'Calculated reinject period:', reinject_period 
+   print *, 'Calculated reinject period:', reinject_period
    print *, 'Measurement period:', measurement_interval
    print *, 'Mass loss measurement start time:', mass_loss_start_time
    print *, 'Mass loss measurement end time  :', mass_loss_end_time
    print *, 'Rmax                            :', r_max
    print *, 'Expected number of measurements :', expected_measurements
    print *, ''
- endif 
+ endif
 
  n_shells_total = shell_index
  n_shells_bnd   = min(iboundary_spheres, n_shells_total)
@@ -306,7 +309,21 @@ subroutine init_inject(ierr)
  massoftype(igas)      = mass_of_gas_particle
  massoftype(iboundary) = mass_of_gas_particle
 
- if (file_exists) then
+ ! If use_file_mdot=1, read mass_loss_rate.dat now and mark measurement as done,
+ ! so the simulation goes straight to reinjection without any measurement phase.
+ ! A hard error is raised if the file is absent, since the user explicitly asked for it.
+ if (use_file_mdot == 1) then
+    if (.not. file_exists) &
+       call fatal(label,'use_file_mdot=1 but mass_loss_rate.dat not found')
+    call read_mass_loss_data()
+    mass_loss_rate_calculated = .true.
+    if (verbose == 1) then
+       print *, ''
+       print *, 'use_file_mdot=1: skipping measurement phase.'
+       print *, ' particles_to_inject read from file:', particles_to_inject
+       print *, ''
+    endif
+ elseif (file_exists) then
     call read_mass_loss_data()
  endif
 
@@ -499,230 +516,6 @@ end subroutine take_periodic_mass_measurements
 
 !----------------------------------------------------------------
 !+
-!  Checks how much mass the star has lost, and calculates the mass loss rate
-!+
-!----------------------------------------------------------------
-subroutine take_periodic_mass_measurements_roche(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
- use part, only:igas,iboundary,iamtype,nptmass
-
- real,    intent(in) :: time
- real,    intent(in) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
- integer, intent(in) :: npart
- integer, intent(in) :: npartoftype(:)
-
- real    :: rate_this_interval, sum_rates
- real    :: x_agb(3), v_agb(3), x_com(3)
- real    :: dx1, dy1, dz1, dx2, dy2, dz2, dx_com, dy_com, dz_com
- real    :: r1, r2, r_com2, r_sep
- real    :: vx_rel, vy_rel, vz_rel, v2, vr
- real    :: phi_part, phi_L1, omega_binary
- real    :: total_mass, M1, M2
- integer :: i, n_escaping, newly_unbound
- logical :: unbound, outflowing
-
- !-- Sink properties (computed once per call) --------------------------
- M1    = xyzmh_ptmass(4, wind_emitting_sink)
- x_agb = xyzmh_ptmass(1:3, wind_emitting_sink)
- v_agb = vxyz_ptmass(1:3,  wind_emitting_sink)
-
- !-- Binary properties: omega and L1 (instantaneous) -------------------
- if (nptmass >= 2) then
-    M2         = xyzmh_ptmass(4, companion_sink)
-    total_mass = M1 + M2
-
-    ! Centre of mass position
-    x_com = (M1 * xyzmh_ptmass(1:3, wind_emitting_sink) &
-           + M2 * xyzmh_ptmass(1:3, companion_sink)) / total_mass
-
-    ! Current separation and orbital angular velocity (G=1)
-    r_sep        = sqrt(sum((xyzmh_ptmass(1:3,wind_emitting_sink) &
-                           - xyzmh_ptmass(1:3,companion_sink))**2))
-    omega_binary = sqrt(total_mass / r_sep**3)
-
-    ! L1 potential (recomputed for eccentric orbit at current positions)
-    call find_L1(xyzmh_ptmass, omega_binary, x_com, phi_L1)
- else
-    ! Single star: binary terms vanish
-    M2           = 0.
-    total_mass   = M1
-    x_com        = x_agb
-    omega_binary = 0.
-    phi_L1       = 0.
- endif
-
- if (.not. measurement_active .and. time >= mass_loss_start_time) then
-    measurement_active    = .true.
-    time_next_measurement = time + measurement_interval
-
-    n_escaping_prev = 0
-    do i = 1, npart
-       dx1   = xyzh(1,i) - x_agb(1)
-       dy1   = xyzh(2,i) - x_agb(2)
-       dz1   = xyzh(3,i) - x_agb(3)
-       r1    = sqrt(dx1**2 + dy1**2 + dz1**2)
-       if (r1 <= 0.) cycle
-
-       vx_rel = vxyzu(1,i) - v_agb(1)
-       vy_rel = vxyzu(2,i) - v_agb(2)
-       vz_rel = vxyzu(3,i) - v_agb(3)
-       v2     = vx_rel**2 + vy_rel**2 + vz_rel**2
-       vr     = (vx_rel*dx1 + vy_rel*dy1 + vz_rel*dz1) / r1
-
-       phi_part = -M1 / r1
-       if (nptmass >= 2) then
-          dx2      = xyzh(1,i) - xyzmh_ptmass(1, companion_sink)
-          dy2      = xyzh(2,i) - xyzmh_ptmass(2, companion_sink)
-          dz2      = xyzh(3,i) - xyzmh_ptmass(3, companion_sink)
-          r2       = sqrt(dx2**2 + dy2**2 + dz2**2)
-          dx_com   = xyzh(1,i) - x_com(1)
-          dy_com   = xyzh(2,i) - x_com(2)
-          dz_com   = xyzh(3,i) - x_com(3)
-          r_com2   = dx_com**2 + dy_com**2 + dz_com**2
-          phi_part = phi_part - M2/r2 - 0.5*omega_binary**2 * r_com2
-       endif
-
-       unbound    = (v2 + 2.0*phi_part > 2.0*phi_L1)
-       outflowing = (vr > 0.)
-       if (unbound .and. outflowing) n_escaping_prev = n_escaping_prev + 1
-    enddo
-
-    if (verbose == 1) print *, ' Baseline unbound particles at measurement start:', n_escaping_prev
- endif
-
- !-- Periodic measurement ----------------------------------------------
- if (measurement_active .and. time >= time_next_measurement .and. time < mass_loss_end_time) then
-
-    n_escaping = 0
-    do i = 1, npart
-       dx1   = xyzh(1,i) - x_agb(1)
-       dy1   = xyzh(2,i) - x_agb(2)
-       dz1   = xyzh(3,i) - x_agb(3)
-       r1    = sqrt(dx1**2 + dy1**2 + dz1**2)
-       if (r1 <= 0.) cycle
-
-       vx_rel = vxyzu(1,i) - v_agb(1)
-       vy_rel = vxyzu(2,i) - v_agb(2)
-       vz_rel = vxyzu(3,i) - v_agb(3)
-       v2     = vx_rel**2 + vy_rel**2 + vz_rel**2
-       vr     = (vx_rel*dx1 + vy_rel*dy1 + vz_rel*dz1) / r1
-
-       phi_part = -M1 / r1
-       if (nptmass >= 2) then
-          dx2      = xyzh(1,i) - xyzmh_ptmass(1, companion_sink)
-          dy2      = xyzh(2,i) - xyzmh_ptmass(2, companion_sink)
-          dz2      = xyzh(3,i) - xyzmh_ptmass(3, companion_sink)
-          r2       = sqrt(dx2**2 + dy2**2 + dz2**2)
-          dx_com   = xyzh(1,i) - x_com(1)
-          dy_com   = xyzh(2,i) - x_com(2)
-          dz_com   = xyzh(3,i) - x_com(3)
-          r_com2   = dx_com**2 + dy_com**2 + dz_com**2
-          phi_part = phi_part - M2/r2 - 0.5*omega_binary**2 * r_com2
-       endif
-
-       unbound    = (v2 + 2.0*phi_part > 2.0*phi_L1)
-       outflowing = (vr > 0.)
-       if (unbound .and. outflowing) n_escaping = n_escaping + 1
-    enddo
-
-    newly_unbound           = max(0, n_escaping - n_escaping_prev)
-    rate_this_interval      = real(newly_unbound) * mass_of_gas_particle / measurement_interval
-    n_escaping_prev         = n_escaping
-    n_measurements          = n_measurements + 1
-    mass_loss_rates(n_measurements) = rate_this_interval
-    time_next_measurement   = time + measurement_interval
-
-    if (verbose == 1) then
-       print *, ' Unbound+outflowing particles     :', n_escaping
-       print *, ' Newly unbound since last snapshot:', newly_unbound
-       print *, ' Rate this interval               :', rate_this_interval
-    endif
- endif
-
- !-- Finalise when measurement window closes ---------------------------
- if (measurement_active .and. .not. mass_loss_rate_calculated .and. time >= mass_loss_end_time) then
-    if (n_measurements > 0) then
-       sum_rates = 0.0
-       do i = 1, n_measurements
-          sum_rates = sum_rates + mass_loss_rates(i)
-       enddo
-       mean_mass_loss_rate = sum_rates / real(n_measurements)
-       particles_to_inject = nint((mean_mass_loss_rate * reinject_period) / mass_of_gas_particle)
-       if (particles_to_inject < 1) particles_to_inject = 1
-       mass_loss_rate_calculated = .true.
-       call write_mass_loss_data()
-    endif
- endif
-
-end subroutine take_periodic_mass_measurements_roche
-
-!----------------------------------------------------------------
-!+
-!  Find L1 point and its effective potential via bisection
-!  along the line joining the two sinks
-!+
-!----------------------------------------------------------------
-subroutine find_L1(xyzmh_ptmass, omega, x_com, phi_L1)
- use part, only:nptmass
-
- real, intent(in)  :: xyzmh_ptmass(:,:), omega, x_com(3)
- real, intent(out) :: phi_L1
-
- real    :: x1(3), x2(3), xL1(3), xmid(3), lo_pt(3)
- real    :: M1, M2, r1, r2, r_com2
- real    :: f_lo, f_hi, f_mid
- real    :: lo, hi, mid, frac
- integer :: iter
- integer, parameter :: max_iter = 100
- real,    parameter :: tol      = 1.0e-10
-
- x1 = xyzmh_ptmass(1:3, wind_emitting_sink)
- x2 = xyzmh_ptmass(1:3, companion_sink)
- M1 = xyzmh_ptmass(4,   wind_emitting_sink)
- M2 = xyzmh_ptmass(4,   companion_sink)
-
- ! Bisect along parameter frac in [0,1]: x = x1 + frac*(x2-x1)
- lo = 0.01
- hi = 0.99
-
- do iter = 1, max_iter
-    mid  = 0.5*(lo + hi)
-    xmid = x1 + mid*(x2 - x1)
-
-    ! d(phi_eff)/d(frac) along the axis — proportional to force component
-    r1    = sqrt(sum((xmid - x1)**2)); if (r1 <= 0.) r1 = tiny(r1)
-    r2    = sqrt(sum((xmid - x2)**2)); if (r2 <= 0.) r2 = tiny(r2)
-    r_com2 = sum((xmid - x_com)**2)
-
-    ! Force along axis (positive = toward x2)
-    f_mid = -M1/r1**2 + M2/r2**2 + omega**2 * dot_product(xmid - x_com, x2 - x1) / sqrt(sum((x2-x1)**2))
-
-    lo_pt = x1 + lo*(x2 - x1)
-    r1    = sqrt(sum((lo_pt - x1)**2)); if (r1 <= 0.) r1 = tiny(r1)
-    r2    = sqrt(sum((lo_pt - x2)**2)); if (r2 <= 0.) r2 = tiny(r2)
-    f_lo  = -M1/r1**2 + M2/r2**2 + omega**2 * dot_product(lo_pt - x_com, x2 - x1) / sqrt(sum((x2-x1)**2))
-
-    if (f_lo * f_mid < 0.) then
-       hi = mid
-    else
-       lo = mid
-    endif
-
-    if (abs(hi - lo) < tol) exit
- enddo
-
- ! L1 position and its effective potential
- frac = 0.5*(lo + hi)
- xL1  = x1 + frac*(x2 - x1)
- r1   = sqrt(sum((xL1 - x1)**2)); if (r1 <= 0.) r1 = tiny(r1)
- r2   = sqrt(sum((xL1 - x2)**2)); if (r2 <= 0.) r2 = tiny(r2)
- r_com2 = sum((xL1 - x_com)**2)
-
- phi_L1 = -M1/r1 - M2/r2 - 0.5*omega**2 * r_com2
-
-end subroutine find_L1
-
-!----------------------------------------------------------------
-!+
 !  Inject particles throughout the simulation
 !+
 !----------------------------------------------------------------
@@ -863,7 +656,6 @@ subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
 
  n_boundary_particles = npartoftype(3)
 
-
  if (n_boundary_particles > 0) then
     allocate(r_boundary_equilibrium(n_boundary_particles))
     allocate(boundary_particle_ids(n_boundary_particles))
@@ -887,7 +679,7 @@ end subroutine reconstruct_boundary_info
 !+
 !----------------------------------------------------------------
 subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
-  use physcon,        only:pi,solarl
+ use physcon,        only:pi,solarl
  use wind_pulsating, only:interp_stellar_profile
  use part,           only:iTeff,iLum,iReff
 
@@ -945,6 +737,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  enddo
 
 end subroutine apply_pulsation
+
 !----------------------------------------------------------------
 !+
 !  Placeholder function
@@ -1046,7 +839,7 @@ subroutine read_mass_loss_data()
  endif
  close(iunit)
 
- if (verbose == 1) then 
+ if (verbose == 1) then
     write(iprint,*) 'Mass-loss rate data read from mass_loss_rate.dat'
     write(iprint,*) ' Mean mass-loss rate          :', mean_mass_loss_rate
     write(iprint,*) ' Gas particle mass            :', mass_of_gas_particle
@@ -1102,6 +895,7 @@ subroutine write_options_inject(iunit)
  call write_inopt(n_inject_period,      'n_inject_period',     'period between reinjections (periods)',iunit)
  call write_inopt(mass_loss_start,      'mass_loss_start',     'start time for mass-loss calculation (periods)',iunit)
  call write_inopt(mass_loss_end,        'mass_loss_end',       'end time for mass-loss calculation (periods)',iunit)
+ call write_inopt(use_file_mdot,        'use_file_mdot',       'skip measurement phase (0=off, 1=on)',iunit)
  call write_inopt(update_L,             'update_L',            'update luminosity with pulsation (0=off, 1=on)',iunit)
  call write_inopt(verbose,              'verbose',             'enable verbose output (0=off, 1=on)',iunit)
 
@@ -1119,7 +913,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save      :: ngot = 0
- integer, parameter :: noptions = 20
+ integer, parameter :: noptions = 21
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -1205,6 +999,10 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) mass_loss_end
     ngot = ngot + 1
     if (mass_loss_end <= 0.) call fatal(label,'mass_loss_end must be > 0')
+ case('use_file_mdot')
+    read(valstring,*,iostat=ierr) use_file_mdot
+    ngot = ngot + 1
+    if (use_file_mdot /= 0 .and. use_file_mdot /= 1) call fatal(label,'use_file_mdot must be 0 or 1')
  case('update_L')
     read(valstring,*,iostat=ierr) update_L
     ngot = ngot + 1
