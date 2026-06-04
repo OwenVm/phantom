@@ -182,7 +182,7 @@ subroutine cooling_H2(T, rho_cgs, Q_cgs, dlnQ_dlnT)
  real, parameter   :: f = 1.0d0
  real              :: nH2
 
- if (T < 1000.) then
+ if (T < 900.) then
     nH2 = 0.5 * rho_cgs/(1.4*mass_proton_cgs)
     Q_cgs = -f*2.61111e-21 * nH2 * (T/1000.)**(4.74) / rho_cgs
     dlnQ_dlnT = 4.74
