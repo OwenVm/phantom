@@ -13,28 +13,30 @@ module inject
 ! :Owner: Owen Vermeulen
 !
 ! :Runtime parameters:
-!   - iboundary_spheres   : *number of boundary spheres (integer)*
-!   - n_profile_points    : *number of points in stellar profile calculation (integer)*
-!   - n_particles_first   : *particles on first shell (0=disabled, >0 builds shells until <100 particles/shell)*
-!   - rho_power           : *density profile exponent: rho ~ r^(-rho_power)*
-!   - r_min_on_rstar      : *inner radius as fraction of R_star*
-!   - pulsation_period    : *pulsation period (days)*
-!   - pulsation_amplitude : *fractional pulsation amplitude*
-!   - piston_velocity     : *piston velocity amplitude (km/s)*
-!   - rho_inner           : *density at inner boundary r_min (cgs)*
-!   - iwind               : *wind type: 1=prescribed, 2=period from mass-radius relation*
-!   - pulsation_timestep  : *pulsation timestep as fraction of pulsation period*
-!   - phi0                : *initial phase offset (radians)*
-!   - wss                 : *fraction of tangential and radial distance between particles*
-!   - reinject_enabled    : *enable dynamic reinjection (logical)*
-!   - n_inject_period     : *number of reinjections per period*
-!   - mass_loss_start     : *start time for mass-loss calculation in years*
-!   - mass_loss_end       : *end time for mass-loss calculation in years*
-!   - meas_int_days       : *interval for mass measurements in days*
-!   - use_file_mdot       : *skip measurement phase and use mass_loss_rate.dat directly (0=off, 1=on)*
+!   - iboundary_spheres      : *number of boundary spheres (integer)*
+!   - n_profile_points       : *number of points in stellar profile calculation (integer)*
+!   - n_particles_first      : *particles on first shell*
+!   - min_mass_fraction      : *criteria determining when to stop building shells, i.e., when M_shell / M_tot < mass_fraction*
+!   - rho_power_in           : *density profile exponent: rho ~ r^(-rho_power)*
+!   - r_min_on_rstar         : *inner radius as fraction of R_star*
+!   - dtpulsation            : *pulsation timestep as fraction of pulsation period*
+!   - rho_inner              : *density at inner boundary r_min (cgs)*
+!   - iwind                  : *wind type: 1=prescribed, 2=period from mass-radius relation*
+!   - pulsation_period_days  : *pulsation period (days)*
+!   - piston_velocity_km_s   : *piston velocity amplitude (km/s)*
+!   - phi0                   : *initial phase offset (radians)*
+!   - wss                    : *fraction of tangential and radial distance between particles*
+!   - save_period            : *wether to save dumps as an multiple of the pulsation period (0=off, 1=on)*
+!   - dumps_p_period         : *how many dumps to save every period, if save_period is activated*
+!   - reinject_enabled       : *enable reinjection (logical)*
+!   - n_inject_period        : *number of reinjections per period*
+!   - mass_loss_start        : *start time for mass-loss calculation in years*
+!   - mass_loss_end          : *end time for mass-loss calculation in years*
+!   - update_L               : *wether to update the luminosity of the sink particle with the pulsation period (0=off, 1=on)*
+!   - use_file_mdot          : *skip measurement phase and use mass_loss_rate.dat directly (0=off, 1=on)*
 !
 ! :Dependencies: dim, eos, icosahedron, infile_utils, injectutils, io,
-!   part, partinject, physcon, units, set_star
+!   part, partinject, physcon, units
 !
  use io, only:fatal
  implicit none
@@ -73,8 +75,7 @@ module inject
  integer, parameter :: max_measurements   = 10000
 
  real :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity
- real :: Rstar, r_min, r_max
- real :: Mtotal, Msink
+ real :: Rstar, r_min, r_max, Mstar, Mtotal
 
  integer, allocatable :: npart_per_shell(:)
  integer, allocatable :: npart_per_boundary_shell(:)
@@ -96,7 +97,6 @@ module inject
  real, allocatable    :: r_boundary_equilibrium(:)
  integer, allocatable :: boundary_particle_ids(:)
  integer              :: n_boundary_particles
- integer              :: active_boundary_spheres
 
  logical :: reinjection_needed = .false.
 
@@ -109,7 +109,6 @@ module inject
  real    :: mass_loss_end_time
  real    :: measurement_interval
  real    :: time_next_measurement
- real    :: mass_previous_measurement
  real, allocatable :: mass_loss_rates(:)
  integer :: n_measurements              = 0
  real    :: mean_mass_loss_rate         = 0.0
@@ -182,16 +181,14 @@ subroutine init_inject(ierr)
 
  if (nptmass < 1) call fatal(label,'need at least one sink particle for central star')
 
- Mtotal    = xyzmh_ptmass(4, wind_emitting_sink)
+ Mstar     = xyzmh_ptmass(4, wind_emitting_sink)
  Rstar     = xyzmh_ptmass(iReff, wind_emitting_sink)
  Rstar_cgs = Rstar * au
- Mstar_cgs = Mtotal * solarm
+ Mstar_cgs = Mstar * solarm
  Tstar     = xyzmh_ptmass(iTeff, wind_emitting_sink)
  Lstar_cgs = xyzmh_ptmass(iLum, wind_emitting_sink) * unit_luminosity
 
  call calc_kappa_max(Mstar_cgs, Lstar_cgs)
-
- Msink = Mtotal
 
  inquire(file='mass_loss_rate.dat', exist=file_exists)
 
@@ -202,9 +199,7 @@ subroutine init_inject(ierr)
        file_exists = .false.
  endif
 
- active_boundary_spheres = iboundary_spheres
-
- if (iwind == 2 .and. .not. file_exists) call calculate_period(Mtotal, Rstar, pulsation_period_days)
+ if (iwind == 2 .and. .not. file_exists) call calculate_period(Mstar, Rstar, pulsation_period_days)
 
  pulsation_period = pulsation_period_days * (days / utime)
  omega_pulsation  = 2.0*pi / pulsation_period
@@ -251,7 +246,7 @@ subroutine init_inject(ierr)
     n_tot               = n_tot + n_shell
  enddo
 
- call setup_star(Msink * umass, Tstar, r_max * au, r_min * au, gmw, gamma, rho_inner, rho_power_in)
+ call setup_star(Mstar * umass, Tstar, r_max * au, r_min * au, gmw, gamma, rho_inner, rho_power_in)
 
  call calc_stellar_profile(n_profile_points)
 
@@ -309,6 +304,8 @@ subroutine init_inject(ierr)
  massoftype(igas)      = mass_of_gas_particle
  massoftype(iboundary) = mass_of_gas_particle
 
+ Mtotal = Mstar + sum(tmp_n(1:n_shells_total)) * mass_of_gas_particle
+
  ! If use_file_mdot=1, read mass_loss_rate.dat now and mark measurement as done,
  ! so the simulation goes straight to reinjection without any measurement phase.
  ! A hard error is raised if the file is absent, since the user explicitly asked for it.
@@ -320,7 +317,7 @@ subroutine init_inject(ierr)
     if (verbose == 1) then
        print *, ''
        print *, 'use_file_mdot=1: skipping measurement phase.'
-       print *, ' particles_to_inject read from file:', particles_to_inject
+       print *, 'particles_to_inject read from file:', particles_to_inject
        print *, ''
     endif
  elseif (file_exists) then
@@ -416,7 +413,7 @@ end subroutine inject_particles
 !+
 !----------------------------------------------------------------
 subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
- use part, only:igas,iboundary,iamtype,nptmass
+ use part, only:igas,iboundary,iamtype
 
  real,    intent(in) :: time
  real,    intent(in) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
@@ -424,14 +421,11 @@ subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vx
  integer, intent(in) :: npartoftype(:)
 
  real    :: rate_this_interval, sum_rates
- real    :: x_agb(3), v_agb(3), x_com(3)
- real    :: dx1, dy1, dz1, dx2, dy2, dz2, dx_com, dy_com, dz_com
- real    :: r1, r2, r_com2, r_sep
- real    :: vx_rel, vy_rel, vz_rel, v2, vr
- real    :: phi_part, phi_L1, omega_binary
- real    :: total_mass, M1, M2, e_therm, e_kin, e_pot
+ real    :: x_agb(3), v_agb(3)
+ real    :: dx1, dy1, dz1, r1 
+ real    :: M1, e_therm, e_kin, e_pot
  integer :: i, n_escaping, newly_unbound
- logical :: unbound, outflowing
+ logical :: unbound
 
  M1    = xyzmh_ptmass(4, wind_emitting_sink)
  x_agb = xyzmh_ptmass(1:3, wind_emitting_sink)
@@ -456,7 +450,6 @@ subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vx
        e_therm = vxyzu(4,i)
        unbound   = .false.
        if (e_kin + e_therm + e_pot > 0.) unbound = .true.
-      !  outflowing = (vr > 0.)
        if (unbound) n_escaping_prev = n_escaping_prev + 1
     enddo
 
@@ -480,7 +473,6 @@ subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vx
        e_therm = vxyzu(4,i)
        unbound   = .false.
        if (e_kin + e_therm + e_pot > 0.) unbound = .true.
-      !  outflowing = (vr > 0.)
        if (unbound) n_escaping = n_escaping + 1
     enddo
 
@@ -580,7 +572,7 @@ end subroutine perform_reinjection
 !+
 !----------------------------------------------------------------
 subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
- use part,           only:igas,iboundary,iphase,iamtype
+ use part,           only:igas,iboundary,iamtype
  use injectutils,    only:inject_fibonacci_sphere
  use wind_pulsating, only:interp_stellar_profile
  use physcon,        only:pi,km,au
@@ -642,7 +634,7 @@ end subroutine setup_initial_atmosphere
 !+
 !----------------------------------------------------------------
 subroutine reconstruct_boundary_info(time,xyzh,npart,xyzmh_ptmass)
- use part,   only:iboundary,iphase,iamtype,npartoftype
+ use part,   only:iboundary,iamtype,npartoftype
  use physcon,only:pi
 
  real,    intent(in) :: time
@@ -687,7 +679,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(in)    :: npart
 
- integer :: i, ipart
+ integer :: i
  real    :: r_eq, r_new, r_current, phase, deltaR_osc
  real    :: x_hat(3), r_dot, x0(3), v0(3)
  real    :: x, y, z
