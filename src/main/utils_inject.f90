@@ -285,37 +285,4 @@ subroutine make_rotation_matrix(rotation_angles, rot_m)
 
 end subroutine make_rotation_matrix
 
-subroutine find_optimal_rotation_matrix(n_particles, rotation_angles)
-   ! This routine is a placeholder for future implementation of an optimization algorithm
-   ! to find the best rotation matrix that minimizes particle clustering on the sphere.
-   ! For now, it simply returns an identity matrix.
-   real, intent(in) :: n_particles
-   real, intent(out) ::  rotation_angles(3)
-   real :: optimal_rot_m(3, 3), rot_m_ini(3, 3), optimal_rotation_angles(3)
-   real :: init_positions(3, :), rotated_positions(3, :), distances(:)
-   real :: minpos, maxpos, avgdist
-   integer :: i, j
-   
-   ! Initialize to identity matrix
-   do i = 1, 3
-      do j = 1, 3
-         if (i == j) then
-            rot_m_ini(i,j) = 1.0
-         else
-            rot_m_ini(i,j) = 0.0
-         endif
-      enddo
-   enddo
-   
-   rotation_angles = (/ 0.0, 0.0, 0.0 /) ! Identity rotation
-   
- end subroutine find_optimal_rotation_matrix
-
-
- subroutine distance_between_particles(pos1, pos2, distance)
-    real, intent(in) :: pos1(3), pos2(3)
-    real, intent(out) :: distance
-    distance = sqrt((pos1(1) - pos2(1))**2 + (pos1(2) - pos2(2))**2 + (pos1(3) - pos2(3))**2)
- end subroutine distance_between_particles
-
 end module injectutils

@@ -55,6 +55,10 @@ module inject
  real    :: dtpulsation           = huge(0.)
  real    :: pulsation_period_days = 300.0
  real    :: piston_velocity_km_s  = 4.0
+ real    :: second_push_speed     = 20.0
+ real    :: initial_push_time     = 1
+ real    :: second_push_time      = 3
+
  real    :: rho_inner             = 1.0e-12
  integer :: iwind                 = 1
  real    :: phi0                  = -3.1415926536d0/2.0
@@ -62,7 +66,7 @@ module inject
  integer :: save_period           = 0
  integer :: dumps_p_period        = 10
 
- integer :: reinject_enabled      = 1
+ integer :: reinject_enabled      = 0
  integer :: n_inject_period       = 40
  real    :: mass_loss_start       = 6.0
  real    :: mass_loss_end         = 8.0
@@ -74,8 +78,8 @@ module inject
  integer, parameter :: companion_sink     = 2
  integer, parameter :: max_measurements   = 10000
 
- real :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity
- real :: Rstar, r_min, r_max, Mstar, Mtotal
+ real :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity, piston_velocity_second_push, deltaR_osc_second_push
+ real :: Rstar, r_min, r_max, Mstar, Mtotal, T_first_push, T_second_push
 
  integer, allocatable :: npart_per_shell(:)
  integer, allocatable :: npart_per_boundary_shell(:)
@@ -134,11 +138,14 @@ subroutine set_default_options_inject(flag)
  iwind                 = 1
  pulsation_period_days = 300.0
  piston_velocity_km_s  = 4.0
+ second_push_speed     = 20.0
+ initial_push_time     = 1
+ second_push_time      = 3
  phi0                  = -3.1415926536d0/2.0
  wss                   = 1.0
  save_period           = 0
  dumps_p_period        = 10
- reinject_enabled      = 1
+ reinject_enabled      = 0
  n_inject_period       = 40
  mass_loss_start       = 6.0
  mass_loss_end         = 8.0
@@ -205,6 +212,11 @@ subroutine init_inject(ierr)
  omega_pulsation  = 2.0*pi / pulsation_period
  piston_velocity  = piston_velocity_km_s * (km / unit_velocity)
  deltaR_osc       = pulsation_period * piston_velocity / (2.0*pi)
+ piston_velocity_second_push = second_push_speed * (km / unit_velocity)
+ deltaR_osc_second_push = pulsation_period * piston_velocity_second_push / (2.0*pi)
+
+ T_first_push  = initial_push_time * (years / utime)
+ T_second_push = second_push_time * (years / utime)
 
  r_min = r_min_on_rstar * Rstar + deltaR_osc * sin(phi0)
 
@@ -680,7 +692,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  integer, intent(in)    :: npart
 
  integer :: i
- real    :: r_eq, r_new, r_current, phase, deltaR_osc
+ real    :: r_eq, r_new, r_current, phase, deltaR_osc, deltaR_osc_second_push
  real    :: x_hat(3), r_dot, x0(3), v0(3)
  real    :: x, y, z
  real    :: Reff, Teff, Lum
@@ -693,11 +705,13 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
 
  phase      = omega_pulsation * time + phi0
  deltaR_osc = pulsation_period * piston_velocity / (2.0 * pi)
+ deltaR_osc_second_push = pulsation_period * piston_velocity_second_push / (2.0 * pi)
 
- r_dot = piston_velocity * cos(phase)
-
- do i = 1, n_boundary_particles
+ if (time > T_first_push .and. time < T_first_push + pulsation_period) then
+    do i = 1, n_boundary_particles
     r_eq  = r_boundary_equilibrium(i)
+
+    phase    = omega_pulsation * (time - T_first_push) + phi0
 
     r_new = r_eq + deltaR_osc * sin(phase)
 
@@ -718,15 +732,57 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     vxyzu(2,i) = r_dot * x_hat(2) + v0(2)
     vxyzu(3,i) = r_dot * x_hat(3) + v0(3)
 
-    if (update_L == 1) then
-       Reff = xyzmh_ptmass(iReff,1) + deltaR_osc * sin(phase)
-       Teff = xyzmh_ptmass(iTeff,1)
-       Lum  = xyzmh_ptmass(iLum,1)
-       call get_lum(Lum, Teff, Reff)
-       xyzmh_ptmass(iLum,1) = Lum
-    endif
+   enddo
+ elseif (time > T_second_push .and. time < T_second_push + pulsation_period) then
+    do i = 1, n_boundary_particles
+      r_eq  = r_boundary_equilibrium(i) 
 
- enddo
+      phase = omega_pulsation * (time - T_second_push) !+ phi0
+
+      r_new = r_eq + deltaR_osc_second_push * sin(phase)
+   
+      x = xyzh(1,i) - x0(1)
+      y = xyzh(2,i) - x0(2)
+      z = xyzh(3,i) - x0(3)
+      r_current = sqrt(x**2 + y**2 + z**2)
+   
+      x_hat(1) = x / r_current
+      x_hat(2) = y / r_current
+      x_hat(3) = z / r_current
+   
+      xyzh(1,i) = r_new * x_hat(1) + x0(1)
+      xyzh(2,i) = r_new * x_hat(2) + x0(2)
+      xyzh(3,i) = r_new * x_hat(3) + x0(3)
+   
+      vxyzu(1,i) = piston_velocity_second_push * cos(phase) * x_hat(1) + v0(1)
+      vxyzu(2,i) = piston_velocity_second_push * cos(phase) * x_hat(2) + v0(2)
+      vxyzu(3,i) = piston_velocity_second_push * cos(phase) * x_hat(3) + v0(3)
+    enddo
+ elseif (time >= T_second_push + pulsation_period) then
+      do i = 1, n_boundary_particles
+
+         r_eq  = r_boundary_equilibrium(i) 
+   
+         r_new = r_eq 
+   
+         x = xyzh(1,i) - x0(1)
+         y = xyzh(2,i) - x0(2)
+         z = xyzh(3,i) - x0(3)
+         r_current = sqrt(x**2 + y**2 + z**2)
+   
+         x_hat(1) = x / r_current
+         x_hat(2) = y / r_current
+         x_hat(3) = z / r_current
+   
+         xyzh(1,i) = r_new * x_hat(1) + x0(1)
+         xyzh(2,i) = r_new * x_hat(2) + x0(2)
+         xyzh(3,i) = r_new * x_hat(3) + x0(3)
+   
+         vxyzu(1,i) = v0(1)
+         vxyzu(2,i) = v0(2)
+         vxyzu(3,i) = v0(3)
+      enddo
+ endif
 
 end subroutine apply_pulsation
 
@@ -879,6 +935,9 @@ subroutine write_options_inject(iunit)
  call write_inopt(iwind,                'iwind',               'wind type: 1=prescribed, 2=period from mass-radius relation',iunit)
  call write_inopt(pulsation_period_days,'pulsation_period',    'pulsation period (days)',iunit)
  call write_inopt(piston_velocity_km_s, 'piston_velocity',     'piston velocity amplitude (km/s)',iunit)
+ call write_inopt(second_push_speed,    'second_push_speed', 'second push piston velocity (km/s)',iunit)
+ call write_inopt(initial_push_time,    'initial_push_time',   'time of first push (periods)',iunit)
+ call write_inopt(second_push_time,     'second_push_time',    'time of second push (periods)',iunit)
  call write_inopt(phi0,                 'phi0',                'initial phase offset (radians)',iunit)
  call write_inopt(wss,                  'wss',                 'radial/tangential spacing ratio',iunit)
  call write_inopt(save_period,          'save_period',         'wether to save dumps as fraction of period (0=off, 1=on)',iunit)
@@ -905,7 +964,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save      :: ngot = 0
- integer, parameter :: noptions = 21
+ integer, parameter :: noptions = 24
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -958,6 +1017,18 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) piston_velocity_km_s
     ngot = ngot + 1
     if (piston_velocity_km_s < 0.) call fatal(label,'piston_velocity must be >= 0')
+ case('second_push_speed')
+    read(valstring,*,iostat=ierr) second_push_speed
+    ngot = ngot + 1
+    if (second_push_speed < 0.) call fatal(label,'second_push_speed must be >= 0')
+ case('initial_push_time')
+    read(valstring,*,iostat=ierr) initial_push_time
+    ngot = ngot + 1
+    if (initial_push_time < 0.) call fatal(label,'initial_push_time must be >= 0')
+ case('second_push_time')
+    read(valstring,*,iostat=ierr) second_push_time
+    ngot = ngot + 1
+    if (second_push_time < 0.) call fatal(label,'second_push_time must be >= 0')
  case('phi0')
     read(valstring,*,iostat=ierr) phi0
     ngot = ngot + 1
