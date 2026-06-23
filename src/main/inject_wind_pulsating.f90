@@ -214,7 +214,7 @@ subroutine init_inject(ierr)
  use eos,           only:gmw,gamma
  use units,         only:utime,umass,udist,unit_velocity,unit_luminosity
  use part,          only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff,iLum,npartoftype
- use injectutils,   only:get_parts_per_sphere, get_fibonacci_spacing
+ use injectutils,   only:get_parts_per_sphere, get_fibonacci_spacing, find_optimal_rotation
  use wind_pulsating,only:setup_star,calc_stellar_profile,region_mass,interp_stellar_profile
  use dust_formation,only:calc_kappa_max
  use timestep,      only:dtmax
@@ -337,12 +337,6 @@ subroutine init_inject(ierr)
  n_shells_total = shell_index
  n_shells_bnd   = min(iboundary_spheres, n_shells_total)
 
- ! Recompute actual particle mass from the shell structure so that the
- ! total atmosphere mass is exactly conserved (mass_of_gas_particle_msun
- ! is only the *target*; the actual value may differ slightly due to
- ! rounding in n_particles_first).
-!  mass_of_gas_particle  = region_mass(r_min, r_max) / real(sum(tmp_n(1:n_shells_total)))
-
  allocate(npart_per_boundary_shell(n_shells_bnd))
  allocate(delta_r_boundary(n_shells_bnd))
  allocate(shell_radii_bnd(n_shells_bnd))
@@ -380,6 +374,7 @@ subroutine init_inject(ierr)
        call fatal(label,'use_file_mdot=1 but mass_loss_rate.dat not found')
     call read_mass_loss_data()
     mass_loss_rate_calculated = .true.
+    call find_optimal_rotation(particles_to_inject)
     if (verbose == 1) then
        print *, ''
        print *, 'use_file_mdot=1: skipping measurement phase.'
@@ -388,6 +383,7 @@ subroutine init_inject(ierr)
     endif
  elseif (file_exists) then
     call read_mass_loss_data()
+    if (mass_loss_rate_calculated) call find_optimal_rotation(particles_to_inject)
  endif
 
  if (verbose == 1) then
@@ -481,7 +477,8 @@ end subroutine inject_particles
 !+
 !----------------------------------------------------------------
 subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,npartoftype)
- use part, only:igas,iboundary,iamtype
+ use part,        only:igas,iboundary,iamtype
+ use injectutils, only:find_optimal_rotation
 
  real,    intent(in) :: time
  real,    intent(in) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
@@ -569,6 +566,7 @@ subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vx
        if (particles_to_inject < 1) particles_to_inject = 1
        mass_loss_rate_calculated = .true.
        call write_mass_loss_data()
+       call find_optimal_rotation(particles_to_inject)
     endif
  endif
 
