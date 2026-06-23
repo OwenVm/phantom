@@ -15,7 +15,6 @@ module inject
 ! :Runtime parameters:
 !   - iboundary_spheres      : *number of boundary spheres (integer)*
 !   - n_profile_points       : *number of points in stellar profile calculation (integer)*
-!   - n_particles_first      : *particles on first shell*
 !   - min_mass_fraction      : *criteria determining when to stop building shells, i.e., when M_shell / M_tot < mass_fraction*
 !   - rho_power_in           : *density profile exponent: rho ~ r^(-rho_power)*
 !   - r_min_on_rstar         : *inner radius as fraction of R_star*
@@ -46,29 +45,28 @@ module inject
            set_default_options_inject, update_injected_par
  private
 
- integer :: iboundary_spheres     = 5
- integer :: n_profile_points      = 10000
- integer :: n_particles_first     = 20000
- real    :: min_mass_fraction     = 0.01
- real    :: rho_power_in          = 6.0
- real    :: r_min_on_rstar        = 1.0
- real    :: dtpulsation           = huge(0.)
- real    :: pulsation_period_days = 300.0
- real    :: piston_velocity_km_s  = 4.0
- real    :: rho_inner             = 1.0e-12
- integer :: iwind                 = 1
- real    :: phi0                  = -3.1415926536d0/2.0
- real    :: wss                   = 1.0
- integer :: save_period           = 0
- integer :: dumps_p_period        = 10
+ integer :: iboundary_spheres        = 5
+ integer :: n_profile_points         = 10000
+ real    :: min_mass_fraction        = 0.01
+ real    :: rho_power_in             = 6.0
+ real    :: r_min_on_rstar           = 1.0
+ real    :: dtpulsation              = huge(0.)
+ real    :: pulsation_period_days    = 300.0
+ real    :: piston_velocity_km_s     = 4.0
+ real    :: rho_inner                = 1.0e-12
+ integer :: iwind                    = 1
+ real    :: phi0                     = -3.1415926536d0/2.0
+ real    :: wss                      = 1.0
+ integer :: save_period              = 0
+ integer :: dumps_p_period           = 10
 
- integer :: reinject_enabled      = 1
- integer :: n_inject_period       = 40
- real    :: mass_loss_start       = 6.0
- real    :: mass_loss_end         = 8.0
- integer :: update_L              = 0
- integer :: verbose               = 1
- integer :: use_file_mdot         = 0   ! when 1: read mass_loss_rate.dat at init and skip measurement
+ integer :: reinject_enabled         = 1
+ integer :: n_inject_period          = 40
+ real    :: mass_loss_start          = 6.0
+ real    :: mass_loss_end            = 8.0
+ integer :: update_L                 = 0
+ integer :: verbose                  = 1
+ integer :: use_file_mdot            = 0   ! when 1: read mass_loss_rate.dat at init and skip measurement
 
  integer, parameter :: wind_emitting_sink = 1
  integer, parameter :: companion_sink     = 2
@@ -85,8 +83,8 @@ module inject
  real, allocatable :: shell_radii_gas(:)
  real, allocatable :: shell_radii_bnd(:)
 
- real :: mass_of_gas_particle      = 0.0
- real :: pulsation_timestep    = 0.02
+ real :: mass_of_gas_particle      = 0.0   ! in code units; set during init
+ real :: pulsation_timestep        = 0.02
 
  real, allocatable :: delta_r_radial(:)
 
@@ -123,30 +121,87 @@ contains
 subroutine set_default_options_inject(flag)
  integer, optional, intent(in) :: flag
 
- iboundary_spheres     = 5
- n_profile_points      = 10000
- n_particles_first     = 20000
- min_mass_fraction     = 0.01
- rho_power_in          = 6.0
- r_min_on_rstar        = 1.0
- dtpulsation           = huge(0.)
- rho_inner             = 1.0e-12
- iwind                 = 1
- pulsation_period_days = 300.0
- piston_velocity_km_s  = 4.0
- phi0                  = -3.1415926536d0/2.0
- wss                   = 1.0
- save_period           = 0
- dumps_p_period        = 10
- reinject_enabled      = 1
- n_inject_period       = 40
- mass_loss_start       = 6.0
- mass_loss_end         = 8.0
- update_L              = 0
- verbose               = 1
- use_file_mdot         = 0
+ iboundary_spheres        = 5
+ n_profile_points         = 10000
+ min_mass_fraction        = 0.01
+ rho_power_in             = 6.0
+ r_min_on_rstar           = 1.0
+ dtpulsation              = huge(0.)
+ rho_inner                = 1.0e-12
+ iwind                    = 1
+ pulsation_period_days    = 300.0
+ piston_velocity_km_s     = 4.0
+ phi0                     = -3.1415926536d0/2.0
+ wss                      = 1.0
+ save_period              = 0
+ dumps_p_period           = 10
+ reinject_enabled         = 1
+ n_inject_period          = 40
+ mass_loss_start          = 6.0
+ mass_loss_end            = 8.0
+ update_L                 = 0
+ verbose                  = 1
+ use_file_mdot            = 0
 
 end subroutine set_default_options_inject
+
+!----------------------------------------------------------------
+!+
+!  Derive n_particles_first from the target particle mass and the
+!  power-law density profile at r_min.  The first-shell inter-particle
+!  spacing dr = wss * r_min * get_fibonacci_spacing(N) implies a shell
+!  mass M_shell(N), so we solve N = M_shell(N)/m_p iteratively.
+!
+!  All arithmetic is done in CGS so that no call to setup_star / region_mass
+!  is needed yet (those require r_max which is only known after the loop).
+!+
+!----------------------------------------------------------------
+subroutine derive_n_particles_first(r_min_cgs, rho_inner_cgs, rho_power, &
+                                     wss_in, m_particle_cgs, n_first)
+ use physcon,     only:pi
+ use injectutils, only:get_fibonacci_spacing
+
+ real,    intent(in)  :: r_min_cgs, rho_inner_cgs, rho_power, wss_in, m_particle_cgs
+ integer, intent(out) :: n_first
+
+ integer, parameter :: max_iter = 100
+ real,    parameter :: tol      = 0.01   ! converged when |N_new - N_old| <= tol
+
+ integer :: iter, n_old, n_new
+ real    :: C_rho, dr_cgs, r_out_cgs, exponent, M_shell_cgs
+
+ C_rho    = rho_inner_cgs * r_min_cgs**rho_power
+ exponent = 3.0 - rho_power
+
+ ! Start from a reasonable guess: treat the shell as infinitesimally thin
+ ! so M ~ 4*pi*r^2 * rho(r) * dr with dr ~ r * spacing(1000)
+ n_old = 1000
+ do iter = 1, max_iter
+    dr_cgs    = wss_in * r_min_cgs * get_fibonacci_spacing(n_old)
+    r_out_cgs = r_min_cgs + dr_cgs
+
+    ! Exact mass of the shell from the analytic power-law integral
+    M_shell_cgs = 4.0*pi * C_rho * (r_out_cgs**exponent - r_min_cgs**exponent) / exponent
+
+    n_new = max(1, nint(M_shell_cgs / m_particle_cgs))
+
+    if (abs(real(n_new - n_old)) <= tol) exit
+
+    n_old = (n_old + n_new) / 2
+ enddo
+
+ n_first = n_new
+
+ if (verbose == 1) then
+    print *, ''
+    print *, ' derive_n_particles_first: converged in ', iter, ' iterations'
+    print *, ' Target particle mass (cgs)    :', m_particle_cgs
+    print *, ' First-shell particle count    :', n_first
+    print *, ' First-shell dr / r_min        :', dr_cgs / r_min_cgs
+    print *, ''
+ endif
+
+end subroutine derive_n_particles_first
 
 !----------------------------------------------------------------
 !+
@@ -157,7 +212,7 @@ subroutine init_inject(ierr)
  use io,            only:fatal
  use physcon,       only:pi,days,au,solarm,km,years
  use eos,           only:gmw,gamma
- use units,         only:utime,umass,unit_velocity,unit_luminosity
+ use units,         only:utime,umass,udist,unit_velocity,unit_luminosity
  use part,          only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff,iLum,npartoftype
  use injectutils,   only:get_parts_per_sphere, get_fibonacci_spacing
  use wind_pulsating,only:setup_star,calc_stellar_profile,region_mass,interp_stellar_profile
@@ -168,6 +223,7 @@ subroutine init_inject(ierr)
  real    :: Mstar_cgs, Rstar_cgs, Tstar, Lstar_cgs
  real    :: current_radius, dr
  integer :: shell_index, max_shells, n_shell
+ integer :: n_particles_first              ! derived locally — no longer a module parameter
  integer :: expected_measurements, i
  integer, parameter  :: max_shells_tmp = 2000
  integer, parameter  :: max_iter_dr    = 100
@@ -176,6 +232,7 @@ subroutine init_inject(ierr)
  integer :: tmp_n(max_shells_tmp), n_tot
  logical :: file_exists
  integer :: iunit
+ real    :: r_min_cgs, m_particle_cgs
 
  ierr = 0
 
@@ -213,9 +270,14 @@ subroutine init_inject(ierr)
     print *, 'dtmax: ', dtmax
  endif
 
- max_shells = 10
-
  if (r_min <= 0.) call fatal(label,'r_min must be > 0')
+
+ mass_of_gas_particle = massoftype(igas)          ! code units (Msun when G=1, dist=au)
+ m_particle_cgs       = mass_of_gas_particle * umass
+ r_min_cgs            = r_min * udist
+
+ call derive_n_particles_first(r_min_cgs, rho_inner, rho_power_in, &
+                                wss, m_particle_cgs, n_particles_first)
 
  current_radius = r_min
  shell_index    = 0
@@ -275,7 +337,11 @@ subroutine init_inject(ierr)
  n_shells_total = shell_index
  n_shells_bnd   = min(iboundary_spheres, n_shells_total)
 
- mass_of_gas_particle  = region_mass(r_min, r_max) / real(sum(tmp_n(1:n_shells_total)))
+ ! Recompute actual particle mass from the shell structure so that the
+ ! total atmosphere mass is exactly conserved (mass_of_gas_particle_msun
+ ! is only the *target*; the actual value may differ slightly due to
+ ! rounding in n_particles_first).
+!  mass_of_gas_particle  = region_mass(r_min, r_max) / real(sum(tmp_n(1:n_shells_total)))
 
  allocate(npart_per_boundary_shell(n_shells_bnd))
  allocate(delta_r_boundary(n_shells_bnd))
@@ -328,6 +394,8 @@ subroutine init_inject(ierr)
     print *, ''
     print *, ' rho_power                        :', rho_power_in
     print *, ' rho_inner (cgs)                  :', rho_inner
+    print *, ' Particle mass from setup (Msun)  :', massoftype(igas)
+    print *, ' n_particles_first (derived)       :', n_particles_first
     print *, ' Atmosphere [r_min, r_max] Rstar  :', r_min, r_max
     print *, ' M_atmos / M_total                :', region_mass(r_min, r_max) / Mtotal
     print *, ' M_atmos (Msun)                   :', region_mass(r_min, r_max)
@@ -422,7 +490,7 @@ subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vx
 
  real    :: rate_this_interval, sum_rates
  real    :: x_agb(3), v_agb(3)
- real    :: dx1, dy1, dz1, r1 
+ real    :: dx1, dy1, dz1, r1
  real    :: M1, e_therm, e_kin, e_pot
  integer :: i, n_escaping, newly_unbound
  logical :: unbound
@@ -869,27 +937,26 @@ subroutine write_options_inject(iunit)
  use infile_utils, only:write_inopt
  integer, intent(in) :: iunit
 
- call write_inopt(n_profile_points,     'n_profile_points',    'number of points in stellar profile',iunit)
- call write_inopt(iboundary_spheres,    'iboundary_spheres',   'number of boundary spheres (piston layers)',iunit)
- call write_inopt(n_particles_first,    'n_particles_first',   'particles on first shell (0=disabled)',iunit)
- call write_inopt(min_mass_fraction,    'min_mass_fraction',   'minimum mass fraction per shell when using n_particles_first',iunit)
- call write_inopt(rho_power_in,         'rho_power',           'density profile exponent: rho ~ r^(-rho_power)',iunit)
- call write_inopt(r_min_on_rstar,       'r_min_on_rstar',      'gas atmosphere inner radius as fraction of R_star',iunit)
- call write_inopt(rho_inner,            'rho_inner',           'inner boundary density at r_min (cgs)',iunit)
- call write_inopt(iwind,                'iwind',               'wind type: 1=prescribed, 2=period from mass-radius relation',iunit)
- call write_inopt(pulsation_period_days,'pulsation_period',    'pulsation period (days)',iunit)
- call write_inopt(piston_velocity_km_s, 'piston_velocity',     'piston velocity amplitude (km/s)',iunit)
- call write_inopt(phi0,                 'phi0',                'initial phase offset (radians)',iunit)
- call write_inopt(wss,                  'wss',                 'radial/tangential spacing ratio',iunit)
- call write_inopt(save_period,          'save_period',         'wether to save dumps as fraction of period (0=off, 1=on)',iunit)
- call write_inopt(dumps_p_period,       'dumps_p_period',      'number of dumps per period (if save_period = 1)',iunit)
- call write_inopt(reinject_enabled,     'reinject_enabled',    'enable dynamic reinjection (0=off, 1=on)',iunit)
- call write_inopt(n_inject_period,      'n_inject_period',     'period between reinjections (periods)',iunit)
- call write_inopt(mass_loss_start,      'mass_loss_start',     'start time for mass-loss calculation (periods)',iunit)
- call write_inopt(mass_loss_end,        'mass_loss_end',       'end time for mass-loss calculation (periods)',iunit)
- call write_inopt(use_file_mdot,        'use_file_mdot',       'skip measurement phase (0=off, 1=on)',iunit)
- call write_inopt(update_L,             'update_L',            'update luminosity with pulsation (0=off, 1=on)',iunit)
- call write_inopt(verbose,              'verbose',             'enable verbose output (0=off, 1=on)',iunit)
+ call write_inopt(n_profile_points,      'n_profile_points',   'number of points in stellar profile',iunit)
+ call write_inopt(iboundary_spheres,     'iboundary_spheres',  'number of boundary spheres (piston layers)',iunit)
+ call write_inopt(min_mass_fraction,     'min_mass_fraction',  'minimum mass fraction per shell',iunit)
+ call write_inopt(rho_power_in,          'rho_power',          'density profile exponent: rho ~ r^(-rho_power)',iunit)
+ call write_inopt(r_min_on_rstar,        'r_min_on_rstar',     'gas atmosphere inner radius as fraction of R_star',iunit)
+ call write_inopt(rho_inner,             'rho_inner',          'inner boundary density at r_min (cgs)',iunit)
+ call write_inopt(iwind,                 'iwind',              'wind type: 1=prescribed, 2=period from mass-radius relation',iunit)
+ call write_inopt(pulsation_period_days, 'pulsation_period',   'pulsation period (days)',iunit)
+ call write_inopt(piston_velocity_km_s,  'piston_velocity',    'piston velocity amplitude (km/s)',iunit)
+ call write_inopt(phi0,                  'phi0',               'initial phase offset (radians)',iunit)
+ call write_inopt(wss,                   'wss',                'radial/tangential spacing ratio',iunit)
+ call write_inopt(save_period,           'save_period',        'wether to save dumps as fraction of period (0=off, 1=on)',iunit)
+ call write_inopt(dumps_p_period,        'dumps_p_period',     'number of dumps per period (if save_period = 1)',iunit)
+ call write_inopt(reinject_enabled,      'reinject_enabled',   'enable dynamic reinjection (0=off, 1=on)',iunit)
+ call write_inopt(n_inject_period,       'n_inject_period',    'period between reinjections (periods)',iunit)
+ call write_inopt(mass_loss_start,       'mass_loss_start',    'start time for mass-loss calculation (periods)',iunit)
+ call write_inopt(mass_loss_end,         'mass_loss_end',      'end time for mass-loss calculation (periods)',iunit)
+ call write_inopt(use_file_mdot,         'use_file_mdot',      'skip measurement phase (0=off, 1=on)',iunit)
+ call write_inopt(update_L,              'update_L',           'update luminosity with pulsation (0=off, 1=on)',iunit)
+ call write_inopt(verbose,               'verbose',            'enable verbose output (0=off, 1=on)',iunit)
 
 end subroutine write_options_inject
 
@@ -905,7 +972,7 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
  integer,          intent(out) :: ierr
 
  integer, save      :: ngot = 0
- integer, parameter :: noptions = 21
+ integer, parameter :: noptions = 20
  logical :: init_opt = .false.
 
  if (.not. init_opt) then
@@ -925,10 +992,6 @@ subroutine read_options_inject(name,valstring,imatch,igotall,ierr)
     read(valstring,*,iostat=ierr) iboundary_spheres
     ngot = ngot + 1
     if (iboundary_spheres < 0) call fatal(label,'iboundary_spheres must be >= 0')
- case('n_particles_first')
-    read(valstring,*,iostat=ierr) n_particles_first
-    ngot = ngot + 1
-    if (n_particles_first < 0) call fatal(label,'n_particles_first must be >= 0')
  case('min_mass_fraction')
     read(valstring,*,iostat=ierr) min_mass_fraction
     ngot = ngot + 1
