@@ -747,10 +747,9 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
 
  integer :: i
  real    :: r_eq, r_new, r_current, phase, deltaR_osc
- real    :: x_hat(3), x_hat_rot(3), r_dot, x0(3), v0(3)
+ real    :: x_hat(3), r_dot, x0(3), v0(3)
  real    :: x, y, z
  real    :: Reff, Teff, Lum
- real    :: golden_ratio, azimuth_angle, cos_az, sin_az
 
  if (.not. allocated(boundary_particle_ids)) return
  if (n_boundary_particles == 0) return
@@ -761,11 +760,6 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
  phase      = omega_pulsation * time + phi0
  deltaR_osc = pulsation_period * piston_velocity / (2.0 * pi)
  r_dot      = piston_velocity * cos(phase)
-
- golden_ratio  = (1.0 + sqrt(5.0)) / 2.0
- azimuth_angle = 2.0 * pi * (time / pulsation_period) / golden_ratio
- cos_az = cos(azimuth_angle)
- sin_az = sin(azimuth_angle)
 
  do i = 1, n_boundary_particles
     r_eq  = r_boundary_equilibrium(i)
@@ -781,18 +775,13 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     x_hat(2) = y / r_current
     x_hat(3) = z / r_current
 
-    ! Rotate x_hat around z-axis by azimuth_angle
-    x_hat_rot(1) = cos_az * x_hat(1) - sin_az * x_hat(2)
-    x_hat_rot(2) = sin_az * x_hat(1) + cos_az * x_hat(2)
-    x_hat_rot(3) = x_hat(3)
+    xyzh(1,i) = r_new + x0(1)
+    xyzh(2,i) = r_new + x0(2)
+    xyzh(3,i) = r_new + x0(3)
 
-    xyzh(1,i) = r_new * x_hat_rot(1) + x0(1)
-    xyzh(2,i) = r_new * x_hat_rot(2) + x0(2)
-    xyzh(3,i) = r_new * x_hat_rot(3) + x0(3)
-
-    vxyzu(1,i) = r_dot * x_hat_rot(1) + v0(1)
-    vxyzu(2,i) = r_dot * x_hat_rot(2) + v0(2)
-    vxyzu(3,i) = r_dot * x_hat_rot(3) + v0(3)
+    vxyzu(1,i) = r_dot + v0(1)
+    vxyzu(2,i) = r_dot + v0(2)
+    vxyzu(3,i) = r_dot + v0(3)
 
     if (update_L == 1) then
        Reff = xyzmh_ptmass(iReff,1) + deltaR_osc * sin(phase)
