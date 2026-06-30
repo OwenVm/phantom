@@ -759,10 +759,12 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
 
  phase      = omega_pulsation * time + phi0
  deltaR_osc = pulsation_period * piston_velocity / (2.0 * pi)
- r_dot      = piston_velocity * cos(phase)
+
+ r_dot = piston_velocity * cos(phase)
 
  do i = 1, n_boundary_particles
     r_eq  = r_boundary_equilibrium(i)
+
     r_new = r_eq + deltaR_osc * sin(phase)
 
     x = xyzh(1,i) - x0(1)
@@ -770,18 +772,17 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
     z = xyzh(3,i) - x0(3)
     r_current = sqrt(x**2 + y**2 + z**2)
 
-    ! Radial unit vector from current position
     x_hat(1) = x / r_current
     x_hat(2) = y / r_current
     x_hat(3) = z / r_current
 
-    xyzh(1,i) = r_new + x0(1)
-    xyzh(2,i) = r_new + x0(2)
-    xyzh(3,i) = r_new + x0(3)
+    xyzh(1,i) = r_new * x_hat(1) + x0(1)
+    xyzh(2,i) = r_new * x_hat(2) + x0(2)
+    xyzh(3,i) = r_new * x_hat(3) + x0(3)
 
-    vxyzu(1,i) = r_dot + v0(1)
-    vxyzu(2,i) = r_dot + v0(2)
-    vxyzu(3,i) = r_dot + v0(3)
+    vxyzu(1,i) = r_dot * x_hat(1) + v0(1)
+    vxyzu(2,i) = r_dot * x_hat(2) + v0(2)
+    vxyzu(3,i) = r_dot * x_hat(3) + v0(3)
 
     if (update_L == 1) then
        Reff = xyzmh_ptmass(iReff,1) + deltaR_osc * sin(phase)
