@@ -747,9 +747,10 @@ subroutine apply_pulsation(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
 
  integer :: i
  real    :: r_eq, r_new, r_current, phase, deltaR_osc
- real    :: x_hat(3), r_dot, x0(3), v0(3)
+ real    :: x_hat(3), x_hat_rot(3), r_dot, x0(3), v0(3)
  real    :: x, y, z
  real    :: Reff, Teff, Lum
+ real    :: golden_ratio, azimuth_angle, cos_az, sin_az
 
  if (.not. allocated(boundary_particle_ids)) return
  if (n_boundary_particles == 0) return
