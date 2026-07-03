@@ -822,6 +822,7 @@ ifeq ($(SETUP), pulsating_wind)
     H2CHEM=yes
     DUST_NUCLEATION=yes
     INJECT_PARTICLES=yes
+    KERNEL=WendlandC6
     KNOWN_SETUP=yes
 endif
 
