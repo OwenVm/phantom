@@ -29,8 +29,8 @@ module inject
 !   - dumps_p_period         : *how many dumps to save every period, if save_period is activated*
 !   - reinject_enabled       : *enable reinjection (logical)*
 !   - n_inject_period        : *number of reinjections per period*
-!   - mass_loss_start        : *start time for mass-loss calculation in years*
-!   - mass_loss_end          : *end time for mass-loss calculation in years*
+!   - mass_loss_start        : *start time for mass-loss calculation in pulsation periods*
+!   - mass_loss_end          : *end time for mass-loss calculation in pulsation periods*
 !   - update_L               : *wether to update the luminosity of the sink particle with the pulsation period (0=off, 1=on)*
 !   - use_file_mdot          : *skip measurement phase and use mass_loss_rate.dat directly (0=off, 1=on)*
 !
@@ -145,63 +145,6 @@ subroutine set_default_options_inject(flag)
 
 end subroutine set_default_options_inject
 
-!----------------------------------------------------------------
-!+
-!  Derive n_particles_first from the target particle mass and the
-!  power-law density profile at r_min.  The first-shell inter-particle
-!  spacing dr = wss * r_min * get_fibonacci_spacing(N) implies a shell
-!  mass M_shell(N), so we solve N = M_shell(N)/m_p iteratively.
-!
-!  All arithmetic is done in CGS so that no call to setup_star / region_mass
-!  is needed yet (those require r_max which is only known after the loop).
-!+
-!----------------------------------------------------------------
-subroutine derive_n_particles_first(r_min_cgs, rho_inner_cgs, rho_power, &
-                                     wss_in, m_particle_cgs, n_first)
- use physcon,     only:pi
- use injectutils, only:get_fibonacci_spacing
-
- real,    intent(in)  :: r_min_cgs, rho_inner_cgs, rho_power, wss_in, m_particle_cgs
- integer, intent(out) :: n_first
-
- integer, parameter :: max_iter = 100
- real,    parameter :: tol      = 0.01   ! converged when |N_new - N_old| <= tol
-
- integer :: iter, n_old, n_new
- real    :: C_rho, dr_cgs, r_out_cgs, exponent, M_shell_cgs
-
- C_rho    = rho_inner_cgs * r_min_cgs**rho_power
- exponent = 3.0 - rho_power
-
- ! Start from a reasonable guess: treat the shell as infinitesimally thin
- ! so M ~ 4*pi*r^2 * rho(r) * dr with dr ~ r * spacing(1000)
- n_old = 1000
- do iter = 1, max_iter
-    dr_cgs    = wss_in * r_min_cgs * get_fibonacci_spacing(n_old)
-    r_out_cgs = r_min_cgs + dr_cgs
-
-    ! Exact mass of the shell from the analytic power-law integral
-    M_shell_cgs = 4.0*pi * C_rho * (r_out_cgs**exponent - r_min_cgs**exponent) / exponent
-
-    n_new = max(1, nint(M_shell_cgs / m_particle_cgs))
-
-    if (abs(real(n_new - n_old)) <= tol) exit
-
-    n_old = (n_old + n_new) / 2
- enddo
-
- n_first = n_new
-
- if (verbose == 1) then
-    print *, ''
-    print *, ' derive_n_particles_first: converged in ', iter, ' iterations'
-    print *, ' Target particle mass (cgs)    :', m_particle_cgs
-    print *, ' First-shell particle count    :', n_first
-    print *, ' First-shell dr / r_min        :', dr_cgs / r_min_cgs
-    print *, ''
- endif
-
-end subroutine derive_n_particles_first
 
 !----------------------------------------------------------------
 !+
@@ -419,6 +362,57 @@ subroutine init_inject(ierr)
  endif
 
 end subroutine init_inject
+
+
+!----------------------------------------------------------------
+!+
+!  Derive n_particles_first from the target particle mass and the
+!  power-law density profile at r_min.  
+!+
+!----------------------------------------------------------------
+subroutine derive_n_particles_first(r_min_cgs, rho_inner_cgs, rho_power, &
+                                     wss_in, m_particle_cgs, n_first)
+ use physcon,     only:pi
+ use injectutils, only:get_fibonacci_spacing
+
+ real,    intent(in)  :: r_min_cgs, rho_inner_cgs, rho_power, wss_in, m_particle_cgs
+ integer, intent(out) :: n_first
+
+ integer, parameter :: max_iter = 100
+ real,    parameter :: tol      = 0.01   
+
+ integer :: iter, n_old, n_new
+ real    :: C_rho, dr_cgs, r_out_cgs, exponent, M_shell_cgs
+
+ C_rho    = rho_inner_cgs * r_min_cgs**rho_power
+ exponent = 3.0 - rho_power
+
+ n_old = 1000
+ do iter = 1, max_iter
+    dr_cgs    = wss_in * r_min_cgs * get_fibonacci_spacing(n_old)
+    r_out_cgs = r_min_cgs + dr_cgs
+    
+    M_shell_cgs = 4.0*pi * C_rho * (r_out_cgs**exponent - r_min_cgs**exponent) / exponent
+
+    n_new = max(1, nint(M_shell_cgs / m_particle_cgs))
+
+    if (abs(real(n_new - n_old)) <= tol) exit
+
+    n_old = (n_old + n_new) / 2
+ enddo
+
+ n_first = n_new
+
+ if (verbose == 1) then
+    print *, ''
+    print *, ' derive_n_particles_first: converged in ', iter, ' iterations'
+    print *, ' Target particle mass (cgs)    :', m_particle_cgs
+    print *, ' First-shell particle count    :', n_first
+    print *, ' First-shell dr / r_min        :', dr_cgs / r_min_cgs
+    print *, ''
+ endif
+
+end subroutine derive_n_particles_first
 
 !----------------------------------------------------------------
 !+
