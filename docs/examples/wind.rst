@@ -210,6 +210,19 @@ If ``iget_tdust = 1``, the dust temperature profile is then given by
 
 where T_star and R_star are the stellar (effective) temperature and radius as defined in the .setup file
 
+::
+
+                tdust_p =       1.000    ! power-law index p of the dust absorption efficiency (Q_abs ~ lambda^-p)
+
+If ``iget_tdust = 5``, the dust temperature profile follows `Bladh & Hoefner (2012)`
+
+.. math::
+
+              T_\mathrm{dust}(r) = T_\mathrm{star}\left(\frac{R_\mathrm{star}}{2r}\right)^{2/(4+p)}
+
+where p is the power-law index of the wavelength dependence of the grain absorption efficiency
+(p = 0 recovers the grey-body flux dilution in the limit r >> R_star). No ray tracing is needed for this option.
+
 
 
 **Have fun :)**
