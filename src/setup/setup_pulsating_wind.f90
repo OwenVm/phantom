@@ -29,8 +29,9 @@ module setup
 !   - semi_major_axis   : *semi-major axis of the binary system (au)*
 !   - wind_gamma        : *adiabatic index for wind gas*
 !
-! :Dependencies: infile_utils, inject, io, options, part, physcon,
-!   setbinary, units, wind_pulsating
+! :Dependencies: cooling, cooling_functions, cooling_solver, dust_formation,
+!   eos, infile_utils, inject, io, options, part, physcon, ptmass_radiation,
+!   setbinary, timestep, units, wind_pulsating
 !
  implicit none
  public :: setpart
@@ -85,9 +86,14 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use wind_pulsating, only:setup_star, calc_stellar_profile, save_stellarprofile
  use setbinary, only:set_binary
  use io,        only: master
- use options,   only  : nfulldump !, ieos
-!  use eos,       only      : gmw
-! use timestep,  only:dtmax
+ use options,   only  : nfulldump
+ use timestep,  only:tmax,dtmax
+ use eos,              only:ieos,gmw,icooling
+ use cooling,          only:Tfloor,use_bound
+ use cooling_solver,   only:icool_method,excitation_HI,relax_bowen,CO_cooling
+ use cooling_functions,only:CO_abun
+ use dust_formation,   only:idust_opacity,kappa_gas,bowen_kmax
+ use ptmass_radiation, only:isink_radiation,iget_tdust,tdust_exp
 
  integer,           intent(in)    :: id
  integer,           intent(inout) :: npart
@@ -100,18 +106,40 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  character(len=*),  intent(in)    :: fileprefix
  character(len=len(fileprefix)+6) :: filename
  integer :: ierr,k
- logical :: iexist
+ logical :: iexist,iexist_in
 
  nfulldump = 1
-!  dtmax = 0.1
-!  ieos = 5
-!  gmw = 1.26
+
+ ! default run time, equation of state, cooling and dust options for the pulsating wind,
+ ! only set on the first setup so that values edited in an existing .in file are kept
+ inquire(file=trim(fileprefix)//'.in',exist=iexist_in)
+ if (.not. iexist_in) then
+    tmax      = 100.
+    dtmax     = 1.
+
+    ieos            = 5
+    gmw             = 1.26
+    icooling        = 1
+    icool_method    = 0
+    excitation_HI   = 1
+    relax_bowen     = 1
+    CO_cooling      = 1
+    CO_abun         = 3.e-4
+    Tfloor          = 10.
+    use_bound       = 1
+    idust_opacity   = 1
+    kappa_gas       = 2.e-4
+    bowen_kmax      = -1.
+    isink_radiation = 2
+    iget_tdust      = 1
+    tdust_exp       = 0.5
+ endif
 
  call set_units(mass=solarm,dist=au,G=1.)
  call set_default_parameters_wind()
  filename = trim(fileprefix)//'.setup'
  inquire(file=filename,exist=iexist)
- if (.not. iexist) call set_default_options_inject()
+ if (.not. iexist .and. .not. iexist_in) call set_default_options_inject()
 
  time = 0.
  filename = trim(fileprefix)//'.setup'
