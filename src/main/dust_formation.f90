@@ -393,29 +393,79 @@ end subroutine evol_K
 !  Calculate mean molecular weight, gamma
 !
 !----------------------------------------
-subroutine calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot)
-! all quantities are in cgs
- use io,  only:fatal
+subroutine calc_muGamma(rho, T, mu, gamma, pH, pH_tot)
+! rho in code units, all other quantities in cgs
+ use io,      only:fatal
+ use units,   only:unit_density
+ use physcon, only:mass_electron_cgs,planckhbar
 
- real, intent(in)    :: rho_cgs
+ real, intent(in)    :: rho
  real, intent(inout) :: T, mu, gamma
  real, intent(out)   :: pH, pH_tot
- real :: KH2, pH2, x, T_ionisation_He
+ real :: KH2, pH2, x, rho_cgs
  real :: T_old, mu_old, gamma_old, tol
+ real :: Tu, Tlo, Thi, fH, XH, YHe, cst, KH, KHe, KHe2, B, xHp, z1, z2, xe, n_mono, n_H2, ntot, Cv
  logical :: converged
  integer :: i,isolve
  integer, parameter :: itermax = 100
- real, parameter    :: a1 = 4.4314613664, b1 = 7.46314789e-02, c1 = 1.5361475e-03
+ real, parameter    :: T_saha   = 3000.  ! above this T, include Saha ionisation (H2 dissociated, ionisation still negligible)
+ real, parameter    :: tol_saha = 1.e-7
+ real, parameter    :: H_ion = 2.179d-11, He_ion = 3.940d-11, He2_ion = 8.720d-11 ! ionisation energies (erg)
  character(len=30), parameter :: label = 'calc_muGamma'
 
- pH_tot = rho_cgs*T*kboltz/(patm*mass_per_H)
- T_old  = T
- ! temperature above which helium starts being ionized (fit to Saha equation)
- T_ionisation_He = 10.**(a1 + log(rho_cgs)/log(10.) * b1 + (log(rho_cgs)/log(10.))**2 * c1)
- if (T > T_ionisation_He) then
-    pH = pH_tot
-    mu = 0.62
-    !  mu     = (1.+4.*eps(iHe))/(1.+eps(iHe))
+ rho_cgs = rho*unit_density
+ pH_tot  = rho_cgs*T*kboltz/(patm*mass_per_H)
+ T_old   = T
+ if (T > T_saha) then
+    !
+    ! hot gas: mu and gamma from H2 dissociation and Saha ionisation of H, He and He+,
+    ! which vary smoothly with T. T is solved for by bisection at fixed internal energy
+    ! u ~ T/(mu*(gamma-1)), set by the input T, mu and gamma; mu*(gamma-1) lies between
+    ! ~0.41 (ionised) and ~0.99 (H2), which brackets T
+    !
+    XH  = 1./(1.+4.*eps(iHe))  ! H and He mass fractions
+    YHe = 1.-XH
+    Tu  = T/(mu*(gamma-1.))
+    Tlo = 0.3*Tu
+    Thi = 1.1*Tu
+    do i = 1,itermax
+       T = sqrt(Tlo*Thi)
+       ! H2 dissociation (same equilibrium as below), no H2 above 1e4 K where the fit is not valid
+       pH_tot = rho_cgs*T*kboltz/(patm*mass_per_H)
+       if (T > 1.e4) then
+          pH = pH_tot
+       elseif (T < 450.) then
+          pH = 0.
+       else
+          KH2 = calc_Kd(coefs(:,iH2), T)
+          pH  = min(solve_q(2.*KH2, 1., -pH_tot), pH_tot)
+       endif
+       fH = pH/pH_tot
+       ! Saha ionisation, closed-form solutions as in D'Angelo & Bodenheimer (2013),
+       ! written in a numerically stable form
+       cst  = mass_proton_cgs/rho_cgs*sqrt(mass_electron_cgs*kboltz*T/(2.*pi*planckhbar**2))**3
+       KH   = cst/XH*exp(-H_ion/(kboltz*T))
+       KHe  = 4.*cst*exp(-He_ion/(kboltz*T))
+       KHe2 = cst*exp(-He2_ion/(kboltz*T))
+       xHp  = 2./(1.+sqrt(1.+4./max(KH,tiny(KH))))
+       z1   = 2.*KHe/(sqrt((KHe+XH)**2 + KHe*YHe) + KHe + XH)
+       B    = KHe2 + XH + 0.25*YHe
+       z2   = 2.*KHe2/(sqrt(B**2 + KHe2*YHe) + B)
+       xe   = fH*xHp + eps(iHe)*z1*(1.+z2)  ! free electrons per H nucleus
+       ! particles per H nucleus: H atoms and ions, He, electrons (monatomic) and H2 molecules
+       n_mono = fH + eps(iHe) + xe
+       n_H2   = 0.5*(1.-fH)
+       ntot   = n_mono + n_H2
+       Cv     = 1.5*n_mono + 2.5*n_H2
+       mu     = (1.+4.*eps(iHe))/ntot
+       gamma  = 1. + ntot/Cv
+       if (Thi/Tlo - 1. < tol_saha) exit
+       if (T > Tu*mu*(gamma-1.)) then
+          Thi = T
+       else
+          Tlo = T
+       endif
+    enddo
  elseif (T > 450.) then
 ! iterate to get consistently pH, T, mu and gamma
     tol       = 1.d-3
@@ -469,6 +519,7 @@ end subroutine calc_muGamma
 !--------------------------------------------
 subroutine init_muGamma(rho_cgs, T, mu, gamma, ppH, ppH2)
 ! all quantities are in cgs
+ use units, only:unit_density
  real, intent(in)    :: rho_cgs
  real, intent(inout) :: T
  real, intent(out)   :: mu, gamma
@@ -490,7 +541,7 @@ subroutine init_muGamma(rho_cgs, T, mu, gamma, ppH, ppH2)
  endif
  mu    = (1.+4.*eps(iHe))*pH_tot/(pH+pH2+eps(iHe)*pH_tot)
  gamma = (5.*pH+5.*eps(iHe)*pH_tot+7.*pH2)/(3.*pH+3.*eps(iHe)*pH_tot+5.*pH2)
- call calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot)
+ call calc_muGamma(rho_cgs/unit_density, T, mu, gamma, pH, pH_tot)
  if (present(ppH))  ppH = pH
  if (present(ppH2)) ppH2 = pH2
 
@@ -504,6 +555,7 @@ end subroutine init_muGamma
 subroutine chemical_equilibrium_light(rho_cgs, T, epsC, pC, pC2, pC2H, pC2H2, mu, gamma,&
      nH, nH2, nHe, nCO, nH2O, nOH)
 ! all quantities are in cgs
+ use units, only:unit_density
  real, intent(in)    :: rho_cgs, epsC
  real, intent(inout) :: T, mu, gamma
  real, intent(out)   :: pC, pC2, pC2H, pC2H2
@@ -513,7 +565,7 @@ subroutine chemical_equilibrium_light(rho_cgs, T, epsC, pC, pC2, pC2H, pC2H2, mu
  real    :: pC_old, pO_old, pSi_old, pS_old, pTi_old, cst
  integer :: i, nit
 
- call calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot)
+ call calc_muGamma(rho_cgs/unit_density, T, mu, gamma, pH, pH_tot)
  if (T > 1.d4) then
     pC    = eps(iC)*pH_tot
     pC2   = 0.
@@ -623,10 +675,15 @@ end subroutine chemical_equilibrium_light
 !
 !-----------------------------
 pure real function solve_q(a, b, c)
+! positive root of a*x^2 + b*x + c = 0. For b > 0 the root is written as
+! -2c/(b+sqrt(b^2-4ac)), which avoids the cancellation in -b+sqrt(b^2-4ac)
+! when 4ac << b^2
  real, intent(in) :: a, b, c
  real :: delta
- if (-4.*a*c/b**2 > epsilon(0.)) then
-    delta = max(b**2-4.*a*c, 0.)
+ delta = max(b**2-4.*a*c, 0.)
+ if (b > 0.) then
+    solve_q = -2.*c/(b+sqrt(delta))
+ elseif (-4.*a*c/b**2 > epsilon(0.)) then
     solve_q = (-b+sqrt(delta))/(2.*a)
  else
     solve_q = -c/b

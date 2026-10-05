@@ -245,7 +245,7 @@ subroutine wind_step(params,state)
     state%JKmuS(idalpha) = state%alpha_Edd+params%alpha_rad
  else
     if (idust_opacity == 1) state%kappa = calc_kappa_bowen(state%Tdust)
-    if (update_muGamma) call calc_muGamma(state%rho,state%Tg,state%mu,state%gamma,pH,pH_tot)
+    if (update_muGamma) call calc_muGamma(state%rho/unit_density,state%Tg,state%mu,state%gamma,pH,pH_tot)
  endif
 
  if (itau_alloc == 1) then
@@ -377,7 +377,7 @@ subroutine wind_step(params,state)
     state%kappa     = calc_kappa_dust(state%JKmuS(idK3),state%Tdust,state%rho)
  else
     if (idust_opacity == 1) state%kappa     = calc_kappa_bowen(state%Tdust)
-    if (update_muGamma) call calc_muGamma(state%rho,state%Tg,state%mu,state%gamma,pH,pH_tot)
+    if (update_muGamma) call calc_muGamma(state%rho/unit_density,state%Tg,state%mu,state%gamma,pH,pH_tot)
  endif
 
  if (itau_alloc == 1) then

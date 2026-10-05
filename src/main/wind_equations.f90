@@ -293,6 +293,7 @@ subroutine calc_dvT_dr(r,v,T0,Rstar_cgs,Mdot_cgs,mu0,gamma0,alpha,dalpha_dr,Q,dQ
  use dim,     only:update_muGamma
  use options, only:icooling,ieos
  use dust_formation,   only:calc_muGamma,idust_opacity
+ use units,            only:unit_density
  real, intent(in)  :: r, v, T0, mu0, gamma0, alpha, dalpha_dr, Q, dQ_dr, Rstar_cgs, Mdot_cgs
  real, intent(out) :: dv_dr, dT_dr
  real, intent(out) :: numerator, denominator
@@ -305,7 +306,7 @@ subroutine calc_dvT_dr(r,v,T0,Rstar_cgs,Mdot_cgs,mu0,gamma0,alpha,dalpha_dr,Q,dQ
  gamma = gamma0
  if (update_muGamma .or. idust_opacity == 2) then
     rho_cgs = Mdot_cgs/(4.*pi*r**2*v)
-    call calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot)
+    call calc_muGamma(rho_cgs/unit_density, T, mu, gamma, pH, pH_tot)
  endif
 
 !Temperature law

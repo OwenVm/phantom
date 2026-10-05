@@ -34,7 +34,7 @@ module inject
 !   - verbose           : *enable verbose output (0=off, 1=on)*
 !   - wss               : *radial/tangential spacing ratio*
 !
-! :Dependencies: dust_formation, eos, infile_utils, injectutils, io, part,
+! :Dependencies: dim, dust_formation, eos, infile_utils, injectutils, io, part,
 !   physcon, timestep, units, wind_pulsating
 !
  use io,      only:fatal
@@ -447,7 +447,7 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(inout) :: npart,npartoftype(:)
  integer :: old_npart
- real    :: r_inject,phase,rho,u,T,P,x0(3),v0(3)
+ real    :: r_inject,phase,rho,u,T,P,mu,gamma,x0(3),v0(3)
 
  x0    = xyzmh_ptmass(1:3,wind_emitting_sink)
  v0    = vxyz_ptmass(1:3,wind_emitting_sink)
@@ -459,13 +459,14 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
     r_inject = r_min + sum(delta_r_radial(1:iboundary_spheres+1))
  endif
  r_inject = r_inject + deltaR_osc*sin(phase)
- call interp_stellar_profile(r_inject,rho,P,u,T)
+ call interp_stellar_profile(r_inject,rho,P,u,T,mu,gamma)
 
  old_npart      = npart
  n_reinjections = n_reinjections + 1
  call inject_geodesic_sphere(n_shells_total + n_reinjections, npart+1, particles_to_inject, r_inject, &
                              piston_velocity*cos(phase), u, rho, npart, npartoftype, xyzh, vxyzu, igas, x0, v0, &
                              wind_emitting_sink)
+ call set_eos_vars(old_npart+1,npart,T,mu,gamma)
 
  xyzmh_ptmass(4,wind_emitting_sink) = xyzmh_ptmass(4,wind_emitting_sink) - (npart - old_npart)*mass_of_gas_particle
 
@@ -492,22 +493,26 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
  real,    intent(in)    :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(inout) :: npart,npartoftype(:)
- integer :: i
- real    :: rho,u,T,P,x0(3),v0(3)
+ integer :: i,npart_old
+ real    :: rho,u,T,P,mu,gamma,x0(3),v0(3)
 
  x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
  v0 = vxyz_ptmass(1:3,wind_emitting_sink)
 
  npart = 0
  do i = 1,n_shells_bnd
-    call interp_stellar_profile(shell_radii_bnd(i),rho,P,u,T)
+    npart_old = npart
+    call interp_stellar_profile(shell_radii_bnd(i),rho,P,u,T,mu,gamma)
     call inject_geodesic_sphere(i, npart+1, npart_per_boundary_shell(i), shell_radii_bnd(i), 0., u, rho, &
                                 npart, npartoftype, xyzh, vxyzu, iboundary, x0, v0, wind_emitting_sink)
+    call set_eos_vars(npart_old+1,npart,T,mu,gamma)
  enddo
  do i = 1,n_shells_total
-    call interp_stellar_profile(shell_radii_gas(i),rho,P,u,T)
+    npart_old = npart
+    call interp_stellar_profile(shell_radii_gas(i),rho,P,u,T,mu,gamma)
     call inject_geodesic_sphere(n_shells_bnd+i, npart+1, npart_per_shell(i), shell_radii_gas(i), 0., u, rho, &
                                 npart, npartoftype, xyzh, vxyzu, igas, x0, v0, wind_emitting_sink)
+    call set_eos_vars(npart_old+1,npart,T,mu,gamma)
  enddo
 
  n_boundary_particles = npartoftype(iboundary)
@@ -521,6 +526,26 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  print*,'Gas particles      : ',npartoftype(igas)
 
 end subroutine setup_initial_atmosphere
+
+!----------------------------------------------------------------
+!+
+!  Give newly injected particles the temperature, mean molecular
+!  weight and adiabatic index of the stellar profile (only relevant
+!  when mu and gamma are evolved)
+!+
+!----------------------------------------------------------------
+subroutine set_eos_vars(ifirst,ilast,T,mu,gamma)
+ use dim,  only:update_muGamma
+ use part, only:eos_vars,imu,igamma,itemp
+ integer, intent(in) :: ifirst,ilast
+ real,    intent(in) :: T,mu,gamma
+
+ if (.not. update_muGamma .or. ilast < ifirst) return
+ eos_vars(itemp, ifirst:ilast) = T
+ eos_vars(imu,   ifirst:ilast) = mu
+ eos_vars(igamma,ifirst:ilast) = gamma
+
+end subroutine set_eos_vars
 
 !----------------------------------------------------------------
 !+
