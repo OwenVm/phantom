@@ -391,124 +391,69 @@ end subroutine evol_K
 !----------------------------------------
 !
 !  Calculate mean molecular weight, gamma
+!  Following Eqs. 15-19 of D’Angelo and Bodenheimer (2013), ApJ, 778, 34
 !
 !----------------------------------------
 subroutine calc_muGamma(rho, T, mu, gamma, pH, pH_tot)
 ! rho in code units, all other quantities in cgs
- use io,      only:fatal
  use units,   only:unit_density
  use physcon, only:mass_electron_cgs,planckhbar
 
  real, intent(in)    :: rho
  real, intent(inout) :: T, mu, gamma
  real, intent(out)   :: pH, pH_tot
- real :: KH2, pH2, x, rho_cgs
- real :: T_old, mu_old, gamma_old, tol
- real :: Tu, Tlo, Thi, fH, XH, YHe, cst, KH, KHe, KHe2, B, xHp, z1, z2, xe, n_mono, n_H2, ntot, Cv
- logical :: converged
- integer :: i,isolve
+ real :: rho_cgs, Tu, Tlo, Thi, XH, YHe, KH2, cst, KH, KHe, KHe2, B
+ real :: x, y, z1, z2, xe, n_mono, n_H2, ntot, Cv
+ integer :: i
  integer, parameter :: itermax = 100
- real, parameter    :: T_saha   = 3000.  ! above this T, include Saha ionisation (H2 dissociated, ionisation still negligible)
- real, parameter    :: tol_saha = 1.e-7
+ real, parameter    :: tol = 1.e-7
  real, parameter    :: H_ion = 2.179d-11, He_ion = 3.940d-11, He2_ion = 8.720d-11 ! ionisation energies (erg)
- character(len=30), parameter :: label = 'calc_muGamma'
+
+ ! y  : fraction of H nuclei in atomic form (H or H+)
+ ! x  : ionised fraction of atomic H
+ ! z1 : fraction of He at least singly ionised
+ ! z2 : fraction of He+ ionised again (He2+ = z1*z2 of all He)
 
  rho_cgs = rho*unit_density
- pH_tot  = rho_cgs*T*kboltz/(patm*mass_per_H)
- T_old   = T
- if (T > T_saha) then
-    !
-    ! hot gas: mu and gamma from H2 dissociation and Saha ionisation of H, He and He+,
-    ! which vary smoothly with T. T is solved for by bisection at fixed internal energy
-    ! u ~ T/(mu*(gamma-1)), set by the input T, mu and gamma; mu*(gamma-1) lies between
-    ! ~0.41 (ionised) and ~0.99 (H2), which brackets T
-    !
-    XH  = 1./(1.+4.*eps(iHe))  ! H and He mass fractions
-    YHe = 1.-XH
-    Tu  = T/(mu*(gamma-1.))
-    Tlo = 0.3*Tu
-    Thi = 1.1*Tu
-    do i = 1,itermax
-       T = sqrt(Tlo*Thi)
-       ! H2 dissociation (same equilibrium as below), no H2 above 1e4 K where the fit is not valid
-       pH_tot = rho_cgs*T*kboltz/(patm*mass_per_H)
-       if (T > 1.e4) then
-          pH = pH_tot
-       elseif (T < 450.) then
-          pH = 0.
-       else
-          KH2 = calc_Kd(coefs(:,iH2), T)
-          pH  = min(solve_q(2.*KH2, 1., -pH_tot), pH_tot)
-       endif
-       fH = pH/pH_tot
-       ! Saha ionisation, closed-form solutions as in D'Angelo & Bodenheimer (2013),
-       ! written in a numerically stable form
-       cst  = mass_proton_cgs/rho_cgs*sqrt(mass_electron_cgs*kboltz*T/(2.*pi*planckhbar**2))**3
-       KH   = cst/XH*exp(-H_ion/(kboltz*T))
-       KHe  = 4.*cst*exp(-He_ion/(kboltz*T))
-       KHe2 = cst*exp(-He2_ion/(kboltz*T))
-       xHp  = 2./(1.+sqrt(1.+4./max(KH,tiny(KH))))
-       z1   = 2.*KHe/(sqrt((KHe+XH)**2 + KHe*YHe) + KHe + XH)
-       B    = KHe2 + XH + 0.25*YHe
-       z2   = 2.*KHe2/(sqrt(B**2 + KHe2*YHe) + B)
-       xe   = fH*xHp + eps(iHe)*z1*(1.+z2)  ! free electrons per H nucleus
-       ! particles per H nucleus: H atoms and ions, He, electrons (monatomic) and H2 molecules
-       n_mono = fH + eps(iHe) + xe
-       n_H2   = 0.5*(1.-fH)
-       ntot   = n_mono + n_H2
-       Cv     = 1.5*n_mono + 2.5*n_H2
-       mu     = (1.+4.*eps(iHe))/ntot
-       gamma  = 1. + ntot/Cv
-       if (Thi/Tlo - 1. < tol_saha) exit
-       if (T > Tu*mu*(gamma-1.)) then
-          Thi = T
-       else
-          Tlo = T
-       endif
-    enddo
- elseif (T > 450.) then
-! iterate to get consistently pH, T, mu and gamma
-    tol       = 1.d-3
-    converged = .false.
-    isolve    = 0
-    pH        = pH_tot ! initial value, overwritten below, to avoid compiler warning
-    i = 0
-    do while (.not. converged .and. i < itermax)
-       i = i+1
-       pH_tot    = rho_cgs*T*kboltz/(patm*mass_per_H)
-       KH2       = calc_Kd(coefs(:,iH2), T)
-       pH        = solve_q(2.*KH2, 1., -pH_tot)
-       pH2       = KH2*pH**2
-       mu        = (1.+4.*eps(iHe))/(.5+eps(iHe)+0.5*pH/pH_tot)
-       x         = 2.*(1.+4.*eps(iHe))/mu
-       gamma     = (3.*x+4.+4.*eps(iHe))/(x+4.+4.*eps(iHe))
-       converged = (abs(T-T_old)/T_old) < tol
-       if (i == 1) then
-          mu_old = mu
-          gamma_old = gamma
-       else
-          T = T_old*mu/mu_old/(gamma_old-1.)*2.*x/(x+4.+4.*eps(iHe))
-          if (i>=itermax .and. .not.converged) then
-             if (isolve==0) then
-                isolve = isolve+1
-                i      = 0
-                tol    = 1.d-2
-                print *,'[dust_formation] cannot converge on T(mu,gamma). Trying with lower tolerance'
-             else
-                print *,'Told=',T_old,',T=',T,',gamma_old=',gamma_old,',gamma=',gamma,',mu_old=',&
-                  mu_old,',mu=',mu,',dT/T=',abs(T-T_old)/T_old,', rho=',rho_cgs
-                call fatal(label,'cannot converge on T(mu,gamma)')
-             endif
-          endif
-       endif
-    enddo
- else
-! Simplified low-temperature chemistry: all hydrogen in H2 molecules
-    pH2    = pH_tot/2.
-    pH     = 0.
-    mu     = (1.+4.*eps(iHe))/(0.5+eps(iHe))
-    gamma  = (5.*eps(iHe)+3.5)/(3.*eps(iHe)+2.5)
- endif
+ XH  = 1./(1.+4.*eps(iHe))  ! H and He mass fractions
+ YHe = 1.-XH
+ Tu  = T/(mu*(gamma-1.))
+ Tlo = 0.3*Tu
+ Thi = 1.1*Tu
+ do i = 1,itermax
+    T = sqrt(Tlo*Thi)
+    pH_tot = rho_cgs*T*kboltz/(patm*mass_per_H)
+    if (T > 1.e4) then
+       pH = pH_tot ! All hydrogen is atomic at high temperatures
+    else
+       KH2 = calc_Kd(coefs(:,iH2), T)
+       pH  = min(solve_q(2.*KH2, 1., -pH_tot), pH_tot)
+    endif
+    y = pH/pH_tot
+    cst  = mass_proton_cgs/rho_cgs*sqrt(mass_electron_cgs*kboltz*T/(2.*pi*planckhbar**2))**3
+    KH   = cst/XH*exp(-H_ion/(kboltz*T))
+    KHe  = 4.*cst*exp(-He_ion/(kboltz*T))
+    KHe2 = cst*exp(-He2_ion/(kboltz*T))
+    x    = 2./(1.+sqrt(1.+4./max(KH,tiny(KH))))
+    z1   = 2.*KHe/(sqrt((KHe+XH)**2 + KHe*YHe) + KHe + XH)
+    B    = KHe2 + XH + 0.25*YHe
+    z2   = 2.*KHe2/(sqrt(B**2 + KHe2*YHe) + B)
+    xe   = y*x + eps(iHe)*z1*(1.+z2)  ! free electrons per H nucleus
+    
+    n_mono = y + eps(iHe) + xe
+    n_H2   = 0.5*(1.-y)
+    ntot   = n_mono + n_H2
+    Cv     = 1.5*n_mono + 2.5*n_H2
+    mu     = (1.+4.*eps(iHe))/ntot
+    gamma  = 1. + ntot/Cv
+    
+    if (Thi/Tlo - 1. < tol) exit
+    if (T > Tu*mu*(gamma-1.)) then
+       Thi = T
+    else
+       Tlo = T
+    endif
+ enddo
 
 end subroutine calc_muGamma
 
