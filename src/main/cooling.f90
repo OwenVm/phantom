@@ -261,6 +261,7 @@ subroutine read_options_cooling(db,nerr)
     call error(label,'cooling requires shock and work contributions')
  call read_inopt(C_cool,'C_cool',db,errcount=nerr,min=0.,default=C_cool)
  call read_inopt(Tfloor,'Tfloor',db,errcount=nerr,min=0.,default=Tfloor)
+ call read_inopt(use_bound,'use_bound',db,errcount=nerr,min=0,max=1,default=use_bound)
 
  select case(icooling)
  case(0,5,6)

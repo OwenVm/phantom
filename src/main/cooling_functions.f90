@@ -586,7 +586,7 @@ real function cool_HI(T_gas, rho_gas, mu, nH, nHe)
  ! all hydrogen atomic, so nH = n_gas
  ! Dalgarno & McCray (1972) provide data starting at 3000K
  ! (1+sqrt(T_gas/1.d5))**(-1) correction factor added by Cen 1992
- if (T_gas > 200000.) then
+ if (T_gas > 3000.) then
     n_gas   = rho_gas/(mu*mass_proton_cgs)
     !nH      = XH*n_gas
     call nelectron_mu(T_gas, rho_gas, nH, nHe, n_e)
