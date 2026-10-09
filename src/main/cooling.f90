@@ -69,7 +69,8 @@ subroutine init_cooling(id,master,iprint,ierr)
  use part,              only:iHI
  use cooling_ism,       only:init_cooling_ism,abund_default
  use cooling_koyamainutsuka, only:init_cooling_KI02
- use cooling_solver,         only:init_cooling_solver
+ use cooling_solver,         only:init_cooling_solver,H2O_cooling,H2vib_cooling,drift_heating,&
+                                  CR_heating,PE_heating,CO_cooling,dust_collision
  use cooling_radapprox, only:init_star
  use viscosity,         only:irealvisc
 
@@ -104,6 +105,11 @@ subroutine init_cooling(id,master,iprint,ierr)
  case(2)
     cooling_in_step = .false.
     call init_cooling_solver(ierr)
+    if (H2O_cooling+H2vib_cooling+drift_heating+CR_heating+PE_heating > 0 &
+        .or. CO_cooling == 2 .or. dust_collision == 2) then
+       call error('cooling','Decin+06 heating/cooling terms require icooling=1')
+       ierr = 3
+    endif
  case default
     call init_cooling_solver(ierr)
  end select
@@ -130,7 +136,7 @@ end subroutine init_cooling
 !
 !-----------------------------------------------------------------------
 
-subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2_in,kappa_in,abund_in,duhydro,ipart)
+subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2_in,kappa_in,abund_in,duhydro,ipart,vxyz_in,arad_in)
  use io,      only:fatal
  use dim,     only:nabundances
  use eos,     only:gmw,gamma,ieos,get_temperature_from_u
@@ -150,6 +156,8 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  real,         intent(in), optional :: Tdust_in,mu_in,gamma_in,K2_in,kappa_in   ! in cgs
  real,         intent(in), optional :: abund_in(nabn),duhydro
  integer,      intent(in), optional :: ipart
+ real,         intent(in), optional :: vxyz_in(3)                       ! velocity, in code units
+ real,         intent(in), optional :: arad_in                          ! radial radiative acceleration, in code units
  real                       :: mui,gammai,Tgas,Tdust,K2,kappa
 
  real :: abundi(nabn)
@@ -190,7 +198,8 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
  case (9)
     call radcool_update_du(ipart,xi,yi,zi,rho,ui,duhydro,Tfloor)
  case default
-    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,divv=real(divv))
+    call energ_cooling_solver(ui,dudt,rho,dt,mui,gammai,Tdust,K2,kappa,divv=real(divv),&
+                              xyzi=(/xi,yi,zi/),vxyzi=vxyz_in,arad_in=arad_in)
  end select
 
 end subroutine energ_cooling
@@ -261,6 +270,7 @@ subroutine read_options_cooling(db,nerr)
     call error(label,'cooling requires shock and work contributions')
  call read_inopt(C_cool,'C_cool',db,errcount=nerr,min=0.,default=C_cool)
  call read_inopt(Tfloor,'Tfloor',db,errcount=nerr,min=0.,default=Tfloor)
+ call read_inopt(use_bound,'use_bound',db,errcount=nerr,min=0,max=1,default=use_bound)
 
  select case(icooling)
  case(0,5,6)

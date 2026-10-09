@@ -25,6 +25,18 @@ module cooling_functions
  real, public :: kappa_dust_min = 1e-3  ! dust opacity value below which dust cooling is not calculated
  real, public :: CO_abun = 3.e-4        ! n_CO/n_H2 used for CO rotational line cooling
 
+ ! parameters of the Decin et al. (2006) heating/cooling terms
+ real, public :: H2O_abun    = 1.25e-4    ! n_H2O/n_H2 used for H2O rotational line cooling
+ real, public :: dust_to_gas = 0.01     ! dust-to-gas mass ratio psi
+ real, public :: grain_amin  = 5.e-7    ! minimum grain size (cm)
+ real, public :: grain_amax  = 2.5e-5   ! maximum grain size (cm)
+ real, public :: grain_rhos  = 3.3      ! specific density of the dust grains (g/cm^3)
+ real, public :: G0_UV       = 1.       ! interstellar far-UV field in Habing units
+ real, public :: r_half_CO   = 0.       ! CO photodissociation radius r_1/2 (cm), 0 = no dissociation
+ real, public :: alpha_CO    = 2.5      ! exponent of the CO photodissociation profile (Mamon et al. 1988)
+
+ real, parameter, public :: He_abun = 1.04e-1 ! n_He/n_H, as in dust_formation
+
  public :: cool_dust_discrete_contact, cool_coulomb, &
            cool_HI, cool_H_ionisation, cool_He_ionisation, &
            cool_H2_rovib, cool_H2_dissociation, cool_CO_rovib, &
@@ -41,10 +53,16 @@ module cooling_functions
            cooling_dust_collision, &
            cooling_radiative_relaxation, &
            cooling_H2, cooling_CO_rot, &
-           testing_cooling_functions
+           testing_cooling_functions, &
+           decin_densities, heating_drift_decin, cooling_H2O_rot_decin, &
+           cooling_CO_rot_decin, cooling_H2_vib_decin, &
+           heating_dust_gas_decin, heating_cosmic_rays_decin, &
+           heating_photoelectric_decin
 
  private
  real, parameter  :: xH = 0.7, xHe = 0.28 !assumed H and He mass fractions
+ integer, parameter :: ngrain    = 32     ! grain-size bins for the Decin et al. (2006) integrals
+ real,    parameter :: v_sputter = 2.e6   ! drift velocity above which grains are sputtered (cm/s)
 
 contains
 !-----------------------------------------------------------------------
@@ -301,6 +319,356 @@ subroutine cooling_CO_rot(T, rho_cgs, divv_cgs, Q_cgs, dlnQ_dlnT)
  endif
 
 end subroutine cooling_CO_rot
+
+!-----------------------------------------------------------------------
+!+
+!  Number densities of the collision partners used in the Decin et al.
+!  (2006) terms. The atomic fraction of H nuclei is recovered from mu
+!  assuming a neutral gas, and rho = m_H n_H (1+4 f_He) as in Decin et al.
+!  The fractions f_H = n(H)/n(H2) of the paper are avoided by working
+!  with n(H) and n(H2) directly, e.g. n(H2)(f_H+2) = n_H
+!+
+!-----------------------------------------------------------------------
+subroutine decin_densities(rho_cgs, mu, fHe, nH, nHI, nH2, nHe)
+ use physcon, only:mass_proton_cgs
+ real, intent(in)  :: rho_cgs, mu, fHe
+ real, intent(out) :: nH, nHI, nH2, nHe
+ real :: y
+
+ nH  = rho_cgs/(mass_proton_cgs*(1.+4.*fHe))
+ nHe = fHe*nH
+ ! (1+4 f_He)/mu = y + f_He + (1-y)/2, with y = n(H)/n_H
+ y   = min(max(2.*((1.+4.*fHe)/mu - fHe) - 1., 0.), 1.)
+ nHI = y*nH
+ nH2 = 0.5*(1.-y)*nH
+
+end subroutine decin_densities
+
+!-----------------------------------------------------------------------
+!+
+!  Drift velocity of a grain of size a (Decin et al. 2006, Eq. 4)
+!
+!  v_K^2 = v Q(a) L/(Mdot c) with Mdot = 4 pi r^2 rho v. The flux-mean
+!  efficiency is taken in the Rayleigh regime, Q(a) proportional to a,
+!  and normalised so that the MRN distribution exerts the radiative
+!  acceleration arad that phantom applies to the gas, which gives
+!  v_K^2 = 4 rho_s a arad / (3 psi rho)
+!+
+!-----------------------------------------------------------------------
+real function drift_velocity_decin(a, T, mu, rho_cgs, arad)
+ use physcon, only:kboltz,mass_proton_cgs
+ real, intent(in) :: a, T, mu, rho_cgs, arad
+ real :: vK2, vT, x
+
+ vK2 = 4.*grain_rhos*a*arad/(3.*dust_to_gas*rho_cgs)
+ if (vK2 <= 0.) then
+    drift_velocity_decin = 0.
+    return
+ endif
+ vT = 0.75*sqrt(3.*kboltz*T/(mu*mass_proton_cgs))
+ x  = 0.5*vT**2/vK2
+ ! sqrt(1+x^2)-x written in a form that does not cancel for large x
+ drift_velocity_decin = sqrt(vK2/(sqrt(1.+x**2)+x))
+
+end function drift_velocity_decin
+
+!-----------------------------------------------------------------------
+!+
+!  A(r) n_H for the MRN size distribution n_d(a) = A a^-3.5 n_H, set
+!  from the local dust-to-gas mass ratio psi
+!+
+!-----------------------------------------------------------------------
+real function grain_norm_decin(rho_cgs)
+ use physcon, only:pi
+ real, intent(in) :: rho_cgs
+
+ grain_norm_decin = 3.*dust_to_gas*rho_cgs/(8.*pi*grain_rhos*(sqrt(grain_amax)-sqrt(grain_amin)))
+
+end function grain_norm_decin
+
+!-----------------------------------------------------------------------
+!+
+!  Gas-grain collisional (drift) heating
+!  H_gg = pi/2 A m_H n_H^2 (1+4f_He) int a^-1.5 v_drift^3 da
+!  Grains drifting faster than 20 km/s are sputtered and do not contribute
+!
+! :References:
+!   Decin et al. (2006), A&A 456, 549, Eqs. 4, 7, 8
+!   Goldreich & Scoville (1976), ApJ 205, 144
+!+
+!-----------------------------------------------------------------------
+subroutine heating_drift_decin(T, rho_cgs, mu, arad, Q_cgs, dlnQ_dlnT)
+ use physcon, only:pi,kb_on_mh
+ real, intent(in)  :: T, rho_cgs, mu, arad
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real    :: dlna, a, vd, w, x, vT2, vK2, s, ds
+ integer :: k
+
+ Q_cgs     = 0.
+ dlnQ_dlnT = 0.
+ if (arad <= 0. .or. dust_to_gas <= 0.) return
+
+ vT2  = 0.75**2*3.*kb_on_mh*T/mu
+ dlna = log(grain_amax/grain_amin)/(ngrain-1)
+ s    = 0.
+ ds   = 0.
+ do k = 1,ngrain
+    a  = grain_amin*exp((k-1)*dlna)
+    vd = drift_velocity_decin(a, T, mu, rho_cgs, arad)
+    if (vd > v_sputter .or. vd <= 0.) cycle
+    w  = 1.
+    if (k == 1 .or. k == ngrain) w = 0.5
+    ! integrate in ln a: a^-1.5 v^3 da = a^-0.5 v^3 dln a
+    s  = s + w*vd**3/sqrt(a)
+    vK2 = 4.*grain_rhos*a*arad/(3.*dust_to_gas*rho_cgs)
+    x  = 0.5*vT2/vK2
+    ! dln v_drift/dln T = -x/(2 sqrt(1+x^2))
+    ds = ds - 1.5*w*vd**3/sqrt(a)*x/sqrt(1.+x**2)
+ enddo
+ if (s <= 0.) return
+
+ ! H_gg/rho, with rho = m_H n_H (1+4f_He)
+ Q_cgs     = 0.5*pi*grain_norm_decin(rho_cgs)*s*dlna
+ dlnQ_dlnT = ds/s
+
+end subroutine heating_drift_decin
+
+!-----------------------------------------------------------------------
+!+
+!  Heat exchange between dust and gas
+!  H = 4 pi k sqrt(8k/(pi m_H)) A n_H^2 alpha_T sqrt(T) (T_d-T) int a^-1.5 da
+!  Sputtered grains (v_drift > 20 km/s) do not contribute
+!
+! :References:
+!   Decin et al. (2006), A&A 456, 549, Eqs. 12, 13
+!   Burke & Hollenbach (1983), ApJ 265, 223
+!+
+!-----------------------------------------------------------------------
+subroutine heating_dust_gas_decin(T, Tdust, rho_cgs, mu, nH, arad, Q_cgs, dlnQ_dlnT)
+ use physcon, only:pi,kboltz,mass_proton_cgs
+ real, intent(in)  :: T, Tdust, rho_cgs, mu, nH, arad
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real    :: dlna, a, w, s, alphaT
+ integer :: k
+
+ Q_cgs     = 0.
+ dlnQ_dlnT = 0.
+ if (dust_to_gas <= 0. .or. abs(Tdust-T) < tiny(T)) return
+
+ dlna = log(grain_amax/grain_amin)/(ngrain-1)
+ s    = 0.
+ do k = 1,ngrain
+    a = grain_amin*exp((k-1)*dlna)
+    if (arad > 0.) then
+       if (drift_velocity_decin(a, T, mu, rho_cgs, arad) > v_sputter) cycle
+    endif
+    w = 1.
+    if (k == 1 .or. k == ngrain) w = 0.5
+    s = s + w/sqrt(a)    ! a^-1.5 da = a^-0.5 dln a
+ enddo
+ s = s*dlna
+
+ alphaT = 0.35*exp(-sqrt((Tdust+T)/500.)) + 0.1
+ Q_cgs  = pi*grain_norm_decin(rho_cgs)*nH*2.*kboltz*sqrt(8.*kboltz*T/(pi*mass_proton_cgs)) &
+          *alphaT*(Tdust-T)*s/rho_cgs
+ dlnQ_dlnT = 0.5 - T/(Tdust-T)
+
+end subroutine heating_dust_gas_decin
+
+!-----------------------------------------------------------------------
+!+
+!  Heating by cosmic rays
+!  H_cr = 6.4e-28 n(H2) (1+f_H/2) (1+4f_He)  erg/s/cm^3
+!
+! :References:
+!   Decin et al. (2006), A&A 456, 549, Eq. 15
+!   Goldsmith & Langer (1978), ApJ 222, 881
+!+
+!-----------------------------------------------------------------------
+subroutine heating_cosmic_rays_decin(rho_cgs, nH2, nHI, fHe, Q_cgs, dlnQ_dlnT)
+ real, intent(in)  :: rho_cgs, nH2, nHI, fHe
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+
+ Q_cgs     = 6.4e-28*(nH2+0.5*nHI)*(1.+4.*fHe)/rho_cgs
+ dlnQ_dlnT = 0.
+
+end subroutine heating_cosmic_rays_decin
+
+!-----------------------------------------------------------------------
+!+
+!  Photoelectric heating from dust grains (Bakes & Tielens 1994 scaled
+!  by 0.2 for a_min = 50 A), attenuated by the circumstellar UV extinction
+!  tau_uv = 1.8 A_v, A_v = 1.6e-22/0.01 psi N_H
+!
+!  Electrons come from CO -> C + O -> C+ + e, so n_e is the dissociated
+!  part of the CO abundance (Mamon et al. 1988 profile). The radial column
+!  from the outer edge is approximated by N_H = n_H r (rho ~ r^-2)
+!
+! :References:
+!   Decin et al. (2006), A&A 456, 549, Eqs. 9, 10, 22
+!+
+!-----------------------------------------------------------------------
+subroutine heating_photoelectric_decin(T, rho_cgs, nH, nH2, r, Q_cgs, dlnQ_dlnT)
+ real, intent(in)  :: T, rho_cgs, nH, nH2, r
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real :: ne, Av, xx
+
+ Q_cgs     = 0.
+ dlnQ_dlnT = 0.
+ if (r_half_CO <= 0. .or. r <= 0.) return
+
+ ne = CO_abun*nH2*(1.-exp(-log(2.)*(r/r_half_CO)**alpha_CO))
+ if (ne <= 0.) return
+ Av = 1.6e-22/0.01*dust_to_gas*nH*r
+ xx = 2.e-4*G0_UV*sqrt(T)/ne
+ Q_cgs     = 0.2e-24*3.e-2/(1.+xx)*nH*G0_UV*exp(-1.8*Av)/rho_cgs
+ dlnQ_dlnT = -0.5*xx/(1.+xx)
+
+end subroutine heating_photoelectric_decin
+
+!-----------------------------------------------------------------------
+!+
+!  Rotational line cooling in the three-level approximation of
+!  Goldreich & Scoville (1976), as used by Justtanont et al. (1994)
+!
+!  cooling = n_mol C h nu21 [exp(-h nu21/kT) - exp(-h nu21/kTx)]
+!  with nu21 = nu0 Tx^0.5, and the excitation temperature Tx solving
+!  C h nu21/k (1/Tx-1/T) = beta21 A21
+!                          + eps W A31/2 h nu21/k exp(-h nu31/kT*) (1/T*-1/Tx)
+!  beta21 A21 = betacoef/n_mol (v/r)(1+eps/2) Tx^pexp
+!  For a spherical outflow (v/r)(1+eps/2) = div v/2
+!+
+!-----------------------------------------------------------------------
+subroutine cooling_rot_J94(T, rho_cgs, Ccoll, nmol, nu0, nu31, A31, betacoef, pexp, &
+                           divv_cgs, eps, W, Tstar, Q_cgs, dlnQ_dlnT)
+ use physcon, only:planckh,kboltz
+ real, intent(in)  :: T, rho_cgs, Ccoll, nmol, nu0, nu31, A31, betacoef, pexp
+ real, intent(in)  :: divv_cgs, eps, W, Tstar
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ integer, parameter :: itermax = 60
+ real,    parameter :: tol = 1.e-7
+ real    :: theta0, B, P, Tx, Tlo, Thi, g, dg, Tnew, E, eT, eTx
+ integer :: iter
+
+ Q_cgs     = 0.
+ dlnQ_dlnT = 0.
+ if (nmol <= 0. .or. Ccoll <= 0.) return
+
+ theta0 = planckh*nu0/kboltz
+ B = betacoef/nmol*0.5*abs(divv_cgs)
+ P = 0.
+ if (Tstar > 0. .and. eps > 0.) P = 0.5*eps*W*A31*exp(-planckh*nu31/(kboltz*Tstar))
+ if (B <= 0. .and. P <= 0.) return   ! lines fully trapped: Tx = T
+
+ ! g(Tx) decreases monotonically, g(0+) > 0 and g(max(T,T*)) <= 0
+ Tlo = 1.e-3
+ Thi = max(T, Tstar)
+ Tx  = T
+ do iter = 1,itermax
+    g  = Ccoll*theta0*(1./sqrt(Tx) - sqrt(Tx)/T) - B*Tx**pexp
+    dg = -0.5*Ccoll*theta0*(Tx**(-1.5) + 1./(sqrt(Tx)*T)) - pexp*B*Tx**(pexp-1.)
+    if (P > 0.) then
+       g  = g  - P*theta0*(sqrt(Tx)/Tstar - 1./sqrt(Tx))
+       dg = dg - 0.5*P*theta0*(1./(sqrt(Tx)*Tstar) + Tx**(-1.5))
+    endif
+    if (g > 0.) then
+       Tlo = Tx
+    else
+       Thi = Tx
+    endif
+    Tnew = Tx - g/dg
+    if (Tnew <= Tlo .or. Tnew >= Thi) Tnew = sqrt(Tlo*Thi)
+    if (abs(Tnew-Tx) < tol*Tx) exit
+    Tx = Tnew
+ enddo
+ Tx = Tnew
+
+ E   = theta0*sqrt(Tx)          ! h nu21/k
+ eT  = exp(-E/T)
+ eTx = exp(-E/Tx)
+ Q_cgs = -nmol*Ccoll*kboltz*E*(eT-eTx)/rho_cgs
+ ! at fixed Tx: C ~ T^0.5
+ if (abs(eT-eTx) > tiny(eT)) dlnQ_dlnT = 0.5 + E/T*eT/(eT-eTx)
+
+end subroutine cooling_rot_J94
+
+!-----------------------------------------------------------------------
+!+
+!  Cooling by rotational excitation of H2O
+!  <sigma v>(He-H2O) = 0.21e-11 T^0.5, H a factor 1.16 larger, H2 from
+!  Phillips et al. (1996) ratios, ortho:para = 3:1
+!
+! :References:
+!   Decin et al. (2006), A&A 456, 549, Eq. 17
+!   Justtanont et al. (1994), ApJ 435, 852, Eqs. 11, 12
+!+
+!-----------------------------------------------------------------------
+subroutine cooling_H2O_rot_decin(T, rho_cgs, nHI, nH2, nHe, divv_cgs, eps, W, Tstar, &
+                                 Q_cgs, dlnQ_dlnT)
+ real, intent(in)  :: T, rho_cgs, nHI, nH2, nHe, divv_cgs, eps, W, Tstar
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real :: Ccoll
+
+ Ccoll = 0.21e-11*sqrt(T)*(0.83*nHI + 0.715*nHe + 4.5*nH2)
+ call cooling_rot_J94(T, rho_cgs, Ccoll, H2O_abun*nH2, 2.6e11, 1.13e14, 34., 6.57, 3., &
+                      divv_cgs, eps, W, Tstar, Q_cgs, dlnQ_dlnT)
+
+end subroutine cooling_H2O_rot_decin
+
+!-----------------------------------------------------------------------
+!+
+!  Cooling by rotational excitation of CO
+!  <sigma v>(CO-H2) = 4e-12 T^0.5, <sigma v>(CO-He) = 4.5e-13 T^0.5,
+!  H a factor 1.16 larger than He. CO is photodissociated following
+!  Mamon et al. (1988) when r_half_CO > 0
+!
+! :References:
+!   Decin et al. (2006), A&A 456, 549, Eqs. 21, 22
+!   Justtanont et al. (1994), ApJ 435, 852, Eqs. 16, 17
+!+
+!-----------------------------------------------------------------------
+subroutine cooling_CO_rot_decin(T, rho_cgs, nHI, nH2, nHe, r, divv_cgs, eps, W, Tstar, &
+                                Q_cgs, dlnQ_dlnT)
+ real, intent(in)  :: T, rho_cgs, nHI, nH2, nHe, r, divv_cgs, eps, W, Tstar
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real :: Ccoll, nCO
+
+ nCO = CO_abun*nH2
+ if (r_half_CO > 0.) nCO = nCO*exp(-log(2.)*(r/r_half_CO)**alpha_CO)
+ Ccoll = 4.5e-13*sqrt(T)*(1.16*nHI + nHe + 10.*nH2)
+ call cooling_rot_J94(T, rho_cgs, Ccoll, nCO, 4.89e10, 6.43e13, 34., 6.60, 2.5, &
+                      divv_cgs, eps, W, Tstar, Q_cgs, dlnQ_dlnT)
+
+end subroutine cooling_CO_rot_decin
+
+!-----------------------------------------------------------------------
+!+
+!  Cooling by vibrational excitation of H2 (v=1 -> 0)
+!
+! :References:
+!   Decin et al. (2006), A&A 456, 549, Eqs. 23-27
+!   Hollenbach & McKee (1979, 1989)
+!+
+!-----------------------------------------------------------------------
+subroutine cooling_H2_vib_decin(T, rho_cgs, nHI, nH2, Q_cgs, dlnQ_dlnT)
+ use physcon, only:eV,kboltz
+ real, intent(in)  :: T, rho_cgs, nHI, nH2
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real, parameter :: A10 = 3.e-7, E10 = 0.6*eV
+ real :: e, alpha_n, n1
+
+ Q_cgs     = 0.
+ dlnQ_dlnT = 0.
+ if (nH2 <= 0.) return
+
+ e       = exp(-E10/(kboltz*T))
+ alpha_n = nHI*1.0e-12*sqrt(T)*exp(-1000./T) + nH2*1.4e-12*sqrt(T)*exp(-18100./(T+1200.))
+ n1      = nH2*alpha_n*e/(alpha_n*(1.+e) + A10)
+ Q_cgs   = -A10*E10*n1/rho_cgs
+ ! dominant (Boltzmann factor) part of the temperature dependence
+ dlnQ_dlnT = E10/(kboltz*T)*(alpha_n+A10)/(alpha_n*(1.+e)+A10)
+
+end subroutine cooling_H2_vib_decin
 
 !-----------------------------------------------------------------------
 !+

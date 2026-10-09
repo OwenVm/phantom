@@ -18,15 +18,28 @@ module cooling_solver
 !
 ! :Runtime parameters:
 !   - CO_abun        : *CO abundance n_CO/n_H2 for CO cooling*
-!   - CO_cooling     : *CO rotational line cooling (1=on/0=off)*
+!   - CO_cooling     : *CO rotational line cooling (0=off, 1=Ceulemans+26 fit, 2=Decin+06)*
+!   - CR_heating     : *cosmic ray heating, Decin+06 (1=on/0=off)*
+!   - G0_UV          : *interstellar far-UV field (Habing units)*
+!   - H2O_abun       : *H2O abundance n_H2O/n_H2 for H2O cooling*
+!   - H2O_cooling    : *H2O rotational line cooling, Decin+06 (1=on/0=off)*
 !   - H2_cooling     : *H2 cooling (1=on/0=off)*
+!   - H2vib_cooling  : *H2 vibrational cooling, Decin+06 (1=on/0=off)*
+!   - PE_heating     : *photoelectric heating, Decin+06 (1=on/0=off)*
 !   - T1_factor      : *factor by which T0 is increased (T1= T1_factor*T0)*
 !   - bowen_Cprime   : *radiative cooling rate (g.s/cm³)*
-!   - dust_collision : *dust collision (1=on/0=off)*
+!   - alpha_CO       : *exponent of the CO photodissociation profile*
+!   - drift_heating  : *gas-grain drift heating, Decin+06 (1=on/0=off)*
+!   - dust_collision : *dust collision (0=off, 1=on, 2=Decin+06 heat exchange)*
+!   - dust_to_gas    : *dust-to-gas mass ratio of the MRN grains*
+!   - grain_amax     : *maximum grain size (cm)*
+!   - grain_amin     : *minimum grain size (cm)*
+!   - grain_rhos     : *specific density of the dust grains (g/cm^3)*
 !   - excitation_HI  : *cooling via electron excitation of HI (1=on/0=off)*
 !   - high_temp      : *radiative cooling for high temperatures (1=on/0=off)*
 !   - icool_method   : *integration method (0=implicit, 1=explicit, 2=exact solution)*
 !   - lambda_shock   : *Cooling rate parameter for analytic shock solution*
+!   - r_half_CO      : *CO photodissociation radius (cm), 0=no dissociation*
 !   - relax_bowen    : *Bowen (diffusive) relaxation (1=on/0=off)*
 !   - relax_stefan   : *radiative relaxation (1=on/0=off)*
 !   - shock_problem  : *piecewise formulation for analytic shock solution (1=on/0=off)*
@@ -35,11 +48,15 @@ module cooling_solver
 !   units
 !
 
- use cooling_functions, only:bowen_Cprime,lambda_shock_cgs,T0_value,T1_factor,CO_abun
+ use cooling_functions, only:bowen_Cprime,lambda_shock_cgs,T0_value,T1_factor,CO_abun,&
+                              H2O_abun,dust_to_gas,grain_amin,grain_amax,grain_rhos,&
+                              G0_UV,r_half_CO,alpha_CO,He_abun
  implicit none
  character(len=*), parameter :: label = 'cooling_library'
  integer, public :: excitation_HI = 0, relax_Bowen = 0, dust_collision = 0, &
                     relax_Stefan = 0, shock_problem = 0, H2_cooling = 0, CO_cooling = 0
+ integer, public :: H2O_cooling = 0, H2vib_cooling = 0, drift_heating = 0, &
+                    CR_heating = 0, PE_heating = 0
  integer, public :: icool_method  = 0, high_temp = 0
  integer, parameter :: nTg  = 64
  real :: Tref = 1.d7 !higher value of the temperature grid (for exact cooling)
@@ -71,7 +88,8 @@ subroutine init_cooling_solver(ierr)
     ierr = 1
  endif
  !if no cooling flag activated, disable cooling
- if ( (excitation_HI+relax_Bowen+dust_collision+relax_Stefan+shock_problem+high_temp+H2_cooling+CO_cooling) == 0) then
+ if ( (excitation_HI+relax_Bowen+dust_collision+relax_Stefan+shock_problem+high_temp+H2_cooling+CO_cooling &
+       +H2O_cooling+H2vib_cooling+drift_heating+CR_heating+PE_heating) == 0) then
     print *,'ERROR: no cooling prescription activated'
     ierr = 2
  endif
@@ -86,19 +104,21 @@ end subroutine init_cooling_solver
 !   cooling prescription and choice of solver
 !+
 !-----------------------------------------------------------------------
-subroutine energ_cooling_solver(ui,dudt,rho,dt,mu,gamma,Tdust,K2,kappa, i, divv)
+subroutine energ_cooling_solver(ui,dudt,rho,dt,mu,gamma,Tdust,K2,kappa, i, divv, xyzi, vxyzi, arad_in)
  real, intent(in)  :: ui,rho,dt
  real, intent(in)  :: Tdust,mu,gamma,K2,kappa
  real, intent(out) :: dudt
  integer, optional, intent(in) :: i !index for saving cooling rate in dump (i)
  real,    optional, intent(in) :: divv !velocity divergence (code units)
+ real,    optional, intent(in) :: xyzi(3),vxyzi(3) !position and velocity (code units)
+ real,    optional, intent(in) :: arad_in !radial radiative acceleration on the gas (code units)
 
  if (icool_method == 2) then
-    call exact_cooling(ui,dudt,rho,dt,mu,gamma,Tdust,K2,kappa, i, divv)
+    call exact_cooling(ui,dudt,rho,dt,mu,gamma,Tdust,K2,kappa, i, divv, xyzi, vxyzi, arad_in)
  elseif (icool_method == 0) then
-    call implicit_cooling(ui,dudt,rho,dt,mu,gamma,Tdust,K2,kappa, i, divv)
+    call implicit_cooling(ui,dudt,rho,dt,mu,gamma,Tdust,K2,kappa, i, divv, xyzi, vxyzi, arad_in)
  else
-    call explicit_cooling(ui,dudt,rho,dt,mu,gamma,Tdust,K2,kappa, i, divv)
+    call explicit_cooling(ui,dudt,rho,dt,mu,gamma,Tdust,K2,kappa, i, divv, xyzi, vxyzi, arad_in)
  endif
 
 end subroutine energ_cooling_solver
@@ -108,7 +128,7 @@ end subroutine energ_cooling_solver
 !   explicit cooling
 !+
 !-----------------------------------------------------------------------
-subroutine explicit_cooling (ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, divv)
+subroutine explicit_cooling (ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, divv, xyzi, vxyzi, arad_in)
 
  use physcon, only:Rg
  use units,   only:unit_ergg
@@ -118,12 +138,14 @@ subroutine explicit_cooling (ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, 
  real, intent(out) :: dudt                          !code units
  integer, optional, intent(in) :: i !index for saving cooling rate in dump (i)
  real,    optional, intent(in) :: divv !velocity divergence (code units)
+ real,    optional, intent(in) :: xyzi(3),vxyzi(3) !position and velocity (code units)
+ real,    optional, intent(in) :: arad_in !radial radiative acceleration on the gas (code units)
 
  real              :: u,Q,dlnQ_dlnT,T,T_on_u
 
  T_on_u = (gamma-1.)*mu*unit_ergg/Rg
  T      = T_on_u*ui
- call calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Tdust, mu, gamma, K2, kappa, i, divv)
+ call calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Tdust, mu, gamma, K2, kappa, i, divv, xyzi, vxyzi, arad_in)
  if (ui + Q*dt < 0.) then   ! assume thermal equilibrium
     if (Townsend_test) then
        !special fix for Townsend benchmark
@@ -143,7 +165,7 @@ end subroutine explicit_cooling
 !   implicit cooling
 !+
 !-----------------------------------------------------------------------
-subroutine implicit_cooling (ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, divv)
+subroutine implicit_cooling (ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, divv, xyzi, vxyzi, arad_in)
  use physcon, only:Rg
  use units,   only:unit_ergg
 
@@ -152,6 +174,8 @@ subroutine implicit_cooling (ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, 
  real, intent(out) :: dudt
  integer, optional, intent(in) :: i !index for saving cooling rate in dump (i)
  real,    optional, intent(in) :: divv !velocity divergence (code units)
+ real,    optional, intent(in) :: xyzi(3),vxyzi(3) !position and velocity (code units)
+ real,    optional, intent(in) :: arad_in !radial radiative acceleration on the gas (code units)
 
  real, parameter    :: tol = 1.d-6, Tmin = 1.
  integer, parameter :: iter_max = 40
@@ -161,7 +185,7 @@ subroutine implicit_cooling (ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, 
  u       = ui
  T_on_u  = (gamma-1.)*mu*unit_ergg/Rg
  T       = ui*T_on_u
- call calc_cooling_rate(Q,dlnQ_dlnT, rho, T, Tdust, mu, gamma, K2, kappa, i, divv)
+ call calc_cooling_rate(Q,dlnQ_dlnT, rho, T, Tdust, mu, gamma, K2, kappa, i, divv, xyzi, vxyzi, arad_in)
  !cooling negligible, return
  if (abs(Q) < tiny(0.)) then
     dudt = 0.
@@ -174,7 +198,7 @@ subroutine implicit_cooling (ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, 
  !define bisection interval for function f(T) = T^(n+1)-T^n-Q*dt*T_on_u
  do while (((f0 > 0. .and. fi > 0.) .or. (f0 < 0. .and. fi < 0.)) .and. iter < iter_max)
     Tmid = max(T+Q*dt*T_on_u,Tmin)
-    call calc_cooling_rate(Qi,dlnQ_dlnT, rho, Tmid, Tdust, mu, gamma, K2, kappa, i, divv)
+    call calc_cooling_rate(Qi,dlnQ_dlnT, rho, Tmid, Tdust, mu, gamma, K2, kappa, i, divv, xyzi, vxyzi, arad_in)
     fi = Tmid-T0-Qi*dt*T_on_u
     T  = Tmid
     iter = iter+1
@@ -196,7 +220,7 @@ subroutine implicit_cooling (ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, 
  do while (dx/T0 > tol .and. iter < iter_max)
     dx = dx*.5
     Tmid = T+dx
-    call calc_cooling_rate(Qi,dlnQ_dlnT, rho, Tmid, Tdust, mu, gamma, K2, kappa, i, divv)
+    call calc_cooling_rate(Qi,dlnQ_dlnT, rho, Tmid, Tdust, mu, gamma, K2, kappa, i, divv, xyzi, vxyzi, arad_in)
     fmid = Tmid-T0-Qi*dt*T_on_u
     if (Townsend_test) then
        !special fix for Townsend benchmark
@@ -222,7 +246,7 @@ end subroutine implicit_cooling
 !   analytical cooling rate prescriptions
 !+
 !-----------------------------------------------------------------------
-subroutine exact_cooling(ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, divv)
+subroutine exact_cooling(ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, divv, xyzi, vxyzi, arad_in)
 
  use physcon, only:Rg
  use units,   only:unit_ergg
@@ -232,6 +256,8 @@ subroutine exact_cooling(ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, divv
  real, intent(out) :: dudt
  integer, optional, intent(in) :: i !index for saving cooling rate in dump (i)
  real,    optional, intent(in) :: divv !velocity divergence (code units)
+ real,    optional, intent(in) :: xyzi(3),vxyzi(3) !position and velocity (code units)
+ real,    optional, intent(in) :: arad_in !radial radiative acceleration on the gas (code units)
 
  real, parameter :: tol = 1.d-12
  real            :: Qref,dlnQref_dlnT,Q,dlnQ_dlnT,Y,Yk,Yinv,Temp,dy,T,T_on_u,T_floor,Qi
@@ -248,10 +274,10 @@ subroutine exact_cooling(ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, divv
  if (T < T_floor) then
     Temp = T_floor
  elseif (T > Tref) then
-    call calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Tdust, mu, gamma, K2, kappa, i, divv)
+    call calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Tdust, mu, gamma, K2, kappa, i, divv, xyzi, vxyzi, arad_in)
     Temp = T+T_on_u*Q*dt
  else
-    call calc_cooling_rate(Qref,dlnQref_dlnT, rho, Tref, Tdust, mu, gamma, K2, kappa, i, divv)
+    call calc_cooling_rate(Qref,dlnQref_dlnT, rho, Tref, Tdust, mu, gamma, K2, kappa, i, divv, xyzi, vxyzi, arad_in)
     Qi = Qref
     Y         = 0.
     k         = nTg
@@ -259,7 +285,7 @@ subroutine exact_cooling(ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, divv
     dlnQ_dlnT = dlnQref_dlnT  ! default value if Tgrid < T for all k
     do while (Tgrid(k) > T)
        k = k-1
-       call calc_cooling_rate(Q, dlnQ_dlnT, rho, Tgrid(k), Tdust, mu, gamma, K2, kappa, i, divv)
+       call calc_cooling_rate(Q, dlnQ_dlnT, rho, Tgrid(k), Tdust, mu, gamma, K2, kappa, i, divv, xyzi, vxyzi, arad_in)
 
        if ((Qi /= 0.) .and. (Q /= 0.)) then
           dlnQ_dlnT = log(Qi/Q)/log(Tgrid(k+1)/Tgrid(k))
@@ -290,7 +316,7 @@ subroutine exact_cooling(ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, i, divv
     !find new k for eq A7 (not necessarily the same as k for eq A5)
     do while(y>yk .AND. k>1)
        k = k-1
-       call calc_cooling_rate(Q, dlnQ_dlnT, rho, Tgrid(k), Tdust, mu, gamma, K2, kappa, i, divv)
+       call calc_cooling_rate(Q, dlnQ_dlnT, rho, Tgrid(k), Tdust, mu, gamma, K2, kappa, i, divv, xyzi, vxyzi, arad_in)
 
        if ((Qi /= 0.) .and. (Q /= 0.)) then
           dlnQ_dlnT = log(Qi/Q)/log(Tgrid(k+1)/Tgrid(k))
@@ -331,13 +357,17 @@ end subroutine exact_cooling
 !  calculate cooling rates
 !+
 !-----------------------------------------------------------------------
-subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, i, divv)
- use units,   only:unit_ergg,unit_density,utime
+subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, i, divv, xyzi, vxyzi, arad_in)
+ use units,   only:unit_ergg,unit_density,utime,udist,unit_velocity
  use physcon, only:mass_proton_cgs
+ use part,    only:nptmass,xyzmh_ptmass,vxyz_ptmass,iReff,iTeff
  use cooling_functions, only:cooling_neutral_hydrogen,&
      cooling_Bowen_relaxation,cooling_dust_collision,&
      cooling_radiative_relaxation,piecewise_law, &
-     cooling_high_temp,testing_cooling_functions,cooling_H2,cooling_CO_rot
+     cooling_high_temp,testing_cooling_functions,cooling_H2,cooling_CO_rot,&
+     decin_densities,heating_drift_decin,cooling_H2O_rot_decin,cooling_CO_rot_decin,&
+     cooling_H2_vib_decin,heating_dust_gas_decin,heating_cosmic_rays_decin,&
+     heating_photoelectric_decin
 
  real, intent(in)  :: rho, T, Teq     !rho in code units
  real, intent(in)  :: mu, gamma
@@ -345,13 +375,17 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, i,
  real, intent(out) :: Q, dlnQ_dlnT    !code units
  integer, optional, intent(in) :: i !index for saving cooling rate in dump (i)
  real,    optional, intent(in) :: divv !velocity divergence (code units)
+ real,    optional, intent(in) :: xyzi(3),vxyzi(3) !position and velocity (code units)
+ real,    optional, intent(in) :: arad_in !radial radiative acceleration on the gas (code units)
 
  real :: Q_cgs
  real :: Q_H0, Q_relax_Bowen,  Q_col_dust, Q_relax_Stefan, Q_molec, Q_shock, Q_H2, Q_CO
  real :: dlnQ_H0, dlnQ_relax_Bowen, dlnQ_col_dust, dlnQ_relax_Stefan
  real :: dlnQ_molec, dlnQ_shock, dlnQ_H2, dlnQ_CO
  real :: Q_hightemp, dlnQ_hightemp
- real :: rho_cgs, ndens
+ real :: Q_decin, dlnQ_decin, Qx, dlnQx
+ real :: rho_cgs, ndens, divv_cgs, r, vr, arad, W, Tstar, eps, dx(3), Rstar
+ real :: nH, nHI, nH2, nHe
 
  rho_cgs = rho*unit_density
  ndens   = rho_cgs/mass_proton_cgs
@@ -384,6 +418,59 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, i,
 
  if (CO_cooling == 1 .and. present(divv)) call cooling_CO_rot(T, rho_cgs, divv/utime, Q_CO, dlnQ_CO)
 
+ ! Decin et al. (2006) terms; Q_decin sums them, dlnQ_decin holds sum Q_k dlnQ_k
+ Q_decin    = 0.
+ dlnQ_decin = 0.
+ if (present(xyzi) .and. present(vxyzi) .and. nptmass > 0) then
+    arad  = 0.
+    if (present(arad_in)) arad = arad_in*udist/utime**2
+    ! distance, radial velocity, dilution factor and T_eff w.r.t. the star (sink 1)
+    dx    = xyzi - xyzmh_ptmass(1:3,1)
+    r     = sqrt(dot_product(dx,dx))
+    vr    = 0.
+    if (r > 0.) vr = dot_product(vxyzi - vxyz_ptmass(1:3,1),dx)/r*unit_velocity
+    Rstar = xyzmh_ptmass(iReff,1)
+    W     = 0.5
+    if (r > Rstar) W = 0.5*(1.-sqrt(1.-(Rstar/r)**2))
+    Tstar = xyzmh_ptmass(iTeff,1)
+    r     = r*udist
+    divv_cgs = 0.
+    if (present(divv)) divv_cgs = divv/utime
+    ! eps = dln v/dln r from div v = dv/dr + 2v/r (spherical outflow)
+    eps = 0.
+    if (vr > 0. .and. r > 0.) eps = max(r*divv_cgs/vr - 2., 0.)
+    call decin_densities(rho_cgs, mu, He_abun, nH, nHI, nH2, nHe)
+
+    if (drift_heating == 1) then
+       call heating_drift_decin(T, rho_cgs, mu, arad, Qx, dlnQx)
+       Q_decin = Q_decin + Qx; dlnQ_decin = dlnQ_decin + Qx*dlnQx
+    endif
+    if (dust_collision == 2) then
+       call heating_dust_gas_decin(T, Teq, rho_cgs, mu, nH, arad, Qx, dlnQx)
+       Q_decin = Q_decin + Qx; dlnQ_decin = dlnQ_decin + Qx*dlnQx
+    endif
+    if (CR_heating == 1) then
+       call heating_cosmic_rays_decin(rho_cgs, nH2, nHI, He_abun, Qx, dlnQx)
+       Q_decin = Q_decin + Qx; dlnQ_decin = dlnQ_decin + Qx*dlnQx
+    endif
+    if (PE_heating == 1) then
+       call heating_photoelectric_decin(T, rho_cgs, nH, nH2, r, Qx, dlnQx)
+       Q_decin = Q_decin + Qx; dlnQ_decin = dlnQ_decin + Qx*dlnQx
+    endif
+    if (H2O_cooling == 1) then
+       call cooling_H2O_rot_decin(T, rho_cgs, nHI, nH2, nHe, divv_cgs, eps, W, Tstar, Qx, dlnQx)
+       Q_decin = Q_decin + Qx; dlnQ_decin = dlnQ_decin + Qx*dlnQx
+    endif
+    if (CO_cooling == 2) then
+       call cooling_CO_rot_decin(T, rho_cgs, nHI, nH2, nHe, r, divv_cgs, eps, W, Tstar, Qx, dlnQx)
+       Q_decin = Q_decin + Qx; dlnQ_decin = dlnQ_decin + Qx*dlnQx
+    endif
+    if (H2vib_cooling == 1) then
+       call cooling_H2_vib_decin(T, rho_cgs, nHI, nH2, Qx, dlnQx)
+       Q_decin = Q_decin + Qx; dlnQ_decin = dlnQ_decin + Qx*dlnQx
+    endif
+ endif
+
  if (dust_collision == 1 .and. K2 > 0.) call cooling_dust_collision(T, Teq, rho_cgs, K2, &
                                                         mu, Q_col_dust, dlnQ_col_dust)
  if (relax_Stefan   == 1) call cooling_radiative_relaxation(T, Teq, kappa, Q_relax_Stefan, &
@@ -394,7 +481,8 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, i,
  if (excitation_HI  == 99) call testing_cooling_functions(int(K2), T, Q_H0, dlnQ_H0)
  !if (do_molecular_cooling) call calc_cool_molecular(T, r, rho_cgs, Q_molec, dlnQ_molec)
 
- Q_cgs = Q_H0 + Q_relax_Bowen + Q_col_dust + Q_relax_Stefan + Q_molec + Q_shock + Q_hightemp + Q_H2 + Q_CO
+ Q_cgs = Q_H0 + Q_relax_Bowen + Q_col_dust + Q_relax_Stefan + Q_molec + Q_shock + Q_hightemp + Q_H2 + Q_CO &
+       + Q_decin
 
  if (Q_cgs == 0.) then
     dlnQ_dlnT = 0.
@@ -402,7 +490,7 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, i,
     dlnQ_dlnT = (Q_H0*dlnQ_H0 + Q_relax_Bowen*dlnQ_relax_Bowen + Q_col_dust*dlnQ_col_dust &
                + Q_relax_Stefan*dlnQ_relax_Stefan + Q_molec*dlnQ_molec + Q_shock*dlnQ_shock&
    + Q_hightemp*dlnQ_hightemp &
-               + Q_H2*dlnQ_H2 + Q_CO*dlnQ_CO) / Q_cgs
+               + Q_H2*dlnQ_H2 + Q_CO*dlnQ_CO + dlnQ_decin) / Q_cgs
  endif
 
  !limit exponent to prevent overflow
@@ -550,12 +638,30 @@ subroutine write_options_cooling_solver(iunit)
  call write_inopt(excitation_HI,'excitation_HI','cooling via electron excitation of HI (1=on/0=off)',iunit)
  call write_inopt(relax_bowen,'relax_bowen','Bowen (diffusive) relaxation (1=on/0=off)',iunit)
  call write_inopt(relax_stefan,'relax_stefan','radiative relaxation (1=on/0=off)',iunit)
- call write_inopt(dust_collision,'dust_collision','dust collision (1=on/0=off)',iunit)
+ call write_inopt(dust_collision,'dust_collision','dust collision (0=off, 1=on, 2=Decin+06 heat exchange)',iunit)
  call write_inopt(shock_problem,'shock_problem','piecewise formulation for analytic shock solution (1=on/0=off)',iunit)
  call write_inopt(high_temp,'high_temp','radiative cooling for high temperatures (1=on/0=off)',iunit)
  call write_inopt(H2_cooling,'H2_cooling','H2 cooling (1=on/0=off)',iunit)
- call write_inopt(CO_cooling,'CO_cooling','CO rotational line cooling (1=on/0=off)',iunit)
- if (CO_cooling == 1) call write_inopt(CO_abun,'CO_abun','CO abundance n_CO/n_H2 for CO cooling',iunit)
+ call write_inopt(CO_cooling,'CO_cooling','CO rotational line cooling (0=off, 1=Ceulemans+26 fit, 2=Decin+06)',iunit)
+ if (CO_cooling > 0 .or. PE_heating == 1) &
+    call write_inopt(CO_abun,'CO_abun','CO abundance n_CO/n_H2 for CO cooling',iunit)
+ call write_inopt(H2O_cooling,'H2O_cooling','H2O rotational line cooling, Decin+06 (1=on/0=off)',iunit)
+ if (H2O_cooling == 1) call write_inopt(H2O_abun,'H2O_abun','H2O abundance n_H2O/n_H2 for H2O cooling',iunit)
+ call write_inopt(H2vib_cooling,'H2vib_cooling','H2 vibrational cooling, Decin+06 (1=on/0=off)',iunit)
+ call write_inopt(drift_heating,'drift_heating','gas-grain drift heating, Decin+06 (1=on/0=off)',iunit)
+ call write_inopt(CR_heating,'CR_heating','cosmic ray heating, Decin+06 (1=on/0=off)',iunit)
+ call write_inopt(PE_heating,'PE_heating','photoelectric heating, Decin+06 (1=on/0=off)',iunit)
+ if (drift_heating == 1 .or. dust_collision == 2 .or. PE_heating == 1) then
+    call write_inopt(dust_to_gas,'dust_to_gas','dust-to-gas mass ratio of the MRN grains',iunit)
+    call write_inopt(grain_amin,'grain_amin','minimum grain size (cm)',iunit)
+    call write_inopt(grain_amax,'grain_amax','maximum grain size (cm)',iunit)
+    call write_inopt(grain_rhos,'grain_rhos','specific density of the dust grains (g/cm^3)',iunit)
+ endif
+ if (PE_heating == 1) call write_inopt(G0_UV,'G0_UV','interstellar far-UV field (Habing units)',iunit)
+ if (PE_heating == 1 .or. CO_cooling == 2) then
+    call write_inopt(r_half_CO,'r_half_CO','CO photodissociation radius (cm), 0=no dissociation',iunit)
+    call write_inopt(alpha_CO,'alpha_CO','exponent of the CO photodissociation profile',iunit)
+ endif
  if (shock_problem == 1) then
     call write_inopt(lambda_shock_cgs,'lambda_shock','Cooling rate parameter for analytic shock solution',iunit)
     call write_inopt(T1_factor,'T1_factor','factor by which T0 is increased (T1= T1_factor*T0)',iunit)
@@ -579,12 +685,30 @@ subroutine read_options_cooling_solver(db,nerr)
  call read_inopt(excitation_HI,'excitation_HI',db,errcount=nerr,min=0,max=1)
  call read_inopt(relax_bowen,'relax_bowen',db,errcount=nerr,min=0,max=1)
  call read_inopt(relax_stefan,'relax_stefan',db,errcount=nerr,min=0,max=1)
- call read_inopt(dust_collision,'dust_collision',db,errcount=nerr,min=0,max=1)
+ call read_inopt(dust_collision,'dust_collision',db,errcount=nerr,min=0,max=2)
  call read_inopt(shock_problem,'shock_problem',db,errcount=nerr,min=0,max=1)
  call read_inopt(high_temp,'high_temp',db,errcount=nerr,min=0,max=1,default=high_temp)
  call read_inopt(H2_cooling,'H2_cooling',db,errcount=nerr,min=0,max=1,default=H2_cooling)
- call read_inopt(CO_cooling,'CO_cooling',db,errcount=nerr,min=0,max=1,default=CO_cooling)
- if (CO_cooling == 1) call read_inopt(CO_abun,'CO_abun',db,errcount=nerr,min=0.,default=CO_abun)
+ call read_inopt(CO_cooling,'CO_cooling',db,errcount=nerr,min=0,max=2,default=CO_cooling)
+ call read_inopt(H2O_cooling,'H2O_cooling',db,errcount=nerr,min=0,max=1,default=H2O_cooling)
+ call read_inopt(H2vib_cooling,'H2vib_cooling',db,errcount=nerr,min=0,max=1,default=H2vib_cooling)
+ call read_inopt(drift_heating,'drift_heating',db,errcount=nerr,min=0,max=1,default=drift_heating)
+ call read_inopt(CR_heating,'CR_heating',db,errcount=nerr,min=0,max=1,default=CR_heating)
+ call read_inopt(PE_heating,'PE_heating',db,errcount=nerr,min=0,max=1,default=PE_heating)
+ if (CO_cooling > 0 .or. PE_heating == 1) &
+    call read_inopt(CO_abun,'CO_abun',db,errcount=nerr,min=0.,default=CO_abun)
+ if (H2O_cooling == 1) call read_inopt(H2O_abun,'H2O_abun',db,errcount=nerr,min=0.,default=H2O_abun)
+ if (drift_heating == 1 .or. dust_collision == 2 .or. PE_heating == 1) then
+    call read_inopt(dust_to_gas,'dust_to_gas',db,errcount=nerr,min=0.,default=dust_to_gas)
+    call read_inopt(grain_amin,'grain_amin',db,errcount=nerr,min=0.,default=grain_amin)
+    call read_inopt(grain_amax,'grain_amax',db,errcount=nerr,min=0.,default=grain_amax)
+    call read_inopt(grain_rhos,'grain_rhos',db,errcount=nerr,min=0.,default=grain_rhos)
+ endif
+ if (PE_heating == 1) call read_inopt(G0_UV,'G0_UV',db,errcount=nerr,min=0.,default=G0_UV)
+ if (PE_heating == 1 .or. CO_cooling == 2) then
+    call read_inopt(r_half_CO,'r_half_CO',db,errcount=nerr,min=0.,default=r_half_CO)
+    call read_inopt(alpha_CO,'alpha_CO',db,errcount=nerr,min=0.,default=alpha_CO)
+ endif
  if (shock_problem == 1) then
     call read_inopt(lambda_shock_cgs,'lambda_shock',db,errcount=nerr,min=0.)
     call read_inopt(T1_factor,'T1_factor',db,errcount=nerr,min=0.)

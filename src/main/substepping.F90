@@ -786,6 +786,7 @@ subroutine get_force(nptmass,npart,nsubsteps,ntypes,timei,dtextforce,xyzh,vxyzu,
  real, save           :: dmdt = 0.
  real                 :: dtf,dtextforcenew,dtsinkgas,dtphi2,fonrmax
  real                 :: fextx,fexty,fextz,xi,yi,zi,pmassi,damp_fac
+ real                 :: fradx,frady,fradz,dxs(3),rs,aradi
  real                 :: fonrmaxi,phii,dtphi2i
  real                 :: dkdt,extrapfac
  real                 :: densi,uui,pri,pondensi,spsoundi,tempi,vxyz(3),fext_gr(3),xyz(3)
@@ -903,6 +904,7 @@ subroutine get_force(nptmass,npart,nsubsteps,ntypes,timei,dtextforce,xyzh,vxyzu,
  !$omp shared(isink_radiation,itau_alloc,tau,bin_info) &
  !$omp shared(metrics,metricderivs,metrics_ptmass,metricderivs_ptmass,ieos,C_force) &
  !$omp private(fextx,fexty,fextz,xi,yi,zi) &
+ !$omp private(fradx,frady,fradz,dxs,rs,aradi) &
  !$omp private(i,fonrmaxi,dtphi2i,phii,dtf) &
  !$omp private(densi,uui,pri,pondensi,spsoundi,tempi,xyz,vxyz,fext_gr) &
  !$omp firstprivate(pmassi,itype) &
@@ -978,7 +980,9 @@ subroutine get_force(nptmass,npart,nsubsteps,ntypes,timei,dtextforce,xyzh,vxyzu,
        !
        ! Radiation pressure force with isink_radiation
        !
+       aradi = 0.
        if (nptmass > 0 .and. isink_radiation > 0) then
+          fradx = fextx; frady = fexty; fradz = fextz
           if (extrap) then
              if (itau_alloc == 1) then
                 call get_rad_accel_from_ptmass(nptmass,npart,i,xi,yi,zi,xyzmh_ptmass,fextx,fexty,fextz, &
@@ -994,6 +998,11 @@ subroutine get_force(nptmass,npart,nsubsteps,ntypes,timei,dtextforce,xyzh,vxyzu,
                 call get_rad_accel_from_ptmass(nptmass,npart,i,xi,yi,zi,xyzmh_ptmass,fextx,fexty,fextz)
              endif
           endif
+          ! radial component (w.r.t. sink 1), used by the Decin+06 cooling terms
+          dxs = (/xi,yi,zi/) - xyzmh_ptmass(1:3,1)
+          rs  = sqrt(dot_product(dxs,dxs))
+          if (rs > 0.) aradi = ((fextx-fradx)*dxs(1) + (fexty-frady)*dxs(2) &
+                              + (fextz-fradz)*dxs(3))/rs
        endif
 
        fext(1,i) = fextx
@@ -1004,7 +1013,7 @@ subroutine get_force(nptmass,npart,nsubsteps,ntypes,timei,dtextforce,xyzh,vxyzu,
        !
        if (maxvxyzu >= 4 .and. itype==igas .and. last) then
           call cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucleation,dust_temp, &
-                                         divcurlv,abundc,abunde,abundo,abundsi,dt,dphot0)
+                                         divcurlv,abundc,abunde,abundo,abundsi,dt,dphot0,aradi)
        endif
     endif
  enddo
@@ -1052,7 +1061,7 @@ end subroutine get_force
 !+
 !------------------------------------------------------------------------------------
 subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucleation,dust_temp, &
-                                     divcurlv,abundc,abunde,abundo,abundsi,dt,dphot0)
+                                     divcurlv,abundc,abunde,abundo,abundsi,dt,dphot0,arad)
  use dim,             only:h2chemistry,do_nucleation,use_krome,update_muGamma,store_dust_temperature
  use part,            only:idK2,idmu,idkappa,idgamma,imu,igamma,nabundances,imu,itemp,rhoh
  use cooling_ism,     only:nabn,dphotflag
@@ -1073,7 +1082,7 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
  real(kind=4), intent(in)    :: divcurlv(:,:)
  real,         intent(inout) :: abundc,abunde,abundo,abundsi
  real(kind=8), intent(in)    :: dphot0
- real,         intent(in)    :: dt,pmassi
+ real,         intent(in)    :: dt,pmassi,arad
  integer,      intent(in)    :: i
 
  real :: dudtcool,rhoi,dphot,pH,pH_tot
@@ -1132,21 +1141,26 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
        ! abundances in the 'abund' format
        !
        call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,&
-                 dust_temp(i),eos_vars(imu,i), eos_vars(igamma,i),abund_in=abundi,ipart=i)
+                 dust_temp(i),eos_vars(imu,i), eos_vars(igamma,i),abund_in=abundi,ipart=i,&
+                    vxyz_in=vxyzu(1:3,i),arad_in=arad)
     elseif (store_dust_temperature) then
        ! cooling with stored dust temperature
        if (do_nucleation) then
           call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,&
-                    dust_temp(i),nucleation(idmu,i),nucleation(idgamma,i),nucleation(idK2,i),nucleation(idkappa,i),ipart=i)
+                    dust_temp(i),nucleation(idmu,i),nucleation(idgamma,i),nucleation(idK2,i),nucleation(idkappa,i),ipart=i,&
+                    vxyz_in=vxyzu(1:3,i),arad_in=arad)
        elseif (update_muGamma) then
           call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,&
-                    dust_temp(i),eos_vars(imu,i), eos_vars(igamma,i),ipart=i)
+                    dust_temp(i),eos_vars(imu,i), eos_vars(igamma,i),ipart=i,&
+                    vxyz_in=vxyzu(1:3,i),arad_in=arad)
        else
-          call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,dust_temp(i),ipart=i)
+          call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,dust_temp(i),ipart=i,&
+                    vxyz_in=vxyzu(1:3,i),arad_in=arad)
        endif
     else
        ! cooling without stored dust temperature
-       call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,ipart=i)
+       call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,ipart=i,&
+                    vxyz_in=vxyzu(1:3,i),arad_in=arad)
     endif
  endif
 #endif
