@@ -394,27 +394,27 @@ end subroutine evol_K
 !  Following Eqs. 15-19 of D’Angelo and Bodenheimer (2013), ApJ, 778, 34
 !
 !----------------------------------------
-subroutine calc_muGamma(rho, T, mu, gamma, pH, pH_tot)
-! rho in code units, all other quantities in cgs
- use units,   only:unit_density
+subroutine calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot)
+! all quantities in cgs
  use physcon, only:mass_electron_cgs,planckhbar
 
- real, intent(in)    :: rho
+ real, intent(in)    :: rho_cgs
  real, intent(inout) :: T, mu, gamma
  real, intent(out)   :: pH, pH_tot
- real :: rho_cgs, Tu, Tlo, Thi, XH, YHe, KH2, cst, KH, KHe, KHe2, B
+ real :: Tu, Tlo, Thi, XH, YHe, KH2, cst, KH, KHe, KHe2, B
  real :: x, y, z1, z2, xe, n_mono, n_H2, ntot, Cv
  integer :: i
  integer, parameter :: itermax = 100
  real, parameter    :: tol = 1.e-7
  real, parameter    :: H_ion = 2.179d-11, He_ion = 3.940d-11, He2_ion = 8.720d-11 ! ionisation energies (erg)
+ real, parameter    :: H2_diss = 52490. ! H2 dissociation energy / kboltz (K)
+ logical, parameter :: do_ionisation = .false. ! temporarily: only H2 formation/dissociation
 
  ! y  : fraction of H nuclei in atomic form (H or H+)
  ! x  : ionised fraction of atomic H
  ! z1 : fraction of He at least singly ionised
  ! z2 : fraction of He+ ionised again (He2+ = z1*z2 of all He)
 
- rho_cgs = rho*unit_density
  XH  = 1./(1.+4.*eps(iHe))  ! H and He mass fractions
  YHe = 1.-XH
  Tu  = T/(mu*(gamma-1.))
@@ -423,21 +423,24 @@ subroutine calc_muGamma(rho, T, mu, gamma, pH, pH_tot)
  do i = 1,itermax
     T = sqrt(Tlo*Thi)
     pH_tot = rho_cgs*T*kboltz/(patm*mass_per_H)
-    if (T > 1.e4) then
-       pH = pH_tot ! All hydrogen is atomic at high temperatures
+    ! H2 dissociation from Saha equation y^2/(1-y) = KH2 (Eq. 15 of D'Angelo & Bodenheimer 2013)
+    KH2 = max(2.11/(rho_cgs*XH)*exp(-H2_diss/T), tiny(KH2))
+    y   = 2.*KH2/(KH2 + sqrt(KH2*(KH2+4.)))
+    pH  = y*pH_tot
+    if (do_ionisation) then
+       cst  = mass_proton_cgs/rho_cgs*sqrt(mass_electron_cgs*kboltz*T/(2.*pi*planckhbar**2))**3
+       KH   = cst/XH*exp(-H_ion/(kboltz*T))
+       KHe  = 4.*cst*exp(-He_ion/(kboltz*T))
+       KHe2 = cst*exp(-He2_ion/(kboltz*T))
+       x    = 2./(1.+sqrt(1.+4./max(KH,tiny(KH))))
+       z1   = 2.*KHe/(sqrt((KHe+XH)**2 + KHe*YHe) + KHe + XH)
+       B    = KHe2 + XH + 0.25*YHe
+       z2   = 2.*KHe2/(sqrt(B**2 + KHe2*YHe) + B)
     else
-       KH2 = calc_Kd(coefs(:,iH2), T)
-       pH  = min(solve_q(2.*KH2, 1., -pH_tot), pH_tot)
+       x  = 0.
+       z1 = 0.
+       z2 = 0.
     endif
-    y = pH/pH_tot
-    cst  = mass_proton_cgs/rho_cgs*sqrt(mass_electron_cgs*kboltz*T/(2.*pi*planckhbar**2))**3
-    KH   = cst/XH*exp(-H_ion/(kboltz*T))
-    KHe  = 4.*cst*exp(-He_ion/(kboltz*T))
-    KHe2 = cst*exp(-He2_ion/(kboltz*T))
-    x    = 2./(1.+sqrt(1.+4./max(KH,tiny(KH))))
-    z1   = 2.*KHe/(sqrt((KHe+XH)**2 + KHe*YHe) + KHe + XH)
-    B    = KHe2 + XH + 0.25*YHe
-    z2   = 2.*KHe2/(sqrt(B**2 + KHe2*YHe) + B)
     xe   = y*x + eps(iHe)*z1*(1.+z2)  ! free electrons per H nucleus
     
     n_mono = y + eps(iHe) + xe
@@ -464,7 +467,6 @@ end subroutine calc_muGamma
 !--------------------------------------------
 subroutine init_muGamma(rho_cgs, T, mu, gamma, ppH, ppH2)
 ! all quantities are in cgs
- use units, only:unit_density
  real, intent(in)    :: rho_cgs
  real, intent(inout) :: T
  real, intent(out)   :: mu, gamma
@@ -486,7 +488,8 @@ subroutine init_muGamma(rho_cgs, T, mu, gamma, ppH, ppH2)
  endif
  mu    = (1.+4.*eps(iHe))*pH_tot/(pH+pH2+eps(iHe)*pH_tot)
  gamma = (5.*pH+5.*eps(iHe)*pH_tot+7.*pH2)/(3.*pH+3.*eps(iHe)*pH_tot+5.*pH2)
- call calc_muGamma(rho_cgs/unit_density, T, mu, gamma, pH, pH_tot)
+ call calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot)
+ pH2 = 0.5*(pH_tot-pH)
  if (present(ppH))  ppH = pH
  if (present(ppH2)) ppH2 = pH2
 
@@ -500,7 +503,6 @@ end subroutine init_muGamma
 subroutine chemical_equilibrium_light(rho_cgs, T, epsC, pC, pC2, pC2H, pC2H2, mu, gamma,&
      nH, nH2, nHe, nCO, nH2O, nOH)
 ! all quantities are in cgs
- use units, only:unit_density
  real, intent(in)    :: rho_cgs, epsC
  real, intent(inout) :: T, mu, gamma
  real, intent(out)   :: pC, pC2, pC2H, pC2H2
@@ -510,7 +512,7 @@ subroutine chemical_equilibrium_light(rho_cgs, T, epsC, pC, pC2, pC2H, pC2H2, mu
  real    :: pC_old, pO_old, pSi_old, pS_old, pTi_old, cst
  integer :: i, nit
 
- call calc_muGamma(rho_cgs/unit_density, T, mu, gamma, pH, pH_tot)
+ call calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot)
  if (T > 1.d4) then
     pC    = eps(iC)*pH_tot
     pC2   = 0.

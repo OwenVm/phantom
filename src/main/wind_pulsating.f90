@@ -120,7 +120,6 @@ subroutine set_u_and_T(state)
  use physcon,        only:kboltz, mass_proton_cgs
  use dim,            only:update_muGamma
  use dust_formation, only:calc_muGamma
- use units,          only:unit_density
  type(stellar_state), intent(inout) :: state
  integer, parameter :: itermax = 100
  real,    parameter :: tol = 1.e-4   ! calc_muGamma itself converges to 1e-3
@@ -137,7 +136,7 @@ subroutine set_u_and_T(state)
     do iter = 1, itermax
        T_old = state%T
        T_in  = state%T   ! calc_muGamma may modify its temperature argument
-       call calc_muGamma(state%rho/unit_density, T_in, state%mu, state%gamma, pH, pH_tot)
+       call calc_muGamma(state%rho, T_in, state%mu, state%gamma, pH, pH_tot)
        state%T = state%mu * mass_proton_cgs * state%P / (kboltz * state%rho)
        if (abs(state%T - T_old) < tol*T_old) then
           converged = .true.
