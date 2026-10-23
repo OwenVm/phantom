@@ -23,7 +23,13 @@ module cooling_functions
  real, public :: lambda_shock_cgs = 1.d0
  real, public :: T1_factor = 20., T0_value = 0.
  real, public :: kappa_dust_min = 1e-3  ! dust opacity value below which dust cooling is not calculated
- real, public :: CO_abun = 3.e-4       
+ real, public :: CO_abun = 3.e-4
+ ! Decin et al. (2006) heating & cooling terms
+ real, public :: D06_vdrift     = 5.e5    ! dust drift velocity (cm/s)
+ real, public :: D06_d2g        = 0.01    ! dust-to-gas mass ratio
+ real, public :: D06_Texc_ratio = 0.5     ! H2O excitation temperature T_exc/T
+ real, public :: D06_fH2O       = 1.2e-3  ! H2O abundance n_H2O/n_H2 (fully molecular gas)
+ real, public :: D06_Tcond = 1500., D06_delta = 60. ! dust condensation (copied from bowen_Tcond, bowen_delta)
 
  public :: cool_dust_discrete_contact, cool_coulomb, &
            cool_HI, cool_H_ionisation, cool_He_ionisation, &
@@ -42,10 +48,15 @@ module cooling_functions
            cooling_radiative_relaxation, &
            cooling_H2, cooling_CO_rot, &
            testing_cooling_functions, &
-           saha_fractions
+           saha_fractions, &
+           heating_friction_D06, heating_photoelectric_D06, &
+           heating_dustgas_D06, heating_cosmicrays_D06, &
+           cooling_H2O_rot_D06, cooling_H2_vib_D06
 
   private
   real, parameter  :: xH = 0.7, xHe = 0.28 !assumed H and He mass fractions
+  ! Decin et al. (2006): MRN grain size distribution (silicates) and electron fraction n_e/n_Htot
+  real, parameter  :: amin_D06 = 5.e-7, amax_D06 = 2.5e-5, rhos_D06 = 3.3, xe_D06 = 3.e-4
 
 contains
 !-----------------------------------------------------------------------
@@ -294,6 +305,235 @@ subroutine cooling_CO_rot(T, rho_cgs, divv_cgs, Q_cgs, dlnQ_dlnT)
  endif
 
 end subroutine cooling_CO_rot
+
+!-----------------------------------------------------------------------
+!+
+!  Decin et al. (2006, A&A 456, 549) Sect. 2.2: number densities of H, H2,
+!  He and H nuclei. The H2 fraction y = 2n(H2)/n_Htot is obtained by
+!  inverting mu = 1/[xH(1-y/2)+xHe/4] (neutral gas, metals neglected)
+!+
+!-----------------------------------------------------------------------
+subroutine species_D06(rho_cgs, mu, nH, nH2, nHe, nHtot)
+
+ use physcon, only:mass_proton_cgs
+
+ real, intent(in)  :: rho_cgs, mu
+ real, intent(out) :: nH, nH2, nHe, nHtot
+ real              :: y
+
+ y     = min(max(2.*(1.-(1./mu-0.25*xHe)/xH), 0.), 1.)
+ nHtot = xH*rho_cgs/mass_proton_cgs
+ nH2   = 0.5*y*nHtot
+ nH    = (1.-y)*nHtot
+ nHe   = 0.25*xHe/xH*nHtot
+
+end subroutine species_D06
+
+!-----------------------------------------------------------------------
+!+
+!  Decin et al. (2006): fraction of condensed dust, same smooth step
+!  in Tdust as the Bowen opacity (calc_kappa_bowen)
+!+
+!-----------------------------------------------------------------------
+real function dust_fraction_D06(Tdust)
+
+ real, intent(in) :: Tdust
+ real             :: dlnT
+
+ dlnT = (Tdust-D06_Tcond)/D06_delta
+ if (dlnT > 50.) then
+    dust_fraction_D06 = 0.
+ else
+    dust_fraction_D06 = 1./(1.+exp(dlnT))
+ endif
+
+end function dust_fraction_D06
+
+!-----------------------------------------------------------------------
+!+
+!  Decin et al. (2006): normalisation A (cm^2.5) of the MRN distribution
+!  n_d(a) da = A a^-3.5 n_Htot da, set by the dust-to-gas mass ratio
+!+
+!-----------------------------------------------------------------------
+real function A_MRN_D06(rho_cgs, nHtot, Tdust)
+
+ use physcon, only:pi
+
+ real, intent(in) :: rho_cgs, nHtot, Tdust
+
+ A_MRN_D06 = 3.*D06_d2g*dust_fraction_D06(Tdust)*rho_cgs &
+             /(8.*pi*rhos_D06*nHtot*(sqrt(amax_D06)-sqrt(amin_D06)))
+
+end function A_MRN_D06
+
+!-----------------------------------------------------------------------
+!+
+!  Decin et al. (2006) Eqs. 7-8: gas-grain friction heating, with a
+!  size-independent drift velocity D06_vdrift
+!+
+!-----------------------------------------------------------------------
+subroutine heating_friction_D06(Tdust, rho_cgs, mu, Q_cgs, dlnQ_dlnT)
+
+ use physcon, only:pi, mass_proton_cgs
+
+ real, intent(in)  :: Tdust, rho_cgs, mu
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real              :: nH, nH2, nHe, nHtot
+
+ call species_D06(rho_cgs, mu, nH, nH2, nHe, nHtot)
+ Q_cgs = 0.5*pi*A_MRN_D06(rho_cgs, nHtot, Tdust)*mass_proton_cgs*nHtot**2*(1.+4.*nHe/nHtot) &
+         *D06_vdrift**3*2.*(amin_D06**(-0.5)-amax_D06**(-0.5))/rho_cgs
+ dlnQ_dlnT = 0.
+
+end subroutine heating_friction_D06
+
+!-----------------------------------------------------------------------
+!+
+!  Decin et al. (2006) Eqs. 9-10: photoelectric heating (Bakes & Tielens
+!  1994 scaled by 0.2), unattenuated (tau_uv = 0) interstellar field G0 = 1
+!+
+!-----------------------------------------------------------------------
+subroutine heating_photoelectric_D06(T, Tdust, rho_cgs, mu, Q_cgs, dlnQ_dlnT)
+
+ real, intent(in)  :: T, Tdust, rho_cgs, mu
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real, parameter   :: G0 = 1., tau_uv = 0.
+ real              :: nH, nH2, nHe, nHtot, x
+
+ call species_D06(rho_cgs, mu, nH, nH2, nHe, nHtot)
+ x         = 2.e-4*G0*sqrt(T)/(xe_D06*nHtot)
+ Q_cgs     = 0.2*1.e-24*3.e-2/(1.+x)*nHtot*G0*exp(-tau_uv)*dust_fraction_D06(Tdust)/rho_cgs
+ dlnQ_dlnT = -0.5*x/(1.+x)
+
+end subroutine heating_photoelectric_D06
+
+!-----------------------------------------------------------------------
+!+
+!  Decin et al. (2006) Eqs. 12-14: dust-gas heat exchange
+!  (heating if Tdust > T, cooling otherwise)
+!+
+!-----------------------------------------------------------------------
+subroutine heating_dustgas_D06(T, Tdust, rho_cgs, mu, Q_cgs, dlnQ_dlnT)
+
+ use physcon, only:pi, kboltz, mass_proton_cgs
+
+ real, intent(in)  :: T, Tdust, rho_cgs, mu
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real              :: nH, nH2, nHe, nHtot, s, alpha_T, dalpha_dT
+
+ call species_D06(rho_cgs, mu, nH, nH2, nHe, nHtot)
+ s         = sqrt((Tdust+T)/500.)
+ alpha_T   = 0.35*exp(-s)+0.1
+ dalpha_dT = -0.35*exp(-s)/(1000.*s)
+ Q_cgs     = 4.*pi*kboltz*sqrt(8.*kboltz/(pi*mass_proton_cgs))*A_MRN_D06(rho_cgs, nHtot, Tdust) &
+             *nHtot**2*alpha_T*sqrt(T)*(Tdust-T)*(amin_D06**(-0.5)-amax_D06**(-0.5))/rho_cgs
+ dlnQ_dlnT = T*dalpha_dT/alpha_T + 0.5 - T/(Tdust-T+1.d-10)
+
+end subroutine heating_dustgas_D06
+
+!-----------------------------------------------------------------------
+!+
+!  Decin et al. (2006) Eq. 15: cosmic ray heating
+!+
+!-----------------------------------------------------------------------
+subroutine heating_cosmicrays_D06(rho_cgs, mu, Q_cgs, dlnQ_dlnT)
+
+ real, intent(in)  :: rho_cgs, mu
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real              :: nH, nH2, nHe, nHtot
+
+ call species_D06(rho_cgs, mu, nH, nH2, nHe, nHtot)
+ ! n_H2 (1+f_H/2) = n_H2 + n_H/2
+ Q_cgs     = 6.4e-28*(nH2+0.5*nH)*(1.+4.*nHe/nHtot)/rho_cgs
+ dlnQ_dlnT = 0.
+
+end subroutine heating_cosmicrays_D06
+
+!-----------------------------------------------------------------------
+!+
+!  Decin et al. (2006) Eq. 17: H2O rotational cooling (erg/cm^3/s), with
+!  T_exc = D06_Texc_ratio*T and n_H2O = D06_fH2O*n_Htot/2
+!+
+!-----------------------------------------------------------------------
+real function cool_H2O_D06(T, nH, nH2, nHe, nHtot)
+
+ use physcon, only:planckh, kboltz
+
+ real, intent(in) :: T, nH, nH2, nHe, nHtot
+ real             :: Texc, hnu
+
+ Texc = D06_Texc_ratio*T
+ if (Texc < tiny(0.)) then
+    cool_H2O_D06 = 0.
+    return
+ endif
+ hnu = planckh*2.6e11*sqrt(Texc)
+ ! n_H2 [0.83 f_H + 0.715 f_He (f_H+2) + 4.5] = 0.83 n_H + 0.715 n_He + 4.5 n_H2
+ cool_H2O_D06 = D06_fH2O*0.5*nHtot*hnu*0.21e-11*sqrt(T)*(0.83*nH+0.715*nHe+4.5*nH2) &
+                *(exp(-hnu/(kboltz*T))-exp(-hnu/(kboltz*Texc)))
+
+end function cool_H2O_D06
+
+subroutine cooling_H2O_rot_D06(T, rho_cgs, mu, Q_cgs, dlnQ_dlnT)
+
+ real, intent(in)  :: T, rho_cgs, mu
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real              :: nH, nH2, nHe, nHtot, C0, C1, C2, dT
+
+ call species_D06(rho_cgs, mu, nH, nH2, nHe, nHtot)
+ dT = 0.01*T
+ C0 = cool_H2O_D06(T,    nH, nH2, nHe, nHtot)
+ C1 = cool_H2O_D06(T+dT, nH, nH2, nHe, nHtot)
+ C2 = cool_H2O_D06(T-dT, nH, nH2, nHe, nHtot)
+ Q_cgs = -C0/rho_cgs
+ if (C0 > 0.) then
+    dlnQ_dlnT = T*(C1-C2)/(2.*dT*C0)
+ else
+    dlnQ_dlnT = 0.
+ endif
+
+end subroutine cooling_H2O_rot_D06
+
+!-----------------------------------------------------------------------
+!+
+!  Decin et al. (2006) Eqs. 23-27: H2 vibrational cooling (erg/cm^3/s)
+!+
+!-----------------------------------------------------------------------
+real function cool_H2vib_D06(T, nH, nH2)
+
+ use physcon, only:kboltz, eV
+
+ real, intent(in) :: T, nH, nH2
+ real, parameter  :: A10 = 3.e-7, E10 = 0.6*eV
+ real             :: kH, kH2, alpha_n, ex
+
+ kH      = 1.0e-12*sqrt(T)*exp(-1000./T)
+ kH2     = 1.4e-12*sqrt(T)*exp(-18100./(T+1200.))
+ alpha_n = nH*kH + nH2*kH2
+ ex      = exp(-E10/(kboltz*T))
+ cool_H2vib_D06 = A10*E10*nH2*alpha_n*ex/(alpha_n*(1.+ex)+A10)
+
+end function cool_H2vib_D06
+
+subroutine cooling_H2_vib_D06(T, rho_cgs, mu, Q_cgs, dlnQ_dlnT)
+
+ real, intent(in)  :: T, rho_cgs, mu
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real              :: nH, nH2, nHe, nHtot, C0, C1, C2, dT
+
+ call species_D06(rho_cgs, mu, nH, nH2, nHe, nHtot)
+ dT = 0.01*T
+ C0 = cool_H2vib_D06(T,    nH, nH2)
+ C1 = cool_H2vib_D06(T+dT, nH, nH2)
+ C2 = cool_H2vib_D06(T-dT, nH, nH2)
+ Q_cgs = -C0/rho_cgs
+ if (C0 > 0.) then
+    dlnQ_dlnT = T*(C1-C2)/(2.*dT*C0)
+ else
+    dlnQ_dlnT = 0.
+ endif
+
+end subroutine cooling_H2_vib_D06
 
 !-----------------------------------------------------------------------
 !+
