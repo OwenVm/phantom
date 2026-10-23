@@ -8,18 +8,6 @@ module inject
 !
 ! Handles pulsating AGB stars
 !
-! The boundary layers follow a radial pulsation plus an optional sum of
-! non-radial modes (real spherical harmonics), all displacing particles
-! radially along their unit vector from the wind-emitting sink:
-!
-!   r_i(t) = r_eq,i + dR sin(w t + phi0) + sum_k dR_k Y_k(theta_i,phi_i) sin(w_k t + phi_k)
-!   v_i(t) = v_sink + [ v_p cos(w t + phi0) + sum_k w_k dR_k Y_k cos(w_k t + phi_k) ] rhat_i
-!
-! with dR = v_p/w and dR_k = A_k dR (A_k = mode_amplitudes). theta, phi are measured about the
-! z-axis of the simulation, centred on the sink. The gas shells built at setup
-! and every reinjected shell are shifted by the same non-radial displacement
-! as the boundary, so they keep a constant spacing above the deformed surface.
-!
 ! :References: None
 !
 ! :Owner: Owen Vermeulen
@@ -28,17 +16,13 @@ module inject
 !   - dumps_p_period    : *number of dumps per period (if save_period = 1)*
 !   - iboundary_spheres : *number of boundary spheres (piston layers)*
 !   - iwind             : *wind type: 1=prescribed, 2=period from mass-radius relation*
-!   - l_modes           : *spherical harmonic degree l per mode (comma-separated)*
-!   - m_modes           : *spherical harmonic order m per mode (comma-separated)*
-!   - mode_amplitudes   : *amplitude per mode, relative to the radial amplitude dR*
 !   - mass_loss_end     : *end time for mass-loss calculation (periods)*
 !   - mass_loss_start   : *start time for mass-loss calculation (periods)*
 !   - min_mass_fraction : *minimum mass fraction per shell*
-!   - mode_periods      : *period per mode (days), <=0 uses the radial period*
-!   - mode_phases       : *phase offset per mode (radians)*
+!   - mode_file         : *file with the non-radial modes (columns: l m amplitude period phase)*
 !   - n_inject_period   : *period between reinjections (periods)*
-!   - n_modes           : *number of non-radial modes (0=radial pulsation only)*
 !   - n_profile_points  : *number of points in stellar profile*
+!   - nonradial_modes   : *non-radial pulsation modes from mode_file (0=off, 1=on)*
 !   - phi0              : *initial phase offset (radians)*
 !   - piston_velocity   : *piston velocity amplitude (km/s)*
 !   - pulsation_period  : *pulsation period (days)*
@@ -85,18 +69,19 @@ module inject
  integer :: verbose               = 1
  integer :: use_file_mdot         = 0
 
- ! non-radial modes; max_modes is limited by the length of a value in the .in file
- integer, parameter :: max_modes = 8
- integer :: n_modes                         = 0
- integer :: l_modes(max_modes)              = 0
- integer :: m_modes(max_modes)              = 0
- real    :: mode_amplitudes(max_modes)      = 0.1   ! amplitudes relative to the radial pulsation
- real    :: mode_period_days(max_modes)     = 0.
- real    :: mode_phases(max_modes)          = 0.
+ integer            :: nonradial_modes = 0
+ character(len=120) :: mode_file       = 'modes.dat'
+
+ integer, parameter :: max_modes = 100
+ integer :: n_modes                     = 0
+ integer :: l_modes(max_modes)          = 0
+ integer :: m_modes(max_modes)          = 0
+ real    :: mode_amplitudes(max_modes)  = 0.   ! amplitudes relative to the radial pulsation
+ real    :: mode_period_days(max_modes) = 0.
+ real    :: mode_phases(max_modes)      = 0.
 
  integer,          parameter :: wind_emitting_sink = 1
  real,             parameter :: pulsation_timestep = 0.02
- integer,          parameter :: maxlen_modelist    = 95
  character(len=*), parameter :: label = 'inject_atmosphere'
 
  real    :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity
@@ -151,12 +136,9 @@ subroutine set_default_options_inject(flag)
  update_L              = 0
  verbose               = 1
  use_file_mdot         = 0
+ nonradial_modes       = 0
+ mode_file             = 'modes.dat'
  n_modes               = 0
- l_modes               = 0
- m_modes               = 0
- mode_amplitudes       = 0.1
- mode_period_days      = 0.
- mode_phases           = 0.
 
 end subroutine set_default_options_inject
 
@@ -341,25 +323,9 @@ subroutine init_inject(ierr)
  endif
 
  if (n_modes > 0) then
-    call check_real_ylm()
     print *, ''
-    print *, 'Non-radial pulsation modes: ', n_modes
-    do k = 1,n_modes
-       print "(a,i2,a,i3,a,i3,a,es11.4,a,es11.4,a,es11.4,a,es11.4,a,es11.4,a,es11.4,a)", '  mode ',k,': l=',l_modes(k), &
-             ' m=',m_modes(k),' period=',2.*pi/mode_omega(k)*utime/days,' d, A_k=',mode_amplitudes(k), &
-             ', dR_k=',mode_deltaR(k),' (',mode_deltaR(k)/Rstar,' Rstar), v_k=',mode_velocity(k)*unit_velocity/km, &
-             ' km/s, phase=',mode_phases(k),' rad'
-    enddo
-    if (piston_velocity <= 0.) print *, ' WARNING: piston_velocity = 0, so all non-radial modes have zero amplitude'
-    ! new shells follow the deformation, but already injected gas does not
-    max_nr = max_nonradial_amplitude()
-    print *, ' max over the sphere of sum_k |dR_k Y_k| :', max_nr, ' (', max_nr/Rstar, ' Rstar)'
-    if (n_shells_bnd < nshells) then
-       if (max_nr > delta_r_radial(n_shells_bnd+1)) then
-          print *, ' WARNING: non-radial displacement exceeds the spacing above the outermost boundary shell'
-          print *, '          (', delta_r_radial(n_shells_bnd+1), '), so the boundary can push into gas injected earlier'
-       endif
-    endif
+    print *, 'Non-radial pulsation modes: ', n_modes, ' read from ', trim(mode_file)
+    if (piston_velocity <= 0.) print *, ' WARNING: piston_velocity = 0, so all non-radial modes have zero amplitude'   
     print *, ''
  endif
 
@@ -599,12 +565,9 @@ subroutine setup_initial_atmosphere(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npa
  if (n_modes > 0) then
     call compute_boundary_ylm(xyzh,x0)
     call apply_pulsation(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass)
-    call print_boundary_displacement(time)
 
-    ! the gas shells start on the deformed surface; gas velocities are left at zero,
-    ! as for the radial term
+    ! the gas shells start on the deformed surface; gas velocities are left at zero,as for the radial term
     call displace_nonradial(time,x0,n_boundary_particles+1,npart,xyzh,vxyzu,.false.)
-    print*,'Gas shells displaced to follow the initial boundary deformation'
  endif
 
  print*,'Boundary particles : ',n_boundary_particles
@@ -643,7 +606,6 @@ subroutine reconstruct_boundary_info(time,xyzh,xyzmh_ptmass)
     print *, 'Reconstructed boundary particle info:'
     print *, 'Boundary particles: ', n_boundary_particles
  endif
- if (n_modes > 0) call print_boundary_displacement(time)
 
 end subroutine reconstruct_boundary_info
 
@@ -683,9 +645,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass)
     vxyzu(1:3,i) = v0 + (r_dot + dv_nr)*x_hat
  enddo
 
- ! the luminosity follows the radial term only: l >= 1 modes integrate to zero
- ! over the sphere, so they do not change the mean radius to first order
- ! (an l = 0 mode would, but it is not included here either)
+
  if (update_L == 1) call get_lum(xyzmh_ptmass(iLum,wind_emitting_sink), xyzmh_ptmass(iTeff,wind_emitting_sink), &
                                  xyzmh_ptmass(iReff,wind_emitting_sink) + osc)
 
@@ -772,38 +732,6 @@ end subroutine displace_nonradial
 
 !----------------------------------------------------------------
 !+
-!  Print the actual non-radial displacement of the boundary particles
-!  (the Y_lm coefficient alone is not the peak displacement)
-!+
-!----------------------------------------------------------------
-subroutine print_boundary_displacement(time)
- real, intent(in) :: time
- integer :: i,k
- real    :: sterm(max_modes),cterm(max_modes),dr_nr,dmin,dmax,dabs_max
-
- if (n_boundary_particles == 0) return
- call get_mode_terms(time,sterm,cterm)
- print *, 'Non-radial displacement of the ', n_boundary_particles, ' boundary particles:'
- do k = 1,n_modes
-    print "(a,i2,a,2(1x,es11.4))", '  mode ',k,': min/max of dR_k*Y_k              :', &
-          minval(mode_deltaR(k)*ylm_boundary(k,:)),maxval(mode_deltaR(k)*ylm_boundary(k,:))
- enddo
- dmin     = huge(dmin)
- dmax     = -huge(dmax)
- dabs_max = 0.
- do i = 1,n_boundary_particles
-    dr_nr    = dot_product(ylm_boundary(1:n_modes,i),sterm(1:n_modes))
-    dmin     = min(dmin,dr_nr)
-    dmax     = max(dmax,dr_nr)
-    dabs_max = max(dabs_max,sum(abs(mode_deltaR(1:n_modes)*ylm_boundary(1:n_modes,i))))
- enddo
- print "(a,2(1x,es11.4))", '  total displacement now, min/max          :',dmin,dmax
- print "(a,1x,es11.4)",    '  total upper bound, max_i sum_k|dR_k*Y_k| :',dabs_max
-
-end subroutine print_boundary_displacement
-
-!----------------------------------------------------------------
-!+
 !  Orthonormal real spherical harmonic Y_lm for a unit vector x_hat,
 !  with theta, phi measured about the z-axis:
 !
@@ -842,73 +770,6 @@ real function real_ylm(l,m,x_hat)
  endif
 
 end function real_ylm
-
-!----------------------------------------------------------------
-!+
-!  Check real_ylm against closed forms for l <= 2
-!+
-!----------------------------------------------------------------
-subroutine check_real_ylm()
- integer, parameter :: ndir = 4
- real    :: dirs(3,ndir),x,y,z,c1,c2,expected(9),got(9)
- integer :: idir,l,m,j
-
- dirs(:,1) = (/0.3,-0.5,0.8/)
- dirs(:,2) = (/-0.6,0.2,-0.1/)
- dirs(:,3) = (/0.,0.,1./)
- dirs(:,4) = (/-0.2,-0.7,0./)
- c1 = sqrt(3./(4.*pi))
- c2 = sqrt(15./pi)
- do idir = 1,ndir
-    dirs(:,idir) = dirs(:,idir)/norm2(dirs(:,idir))
-    x = dirs(1,idir)
-    y = dirs(2,idir)
-    z = dirs(3,idir)
-    ! ordered as (l,m) = (0,0),(1,-1),(1,0),(1,1),(2,-2),(2,-1),(2,0),(2,1),(2,2)
-    expected = (/0.5/sqrt(pi), c1*y, c1*z, c1*x, 0.5*c2*x*y, 0.5*c2*y*z, &
-                 0.25*sqrt(5./pi)*(3.*z**2 - 1.), 0.5*c2*x*z, 0.25*c2*(x**2 - y**2)/)
-    j = 0
-    do l = 0,2
-       do m = -l,l
-          j = j + 1
-          got(j) = real_ylm(l,m,dirs(:,idir))
-       enddo
-    enddo
-    if (any(abs(got - expected) > 1.e-12)) then
-       print *, 'Y_lm check failed: got     ', got
-       print *, '                   expected', expected
-       call fatal(label,'real spherical harmonics do not match closed forms')
-    endif
- enddo
-
-end subroutine check_real_ylm
-
-!----------------------------------------------------------------
-!+
-!  Worst-case non-radial displacement, max over the sphere of
-!  sum_k |dR_k Y_k|, sampled on a theta-phi grid
-!+
-!----------------------------------------------------------------
-real function max_nonradial_amplitude()
- integer, parameter :: ntheta = 181, nphi = 360
- integer :: i,j,k
- real    :: theta,phi,x_hat(3),amp
-
- max_nonradial_amplitude = 0.
- do i = 1,ntheta
-    theta = pi*(i-1)/(ntheta-1)
-    do j = 1,nphi
-       phi   = 2.*pi*(j-1)/nphi
-       x_hat = (/sin(theta)*cos(phi),sin(theta)*sin(phi),cos(theta)/)
-       amp   = 0.
-       do k = 1,n_modes
-          amp = amp + abs(mode_deltaR(k)*real_ylm(l_modes(k),m_modes(k),x_hat))
-       enddo
-       max_nonradial_amplitude = max(max_nonradial_amplitude,amp)
-    enddo
- enddo
-
-end function max_nonradial_amplitude
 
 !----------------------------------------------------------------
 !+
@@ -1058,97 +919,11 @@ subroutine write_options_inject(iunit)
  call write_inopt(use_file_mdot,         'use_file_mdot',     'skip measurement phase (0=off, 1=on)',iunit)
  call write_inopt(update_L,              'update_L',          'update luminosity with pulsation (0=off, 1=on)',iunit)
  call write_inopt(verbose,               'verbose',           'enable verbose output (0=off, 1=on)',iunit)
- call write_inopt(n_modes,               'n_modes',           'number of non-radial modes (0=radial pulsation only)',iunit)
- if (n_modes > 0) then
-    call write_mode_list(int_list(l_modes(1:n_modes)),             'l_modes',        &
-                         'spherical harmonic degree l per mode',iunit)
-    call write_mode_list(int_list(m_modes(1:n_modes)),             'm_modes',        &
-                         'spherical harmonic order m per mode',iunit)
-    call write_mode_list(real_list(mode_amplitudes(1:n_modes)),    'mode_amplitudes', &
-                         'amplitude per mode, relative to the radial amplitude',iunit)
-    call write_mode_list(real_list(mode_period_days(1:n_modes)),   'mode_periods',   &
-                         'period per mode (days), <=0 uses the radial period',iunit)
-    call write_mode_list(real_list(mode_phases(1:n_modes)),        'mode_phases',    &
-                         'phase offset per mode (radians)',iunit)
- endif
+ call write_inopt(nonradial_modes,       'nonradial_modes',   'non-radial pulsation modes from mode_file (0=off, 1=on)',iunit)
+ if (nonradial_modes == 1) call write_inopt(mode_file,'mode_file', &
+                                            'file with the modes (columns: l m amplitude period phase)',iunit)
 
 end subroutine write_options_inject
-
-!----------------------------------------------------------------
-!+
-!  Write a comma-separated list of mode values to the .in file
-!+
-!----------------------------------------------------------------
-subroutine write_mode_list(str,name,descript,iunit)
- use infile_utils, only:write_inopt
- use io,           only:error
- character(len=*), intent(in) :: str,name,descript
- integer,          intent(in) :: iunit
-
- ! the .in reader keeps 120 characters per line and the value starts at column 25
- if (len(str) > maxlen_modelist) call error(label,'list of '//name//' too long for the .in file: '//str)
- call write_inopt(str,name,descript,iunit)
-
-end subroutine write_mode_list
-
-!----------------------------------------------------------------
-!+
-!  Comma-separated list of integers
-!+
-!----------------------------------------------------------------
-function int_list(arr) result(str)
- integer, intent(in) :: arr(:)
- character(len=:), allocatable :: str
- character(len=12) :: tmp
- integer :: i
-
- str = ''
- do i = 1,size(arr)
-    write(tmp,'(i0)') arr(i)
-    if (i > 1) str = str//','
-    str = str//trim(tmp)
- enddo
-
-end function int_list
-
-!----------------------------------------------------------------
-!+
-!  Comma-separated list of reals with 6 significant digits and
-!  trailing zeros stripped (stable under write -> read -> write);
-!  exponent notation only outside 1e-3 <= |x| < 1e6
-!+
-!----------------------------------------------------------------
-function real_list(arr) result(str)
- real, intent(in) :: arr(:)
- character(len=:), allocatable :: str
- character(len=24) :: tmp,expo
- integer :: i,j,iexp,iexpo
-
- str = ''
- do i = 1,size(arr)
-    write(tmp,'(es12.5e2)') arr(i)
-    tmp   = adjustl(tmp)
-    iexpo = index(tmp,'E')
-    read(tmp(iexpo+1:),*) iexp
-    if (arr(i) == 0. .or. (iexp >= -3 .and. iexp < 6)) then
-       ! fixed-point notation with the same 6 significant digits
-       write(tmp,'(f24.'//achar(iachar('0')+max(1,5-iexp))//')') arr(i)
-       tmp  = adjustl(tmp)
-       expo = ''
-    else
-       expo = tmp(iexpo:)
-       tmp  = tmp(1:iexpo-1)
-    endif
-    j = len_trim(tmp)
-    do while (tmp(j:j) == '0' .and. tmp(j-1:j-1) /= '.')
-       tmp(j:j) = ' '
-       j = j - 1
-    enddo
-    if (i > 1) str = str//','
-    str = str//trim(tmp)//trim(expo)
- enddo
-
-end function real_list
 
 !----------------------------------------------------------------
 !+
@@ -1159,7 +934,6 @@ subroutine read_options_inject(db,nerr)
  use infile_utils, only:inopts,read_inopt
  type(inopts), intent(inout) :: db(:)
  integer,      intent(inout) :: nerr
- integer :: k
 
  call read_inopt(n_profile_points,      'n_profile_points',  db,errcount=nerr,min=11)
  call read_inopt(iboundary_spheres,     'iboundary_spheres', db,errcount=nerr,min=0)
@@ -1182,65 +956,94 @@ subroutine read_options_inject(db,nerr)
  call read_inopt(use_file_mdot,         'use_file_mdot',     db,errcount=nerr,min=0,max=1)
  call read_inopt(update_L,              'update_L',          db,errcount=nerr,min=0,max=1)
  call read_inopt(verbose,               'verbose',           db,errcount=nerr,min=0,max=1)
- call read_inopt(n_modes,               'n_modes',           db,errcount=nerr,min=0,max=max_modes,default=0)
- if (n_modes > 0) then
-    call read_mode_list('l_modes',        db,nerr,ival=l_modes)
-    call read_mode_list('m_modes',        db,nerr,ival=m_modes)
-    call read_mode_list('mode_amplitudes',db,nerr,rval=mode_amplitudes)
-    call read_mode_list('mode_periods',   db,nerr,rval=mode_period_days)
-    call read_mode_list('mode_phases',    db,nerr,rval=mode_phases)
-    do k = 1,n_modes
-       if (l_modes(k) < 0 .or. abs(m_modes(k)) > l_modes(k)) then
-          print "(a,i2,a,i3,a,i3,a)", ' ERROR: mode ',k,' has l=',l_modes(k),', m=',m_modes(k),'; need l >= 0 and |m| <= l'
-          nerr = nerr + 1
-       endif
-       if (mode_amplitudes(k) < 0.) then
-          print "(a,i2,a)", ' ERROR: mode ',k,' has a negative amplitude'
-          nerr = nerr + 1
-       endif
-    enddo
+ call read_inopt(nonradial_modes,       'nonradial_modes',   db,errcount=nerr,min=0,max=1,default=0)
+ n_modes = 0
+ if (nonradial_modes == 1) then
+    call read_inopt(mode_file,'mode_file',db,errcount=nerr)
+    call read_mode_file(mode_file,nerr)
  endif
 
 end subroutine read_options_inject
 
 !----------------------------------------------------------------
 !+
-!  Read a comma-separated list of n_modes integers (ival) or reals (rval)
+!  Read the non-radial modes from a file with one mode per row:
+!
+!    # l   m   amplitude   period   phase
+!      2   0      1.5      300.0    1.5708
+!
+!  amplitude is relative to the radial amplitude dR, period is in
+!  days (<= 0 uses the radial period) and phase is in radians.
+!  Everything after '#' is a comment; blank lines are skipped.
+!  The file is read again on restart, so keep it with the run:
+!  changing it changes the modes (and the reconstructed r_eq).
 !+
 !----------------------------------------------------------------
-subroutine read_mode_list(tag,db,nerr,ival,rval)
- use infile_utils, only:inopts,read_inopt
- character(len=*),  intent(in)    :: tag
- type(inopts),      intent(inout) :: db(:)
- integer,           intent(inout) :: nerr
- integer, optional, intent(inout) :: ival(:)
- real,    optional, intent(inout) :: rval(:)
- character(len=120) :: valstring
- integer :: i,nval,ierr
+subroutine read_mode_file(filename,nerr)
+ character(len=*), intent(in)    :: filename
+ integer,          intent(inout) :: nerr
+ character(len=256) :: line
+ character(len=16)  :: extra
+ integer :: iunit,ierr,iline,ic,l,m,nerr_in
+ real    :: amp,period,phase
 
- call read_inopt(valstring,tag,db,err=ierr)
+ nerr_in = nerr
+ n_modes = 0
+ open(newunit=iunit,file=trim(filename),status='old',action='read',iostat=ierr)
  if (ierr /= 0) then
-    print "(a)", ' ERROR: '//tag//' not found (required when n_modes > 0)'
+    print "(a)", ' ERROR: cannot open mode_file '//trim(filename)
     nerr = nerr + 1
     return
  endif
- nval = 0
- if (len_trim(valstring) > 0) nval = 1
- do i = 1,len_trim(valstring)
-    if (valstring(i:i) == ',') nval = nval + 1
+ iline = 0
+ do
+    read(iunit,'(a)',iostat=ierr) line
+    if (ierr /= 0) exit
+    iline = iline + 1
+    ic = index(line,'#')
+    if (ic > 0) line(ic:) = ' '
+    if (len_trim(line) == 0) cycle
+    read(line,*,iostat=ierr) l,m,amp,period,phase
+    if (ierr /= 0) then
+       print "(a,i0,a)", ' ERROR: '//trim(filename)//' line ',iline, &
+                         ': cannot read 5 values (integers l m, then amplitude period phase)'
+       nerr = nerr + 1
+       cycle
+    endif
+    read(line,*,iostat=ierr) l,m,amp,period,phase,extra
+    if (ierr == 0) then
+       print "(a,i0,a)", ' ERROR: '//trim(filename)//' line ',iline,': more than 5 columns'
+       nerr = nerr + 1
+       cycle
+    endif
+    if (l < 0 .or. abs(m) > l) then
+       print "(a,i0,a,i0,a,i0,a)", ' ERROR: '//trim(filename)//' line ',iline,': l=',l,', m=',m,'; need l >= 0 and |m| <= l'
+       nerr = nerr + 1
+       cycle
+    endif
+    if (amp < 0.) then
+       print "(a,i0,a)", ' ERROR: '//trim(filename)//' line ',iline,': negative amplitude'
+       nerr = nerr + 1
+       cycle
+    endif
+    if (n_modes >= max_modes) then
+       print "(a,i0,a)", ' ERROR: '//trim(filename)//' has more than ',max_modes,' modes'
+       nerr = nerr + 1
+       exit
+    endif
+    n_modes = n_modes + 1
+    l_modes(n_modes)          = l
+    m_modes(n_modes)          = m
+    mode_amplitudes(n_modes)  = amp
+    mode_period_days(n_modes) = period
+    mode_phases(n_modes)      = phase
  enddo
- if (nval /= n_modes) then
-    print "(a,i2,a,i2)", ' ERROR: '//tag//' = '//trim(valstring)//' has ',nval,' entries, but n_modes = ',n_modes
-    nerr = nerr + 1
-    return
- endif
- if (present(ival)) read(valstring,*,iostat=ierr) ival(1:n_modes)
- if (present(rval)) read(valstring,*,iostat=ierr) rval(1:n_modes)
- if (ierr /= 0) then
-    print "(a)", ' ERROR: could not read '//tag//' = '//trim(valstring)
+ close(iunit)
+ if (n_modes == 0 .and. nerr == nerr_in) then
+    print "(a)", ' ERROR: no modes found in mode_file '//trim(filename)
     nerr = nerr + 1
  endif
 
-end subroutine read_mode_list
+end subroutine read_mode_file
 
 end module inject
