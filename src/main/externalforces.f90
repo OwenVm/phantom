@@ -37,6 +37,7 @@ module externalforces
  public :: update_vdependent_extforce
  public :: update_externalforce
  public :: write_headeropts_extern,read_headeropts_extern
+ public :: set_radial_support,radial_support_factor,get_radial_support
 
  real, public :: eps_soft = 0.d0
  real, private :: eps2_soft = 0.d0
@@ -46,6 +47,15 @@ module externalforces
  logical, public :: extract_iextern_from_hdr = .false.
 
  public :: mass1,a
+
+ !
+ ! temporary radial force on the gas, set by the inject module
+ ! (which is compiled after this one, so the table is passed in)
+ !
+ integer, parameter :: nsupport = 4096
+ logical :: support_is_set = .false.
+ real    :: a_support(nsupport),r_support_in,r_support_out,dr_support
+ real    :: t_support_start,t_support_ramp
 
  !
  ! enumerated list of external forces
@@ -539,6 +549,95 @@ subroutine update_externalforce(iexternalforce,ti,dmdt)
  end select
 
 end subroutine update_externalforce
+
+!-----------------------------------------------------------------------
+!+
+!  Set a radial force on the gas from a table of acceleration (positive
+!  outward) against radius. The table is resampled on a uniform grid so
+!  that no search is needed in the force loop. The force is on until
+!  tstart, then goes to zero as cos^2 over tramp (never if tramp <= 0).
+!+
+!-----------------------------------------------------------------------
+subroutine set_radial_support(r,a,tstart,tramp)
+ real, intent(in) :: r(:),a(:),tstart,tramp
+ integer :: i,j,n
+ real    :: ri
+
+ n = size(r)
+ r_support_in  = r(1)
+ r_support_out = r(n)
+ dr_support    = (r(n) - r(1))/real(nsupport - 1)
+ j = 1
+ do i=1,nsupport
+    ri = r(1) + (i-1)*dr_support
+    do while (j < n-1 .and. r(j+1) < ri)
+       j = j + 1
+    enddo
+    a_support(i) = a(j) + (ri - r(j))*(a(j+1) - a(j))/(r(j+1) - r(j))
+ enddo
+ t_support_start = tstart
+ t_support_ramp  = tramp
+ support_is_set  = .true.
+
+end subroutine set_radial_support
+
+!-----------------------------------------------------------------------
+!+
+!  Fraction of the radial force that is on at a given time (0 if not set)
+!+
+!-----------------------------------------------------------------------
+real function radial_support_factor(time)
+ use physcon, only:pi
+ real, intent(in) :: time
+
+ if (.not.support_is_set) then
+    radial_support_factor = 0.
+ elseif (t_support_ramp <= 0. .or. time <= t_support_start) then
+    radial_support_factor = 1.
+ elseif (time >= t_support_start + t_support_ramp) then
+    radial_support_factor = 0.
+ else
+    radial_support_factor = cos(0.5*pi*(time - t_support_start)/t_support_ramp)**2
+ endif
+
+end function radial_support_factor
+
+!-----------------------------------------------------------------------
+!+
+!  Add a fraction f of the radial force at (xi,yi,zi), directed away from
+!  the point x0. Below the table the innermost value is used. Above it the
+!  force falls as 1/r^2, so that a particle leaving the atmosphere sees the
+!  same fraction of gravity as at the edge rather than being blown away.
+!+
+!-----------------------------------------------------------------------
+subroutine get_radial_support(xi,yi,zi,x0,f,fextxi,fextyi,fextzi)
+ real, intent(in)    :: xi,yi,zi,x0(3),f
+ real, intent(inout) :: fextxi,fextyi,fextzi
+ real    :: dx,dy,dz,r,rgrid,a
+ integer :: i
+
+ dx = xi - x0(1)
+ dy = yi - x0(2)
+ dz = zi - x0(3)
+ r  = sqrt(dx*dx + dy*dy + dz*dz)
+ if (r <= 0.) return
+
+ rgrid = (r - r_support_in)/dr_support
+ if (rgrid <= 0.) then
+    a = a_support(1)
+ elseif (rgrid >= nsupport - 1) then
+    a = a_support(nsupport)*(r_support_out/r)**2
+ else
+    i = int(rgrid) + 1
+    a = a_support(i) + (rgrid - (i - 1))*(a_support(i+1) - a_support(i))
+ endif
+
+ a = f*a/r
+ fextxi = fextxi + a*dx
+ fextyi = fextyi + a*dy
+ fextzi = fextzi + a*dz
+
+end subroutine get_radial_support
 
 !-----------------------------------------------------------------------
 !+

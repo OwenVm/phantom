@@ -758,6 +758,9 @@ subroutine get_force(nptmass,npart,nsubsteps,ntypes,timei,dtextforce,xyzh,vxyzu,
  use mpiutils,        only:bcast_mpi,reduce_in_place_mpi,reduceall_mpi
  use damping,         only:apply_damp,idamp,calc_damp
  use externalforces,  only:update_externalforce
+#ifndef GR
+ use externalforces,  only:radial_support_factor,get_radial_support
+#endif
  use extern_gr,       only:get_grforce
  use ptmass_radiation,only:get_rad_accel_from_ptmass,isink_radiation
  use subgroup,        only:subgroup_search
@@ -787,7 +790,7 @@ subroutine get_force(nptmass,npart,nsubsteps,ntypes,timei,dtextforce,xyzh,vxyzu,
  real                 :: dtf,dtextforcenew,dtsinkgas,dtphi2,fonrmax
  real                 :: fextx,fexty,fextz,xi,yi,zi,pmassi,damp_fac
  real                 :: fonrmaxi,phii,dtphi2i
- real                 :: dkdt,extrapfac
+ real                 :: dkdt,extrapfac,fsupport
  real                 :: densi,uui,pri,pondensi,spsoundi,tempi,vxyz(3),fext_gr(3),xyz(3)
  logical              :: extrap,last
 
@@ -818,6 +821,10 @@ subroutine get_force(nptmass,npart,nsubsteps,ntypes,timei,dtextforce,xyzh,vxyzu,
  !
  call calc_damp(timei, damp_fac)
  call update_externalforce(iexternalforce,timei,dmdt)
+ fsupport = 0.
+#ifndef GR
+ fsupport = radial_support_factor(timei)
+#endif
  !
  ! Sink-sink interactions (loop over ptmass in get_accel_sink_sink)
  !
@@ -901,7 +908,7 @@ subroutine get_force(nptmass,npart,nsubsteps,ntypes,timei,dtextforce,xyzh,vxyzu,
  !$omp shared(divcurlv,dphot0,nucleation,extrap) &
  !$omp shared(abundc,abundo,abundsi,abunde,extrapfac,fsink_old) &
  !$omp shared(isink_radiation,itau_alloc,tau,bin_info) &
- !$omp shared(metrics,metricderivs,metrics_ptmass,metricderivs_ptmass,ieos,C_force) &
+ !$omp shared(metrics,metricderivs,metrics_ptmass,metricderivs_ptmass,ieos,C_force,fsupport) &
  !$omp private(fextx,fexty,fextz,xi,yi,zi) &
  !$omp private(i,fonrmaxi,dtphi2i,phii,dtf) &
  !$omp private(densi,uui,pri,pondensi,spsoundi,tempi,xyz,vxyz,fext_gr) &
@@ -995,6 +1002,19 @@ subroutine get_force(nptmass,npart,nsubsteps,ntypes,timei,dtextforce,xyzh,vxyzu,
              endif
           endif
        endif
+#ifndef GR
+       !
+       ! temporary radial support of the atmosphere, on the gas only. It is below
+       ! gravity, so the sink-gas force already sets the timestep for it
+       !
+       if (fsupport > 0. .and. itype==igas) then
+          if (extrap) then
+             call get_radial_support(xi,yi,zi,xyzmh_ptmass(1:3,1)+extrapfac*fsink_old(1:3,1),fsupport,fextx,fexty,fextz)
+          else
+             call get_radial_support(xi,yi,zi,xyzmh_ptmass(1:3,1),fsupport,fextx,fexty,fextz)
+          endif
+       endif
+#endif
 
        fext(1,i) = fextx
        fext(2,i) = fexty
