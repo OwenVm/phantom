@@ -286,7 +286,7 @@ subroutine testing_cooling_functions(ifunct, T, Q, dlnQ_dlnT)
     dlnQ_dlnT = 0.
  end select
 
-end function testing_cooling_functions
+end subroutine testing_cooling_functions
 
 !-----------------------------------------------------------------------
 !+
