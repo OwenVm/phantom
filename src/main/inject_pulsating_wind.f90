@@ -15,6 +15,7 @@ module inject
 ! :Runtime parameters:
 !   - dumps_p_period    : *number of dumps per period (if save_period = 1)*
 !   - iboundary_spheres : *number of boundary spheres (piston layers)*
+!   - isupport          : *temporary radial support force on the gas (0=off, 1=on)*
 !   - itgas_profile     : *gas temperature: 0=hydrostatic, 1=Teff (Rstar/r)^tgas_exp*
 !   - iwind             : *wind type: 1=prescribed, 2=period from mass-radius relation*
 !   - mass_loss_end     : *end time for mass-loss calculation (periods)*
@@ -30,14 +31,16 @@ module inject
 !   - rho_inner         : *inner boundary density at r_min (cgs)*
 !   - rho_power         : *density profile exponent: rho ~ r^(-rho_power)*
 !   - save_period       : *wether to save dumps as fraction of period (0=off, 1=on)*
+!   - support_ramp_periods : *duration of the cos^2 decline of the support force (periods, 0=stays on)*
+!   - support_ramp_start   : *when the support force starts to decline (periods)*
 !   - tgas_exp          : *exponent of the gas temperature profile (itgas_profile=1)*
 !   - update_L          : *update luminosity with pulsation (0=off, 1=on)*
 !   - use_file_mdot     : *skip measurement phase (0=off, 1=on)*
 !   - verbose           : *enable verbose output (0=off, 1=on)*
 !   - wss               : *radial/tangential spacing ratio*
 !
-! :Dependencies: dim, dust_formation, eos, infile_utils, injectutils, io,
-!   part, physcon, timestep, units, wind_pulsating
+! :Dependencies: dim, dust_formation, eos, externalforces, infile_utils,
+!   injectutils, io, part, physcon, timestep, units, wind_pulsating
 !
  use io,      only:fatal
  use physcon, only:pi
@@ -70,6 +73,9 @@ module inject
  integer :: use_file_mdot         = 0
  integer :: itgas_profile         = 0
  real    :: tgas_exp              = 0.5
+ integer :: isupport              = 0
+ real    :: support_ramp_start    = 0.
+ real    :: support_ramp_periods  = 3.
 
  integer,          parameter :: wind_emitting_sink = 1
  real,             parameter :: pulsation_timestep = 0.02
@@ -126,6 +132,9 @@ subroutine set_default_options_inject(flag)
  use_file_mdot         = 0
  itgas_profile         = 0
  tgas_exp              = 0.5
+ isupport              = 0
+ support_ramp_start    = 0.
+ support_ramp_periods  = 3.
 
 end subroutine set_default_options_inject
 
@@ -140,14 +149,16 @@ subroutine init_inject(ierr)
  use units,          only:utime,umass,udist,unit_velocity,unit_luminosity
  use part,           only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff,iLum,npartoftype
  use injectutils,    only:get_neighb_distance,seed_random
- use wind_pulsating, only:setup_star,calc_stellar_profile,region_mass,print_gas_profile
+ use wind_pulsating, only:setup_star,calc_stellar_profile,region_mass,print_gas_profile,get_support_table
  use dust_formation, only:calc_kappa_max,set_abundances
+ use externalforces, only:set_radial_support
  use timestep,       only:dtmax
  integer, intent(out) :: ierr
  integer, parameter :: max_shells_tmp = 2000
  real    :: tmp_dr(max_shells_tmp), tmp_r(max_shells_tmp)
  integer :: tmp_n(max_shells_tmp)
  real    :: Mstar, Rstar, Tstar, current_radius, dr
+ real, allocatable :: r_table(:), a_table(:)
  integer :: nshells, n_shell, n_tot, i, iunit
  integer :: n_particles_first              ! derived locally — no longer a module parameter
  logical :: file_exists
@@ -228,6 +239,11 @@ subroutine init_inject(ierr)
                  Reff_in=Rstar*au, itgas_profile_in=itgas_profile, tgas_exp_in=tgas_exp)
  call calc_stellar_profile(n_profile_points)
  if (verbose == 1) call print_gas_profile([r_min, Rstar, 1.5*Rstar, 2.*Rstar])
+
+ if (isupport == 1) then
+    call get_support_table(r_table, a_table)
+    call set_radial_support(r_table, a_table, support_ramp_start*pulsation_period, support_ramp_periods*pulsation_period)
+ endif
 
  allocate(npart_per_boundary_shell(n_shells_bnd), shell_radii_bnd(n_shells_bnd))
  allocate(npart_per_shell(n_shells_total), shell_radii_gas(n_shells_total))
@@ -778,6 +794,10 @@ subroutine write_options_inject(iunit)
  call write_inopt(verbose,               'verbose',           'enable verbose output (0=off, 1=on)',iunit)
  call write_inopt(itgas_profile,         'itgas_profile',     'gas temperature: 0=hydrostatic, 1=Teff (Rstar/r)^tgas_exp',iunit)
  call write_inopt(tgas_exp,              'tgas_exp',          'exponent of the gas temperature profile (itgas_profile=1)',iunit)
+ call write_inopt(isupport,              'isupport',          'temporary radial support force on the gas (0=off, 1=on)',iunit)
+ call write_inopt(support_ramp_start,    'support_ramp_start','when the support force starts to decline (periods)',iunit)
+ call write_inopt(support_ramp_periods,  'support_ramp_periods', &
+                  'duration of the cos^2 decline of the support force (periods, 0=stays on)',iunit)
 
 end subroutine write_options_inject
 
@@ -814,6 +834,9 @@ subroutine read_options_inject(db,nerr)
  call read_inopt(verbose,               'verbose',           db,errcount=nerr,min=0,max=1)
  call read_inopt(itgas_profile,         'itgas_profile',     db,errcount=nerr,min=0,max=1,default=0)
  call read_inopt(tgas_exp,              'tgas_exp',          db,errcount=nerr,min=0.,default=0.5)
+ call read_inopt(isupport,              'isupport',          db,errcount=nerr,min=0,max=1,default=0)
+ call read_inopt(support_ramp_start,    'support_ramp_start',db,errcount=nerr,min=0.,default=0.)
+ call read_inopt(support_ramp_periods,  'support_ramp_periods',db,errcount=nerr,min=0.,default=3.)
 
 end subroutine read_options_inject
 
