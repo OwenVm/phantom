@@ -49,6 +49,7 @@ module inject
 
  public :: init_inject, inject_particles, write_options_inject, read_options_inject, &
            set_default_options_inject, update_injected_par
+ public :: itgas_profile, isupport
  private
 
  integer :: iboundary_spheres     = 5

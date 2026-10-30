@@ -82,7 +82,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use part,      only: xyzmh_ptmass, vxyz_ptmass, nptmass, igas, iTeff, iLum, iReff
  use physcon,   only: au, solarm, mass_proton_cgs, kboltz, solarl
  use units,     only: set_units,umass,udist,utime,unit_energ,unit_velocity
- use inject ,   only: set_default_options_inject
+ use inject ,   only: set_default_options_inject,itgas_profile,isupport
  use kernel,    only: hfact_default
  use wind_pulsating, only:setup_star, calc_stellar_profile, save_stellarprofile
  use setbinary, only:set_binary
@@ -133,7 +133,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
     H2_cooling      = 0
     bowen_Cprime    = 3.e-5
     Tfloor          = 10.
-    use_bound       = 1
+    use_bound       = 0
     idust_opacity   = 1
     kappa_gas       = 2.e-4
     bowen_kmax      = -1.
@@ -148,6 +148,10 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  filename = trim(fileprefix)//'.setup'
  inquire(file=filename,exist=iexist)
  if (.not. iexist .and. .not. iexist_in) call set_default_options_inject()
+ if (.not. iexist_in) then
+    itgas_profile = 1
+    isupport      = 1
+ endif
 
  time = 0.
  filename = trim(fileprefix)//'.setup'
