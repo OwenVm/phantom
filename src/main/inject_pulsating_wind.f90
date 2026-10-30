@@ -98,7 +98,8 @@ module inject
  integer :: n_reinjections      = 0
  integer :: particles_to_inject = 0
 
- real    :: mass_loss_start_time, mass_loss_end_time, time_next_measurement
+ real    :: mass_loss_start_time, mass_loss_end_time
+ real    :: time_next_measurement     = 0.
  real    :: mean_mass_loss_rate       = 0.
  integer :: n_measurements            = 0
  integer :: n_escaping_prev           = 0
@@ -214,10 +215,12 @@ subroutine init_inject(ierr)
        n_shell = max(1, nint(tmp_n(nshells-1)*(current_radius/tmp_r(nshells-1))**(2.*(3.-rho_power_in)/3.)))
     endif
     dr = wss*current_radius*get_neighb_distance(n_shell)
-    if (nshells > 2 .and. real(n_shell)/real(n_tot) < min_mass_fraction) then
-       nshells = nshells - 1
-       r_max   = tmp_r(nshells) + 0.5*tmp_dr(nshells)
-       exit
+    if (nshells > 2) then
+       if (real(n_shell)/real(n_tot) < min_mass_fraction) then
+          nshells = nshells - 1
+          r_max   = tmp_r(nshells) + 0.5*tmp_dr(nshells)
+          exit
+       endif
     endif
     tmp_dr(nshells) = dr
     tmp_r(nshells)  = current_radius
