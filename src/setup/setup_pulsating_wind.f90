@@ -30,8 +30,8 @@ module setup
 !   - wind_gamma        : *adiabatic index for wind gas*
 !
 ! :Dependencies: cooling, cooling_functions, cooling_solver,
-!   dust_formation, eos, infile_utils, inject, io, options, part, physcon,
-!   ptmass_radiation, setbinary, timestep, units, wind_pulsating
+!   dust_formation, eos, infile_utils, inject, io, kernel, options, part,
+!   physcon, ptmass_radiation, setbinary, timestep, units, wind_pulsating
 !
  implicit none
  public :: setpart
@@ -81,8 +81,9 @@ end subroutine set_default_parameters_wind
 subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,time,fileprefix)
  use part,      only: xyzmh_ptmass, vxyz_ptmass, nptmass, igas, iTeff, iLum, iReff
  use physcon,   only: au, solarm, mass_proton_cgs, kboltz, solarl
- use units,     only: set_units,umass,udist,utime,unit_energ
+ use units,     only: set_units,umass,udist,utime,unit_energ,unit_velocity
  use inject ,   only: set_default_options_inject
+ use kernel,    only: hfact_default
  use wind_pulsating, only:setup_star, calc_stellar_profile, save_stellarprofile
  use setbinary, only:set_binary
  use io,        only: master
@@ -159,6 +160,8 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  endif
 
  gamma = wind_gamma
+ hfact = hfact_default
+ polyk = kboltz*primary_Teff/(mass_proton_cgs*gmw*unit_velocity**2)
 
  !
  !--space available for injected gas particles
