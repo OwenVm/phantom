@@ -198,7 +198,7 @@ subroutine init_inject(ierr)
     dr = wss*current_radius*get_neighb_distance(n_shell)
     if (nshells > 2 .and. real(n_shell)/real(n_tot) < min_mass_fraction) then
        nshells = nshells - 1
-       r_max   = current_radius - dr
+       r_max   = tmp_r(nshells) + 0.5*tmp_dr(nshells)
        exit
     endif
     tmp_dr(nshells) = dr
@@ -208,11 +208,15 @@ subroutine init_inject(ierr)
     n_tot           = n_tot + n_shell
  enddo
 
+ n_shells_bnd   = min(iboundary_spheres, nshells)
+ n_shells_total = nshells - n_shells_bnd
+ if (r_max <= r_min) call fatal(label,'r_max <= r_min, check mass_of_particles',var='r_max',val=r_max)
+ if (nshells <= n_shells_bnd) call fatal(label,'no gas shells above the boundary, check mass_of_particles',&
+                                         var='nshells',ival=nshells)
+
  call setup_star(Mstar*umass, Tstar, r_max*au, r_min*au, gmw, gamma, rho_inner, rho_power_in)
  call calc_stellar_profile(n_profile_points)
 
- n_shells_bnd   = min(iboundary_spheres, nshells)
- n_shells_total = nshells - n_shells_bnd
  allocate(npart_per_boundary_shell(n_shells_bnd), shell_radii_bnd(n_shells_bnd))
  allocate(npart_per_shell(n_shells_total), shell_radii_gas(n_shells_total))
  allocate(delta_r_radial(nshells))
