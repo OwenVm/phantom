@@ -13,31 +13,31 @@ module inject
 ! :Owner: Owen Vermeulen
 !
 ! :Runtime parameters:
-!   - dumps_p_period    : *number of dumps per period (if save_period = 1)*
-!   - iboundary_spheres : *number of boundary spheres (piston layers)*
-!   - isupport          : *temporary radial support force on the gas (0=off, 1=on)*
-!   - itgas_profile     : *gas temperature: 0=hydrostatic, 1=Teff (Rstar/r)^tgas_exp*
-!   - iwind             : *wind type: 1=prescribed, 2=period from mass-radius relation*
-!   - mass_loss_end     : *end time for mass-loss calculation (periods)*
-!   - mass_loss_start   : *start time for mass-loss calculation (periods)*
-!   - min_mass_fraction : *minimum mass fraction per shell*
-!   - n_inject_period   : *period between reinjections (periods)*
-!   - n_profile_points  : *number of points in stellar profile*
-!   - phi0              : *initial phase offset (radians)*
-!   - piston_velocity   : *piston velocity amplitude (km/s)*
-!   - pulsation_period  : *pulsation period (days)*
-!   - r_min_on_rstar    : *gas atmosphere inner radius as fraction of R_star*
-!   - reinject_enabled  : *enable dynamic reinjection (0=off, 1=on)*
-!   - rho_inner         : *inner boundary density at r_min (cgs)*
-!   - rho_power         : *density profile exponent: rho ~ r^(-rho_power)*
-!   - save_period       : *wether to save dumps as fraction of period (0=off, 1=on)*
+!   - dumps_p_period       : *number of dumps per period (if save_period = 1)*
+!   - iboundary_spheres    : *number of boundary spheres (piston layers)*
+!   - isupport             : *temporary radial support force on the gas (0=off, 1=on)*
+!   - itgas_profile        : *gas temperature: 0=hydrostatic, 1=Teff (Rstar/r)^tgas_exp*
+!   - iwind                : *wind type: 1=prescribed, 2=period from mass-radius relation*
+!   - mass_loss_end        : *end time for mass-loss calculation (periods)*
+!   - mass_loss_start      : *start time for mass-loss calculation (periods)*
+!   - min_mass_fraction    : *minimum mass fraction per shell*
+!   - n_inject_period      : *period between reinjections (periods)*
+!   - n_profile_points     : *number of points in stellar profile*
+!   - phi0                 : *initial phase offset (radians)*
+!   - piston_velocity      : *piston velocity amplitude (km/s)*
+!   - pulsation_period     : *pulsation period (days)*
+!   - r_min_on_rstar       : *gas atmosphere inner radius as fraction of R_star*
+!   - reinject_enabled     : *enable dynamic reinjection (0=off, 1=on)*
+!   - rho_inner            : *inner boundary density at r_min (cgs)*
+!   - rho_power            : *density profile exponent: rho ~ r^(-rho_power)*
+!   - save_period          : *wether to save dumps as fraction of period (0=off, 1=on)*
 !   - support_ramp_periods : *duration of the cos^2 decline of the support force (periods, 0=stays on)*
 !   - support_ramp_start   : *when the support force starts to decline (periods)*
-!   - tgas_exp          : *exponent of the gas temperature profile (itgas_profile=1)*
-!   - update_L          : *update luminosity with pulsation (0=off, 1=on)*
-!   - use_file_mdot     : *skip measurement phase (0=off, 1=on)*
-!   - verbose           : *enable verbose output (0=off, 1=on)*
-!   - wss               : *radial/tangential spacing ratio*
+!   - tgas_exp             : *exponent of the gas temperature profile (itgas_profile=1)*
+!   - update_L             : *update luminosity with pulsation (0=off, 1=on)*
+!   - use_file_mdot        : *skip measurement phase (0=off, 1=on)*
+!   - verbose              : *enable verbose output (0=off, 1=on)*
+!   - wss                  : *radial/tangential spacing ratio*
 !
 ! :Dependencies: dim, dust_formation, eos, externalforces, infile_utils,
 !   injectutils, io, part, physcon, timestep, units, wind_pulsating

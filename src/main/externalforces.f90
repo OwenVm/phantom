@@ -21,7 +21,7 @@ module externalforces
 ! :Dependencies: dump_utils, extern_Bfield, extern_binary, extern_corotate,
 !   extern_densprofile, extern_geopot, extern_gnewton, extern_gwinspiral,
 !   extern_lensethirring, extern_prdrag, extern_spiral, extern_staticsine,
-!   infile_utils, io, part, units
+!   infile_utils, io, part, physcon, units
 !
  use extern_binary,        only:accradius1,mass1,accretedmass1,accretedmass2
  use extern_corotate,      only:omega_corotate  ! so public from this module
@@ -558,22 +558,22 @@ end subroutine update_externalforce
 !  tstart, then goes to zero as cos^2 over tramp (never if tramp <= 0).
 !+
 !-----------------------------------------------------------------------
-subroutine set_radial_support(r,a,tstart,tramp)
- real, intent(in) :: r(:),a(:),tstart,tramp
+subroutine set_radial_support(rtab,atab,tstart,tramp)
+ real, intent(in) :: rtab(:),atab(:),tstart,tramp
  integer :: i,j,n
  real    :: ri
 
- n = size(r)
- r_support_in  = r(1)
- r_support_out = r(n)
- dr_support    = (r(n) - r(1))/real(nsupport - 1)
+ n = size(rtab)
+ r_support_in  = rtab(1)
+ r_support_out = rtab(n)
+ dr_support    = (rtab(n) - rtab(1))/real(nsupport - 1)
  j = 1
  do i=1,nsupport
-    ri = r(1) + (i-1)*dr_support
-    do while (j < n-1 .and. r(j+1) < ri)
+    ri = rtab(1) + (i-1)*dr_support
+    do while (j < n-1 .and. rtab(j+1) < ri)
        j = j + 1
     enddo
-    a_support(i) = a(j) + (ri - r(j))*(a(j+1) - a(j))/(r(j+1) - r(j))
+    a_support(i) = atab(j) + (ri - rtab(j))*(atab(j+1) - atab(j))/(rtab(j+1) - rtab(j))
  enddo
  t_support_start = tstart
  t_support_ramp  = tramp
@@ -613,7 +613,7 @@ end function radial_support_factor
 subroutine get_radial_support(xi,yi,zi,x0,f,fextxi,fextyi,fextzi)
  real, intent(in)    :: xi,yi,zi,x0(3),f
  real, intent(inout) :: fextxi,fextyi,fextzi
- real    :: dx,dy,dz,r,rgrid,a
+ real    :: dx,dy,dz,r,rgrid,acc
  integer :: i
 
  dx = xi - x0(1)
@@ -624,18 +624,18 @@ subroutine get_radial_support(xi,yi,zi,x0,f,fextxi,fextyi,fextzi)
 
  rgrid = (r - r_support_in)/dr_support
  if (rgrid <= 0.) then
-    a = a_support(1)
+    acc = a_support(1)
  elseif (rgrid >= nsupport - 1) then
-    a = a_support(nsupport)*(r_support_out/r)**2
+    acc = a_support(nsupport)*(r_support_out/r)**2
  else
     i = int(rgrid) + 1
-    a = a_support(i) + (rgrid - (i - 1))*(a_support(i+1) - a_support(i))
+    acc = a_support(i) + (rgrid - (i - 1))*(a_support(i+1) - a_support(i))
  endif
 
- a = f*a/r
- fextxi = fextxi + a*dx
- fextyi = fextyi + a*dy
- fextzi = fextzi + a*dz
+ acc = f*acc/r
+ fextxi = fextxi + acc*dx
+ fextyi = fextyi + acc*dy
+ fextzi = fextzi + acc*dz
 
 end subroutine get_radial_support
 
