@@ -15,6 +15,7 @@ module inject
 ! :Runtime parameters:
 !   - dumps_p_period    : *number of dumps per period (if save_period = 1)*
 !   - iboundary_spheres : *number of boundary spheres (piston layers)*
+!   - itgas_profile     : *gas temperature: 0=hydrostatic, 1=Teff (Rstar/r)^tgas_exp*
 !   - iwind             : *wind type: 1=prescribed, 2=period from mass-radius relation*
 !   - mass_loss_end     : *end time for mass-loss calculation (periods)*
 !   - mass_loss_start   : *start time for mass-loss calculation (periods)*
@@ -29,13 +30,14 @@ module inject
 !   - rho_inner         : *inner boundary density at r_min (cgs)*
 !   - rho_power         : *density profile exponent: rho ~ r^(-rho_power)*
 !   - save_period       : *wether to save dumps as fraction of period (0=off, 1=on)*
+!   - tgas_exp          : *exponent of the gas temperature profile (itgas_profile=1)*
 !   - update_L          : *update luminosity with pulsation (0=off, 1=on)*
 !   - use_file_mdot     : *skip measurement phase (0=off, 1=on)*
 !   - verbose           : *enable verbose output (0=off, 1=on)*
 !   - wss               : *radial/tangential spacing ratio*
 !
-! :Dependencies: dust_formation, eos, infile_utils, injectutils, io, part,
-!   physcon, timestep, units, wind_pulsating
+! :Dependencies: dim, dust_formation, eos, infile_utils, injectutils, io,
+!   part, physcon, timestep, units, wind_pulsating
 !
  use io,      only:fatal
  use physcon, only:pi
@@ -66,6 +68,8 @@ module inject
  integer :: update_L              = 0
  integer :: verbose               = 1
  integer :: use_file_mdot         = 0
+ integer :: itgas_profile         = 0
+ real    :: tgas_exp              = 0.5
 
  integer,          parameter :: wind_emitting_sink = 1
  real,             parameter :: pulsation_timestep = 0.02
@@ -120,6 +124,8 @@ subroutine set_default_options_inject(flag)
  update_L              = 0
  verbose               = 1
  use_file_mdot         = 0
+ itgas_profile         = 0
+ tgas_exp              = 0.5
 
 end subroutine set_default_options_inject
 
@@ -130,12 +136,12 @@ end subroutine set_default_options_inject
 !----------------------------------------------------------------
 subroutine init_inject(ierr)
  use physcon,        only:days,au,solarm,km
- use eos,            only:gmw,gamma
+ use eos,            only:gmw,gamma,ieos
  use units,          only:utime,umass,udist,unit_velocity,unit_luminosity
  use part,           only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff,iLum,npartoftype
  use injectutils,    only:get_neighb_distance,seed_random
- use wind_pulsating, only:setup_star,calc_stellar_profile,region_mass
- use dust_formation, only:calc_kappa_max
+ use wind_pulsating, only:setup_star,calc_stellar_profile,region_mass,print_gas_profile
+ use dust_formation, only:calc_kappa_max,set_abundances
  use timestep,       only:dtmax
  integer, intent(out) :: ierr
  integer, parameter :: max_shells_tmp = 2000
@@ -214,8 +220,14 @@ subroutine init_inject(ierr)
  if (nshells <= n_shells_bnd) call fatal(label,'no gas shells above the boundary, check mass_of_particles',&
                                          var='nshells',ival=nshells)
 
- call setup_star(Mstar*umass, Tstar, r_max*au, r_min*au, gmw, gamma, rho_inner, rho_power_in)
+ if (itgas_profile == 1) then
+    if (ieos /= 5) call fatal(label,'itgas_profile=1 needs ieos=5',var='ieos',ival=ieos)
+    call set_abundances   ! needed by init_muGamma
+ endif
+ call setup_star(Mstar*umass, Tstar, r_max*au, r_min*au, gmw, gamma, rho_inner, rho_power_in, &
+                 Reff_in=Rstar*au, itgas_profile_in=itgas_profile, tgas_exp_in=tgas_exp)
  call calc_stellar_profile(n_profile_points)
+ if (verbose == 1) call print_gas_profile([r_min, Rstar, 1.5*Rstar, 2.*Rstar])
 
  allocate(npart_per_boundary_shell(n_shells_bnd), shell_radii_bnd(n_shells_bnd))
  allocate(npart_per_shell(n_shells_total), shell_radii_gas(n_shells_total))
@@ -451,7 +463,7 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(inout) :: npart,npartoftype(:)
  integer :: old_npart
- real    :: r_inject,phase,rho,u,T,P,x0(3),v0(3)
+ real    :: r_inject,phase,rho,u,T,P,mu,gam,x0(3),v0(3)
 
  x0    = xyzmh_ptmass(1:3,wind_emitting_sink)
  v0    = vxyz_ptmass(1:3,wind_emitting_sink)
@@ -463,13 +475,14 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
     r_inject = r_min + sum(delta_r_radial(1:iboundary_spheres+1))
  endif
  r_inject = r_inject + deltaR_osc*sin(phase)
- call interp_stellar_profile(r_inject,rho,P,u,T)
+ call interp_stellar_profile(r_inject,rho,P,u,T,mu,gam)
 
  old_npart      = npart
  n_reinjections = n_reinjections + 1
  call inject_geodesic_sphere(n_shells_total + n_reinjections, npart+1, particles_to_inject, r_inject, &
                              piston_velocity*cos(phase), u, rho, npart, npartoftype, xyzh, vxyzu, igas, x0, v0, &
                              wind_emitting_sink)
+ call set_mu_gamma(old_npart+1,npart,mu,gam)
 
  xyzmh_ptmass(4,wind_emitting_sink) = xyzmh_ptmass(4,wind_emitting_sink) - (npart - old_npart)*mass_of_gas_particle
 
@@ -496,22 +509,26 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
  real,    intent(in)    :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(inout) :: npart,npartoftype(:)
- integer :: i
- real    :: rho,u,T,P,x0(3),v0(3)
+ integer :: i,i1
+ real    :: rho,u,T,P,mu,gam,x0(3),v0(3)
 
  x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
  v0 = vxyz_ptmass(1:3,wind_emitting_sink)
 
  npart = 0
  do i = 1,n_shells_bnd
-    call interp_stellar_profile(shell_radii_bnd(i),rho,P,u,T)
+    call interp_stellar_profile(shell_radii_bnd(i),rho,P,u,T,mu,gam)
+    i1 = npart + 1
     call inject_geodesic_sphere(i, npart+1, npart_per_boundary_shell(i), shell_radii_bnd(i), 0., u, rho, &
                                 npart, npartoftype, xyzh, vxyzu, iboundary, x0, v0, wind_emitting_sink)
+    call set_mu_gamma(i1,npart,mu,gam)
  enddo
  do i = 1,n_shells_total
-    call interp_stellar_profile(shell_radii_gas(i),rho,P,u,T)
+    call interp_stellar_profile(shell_radii_gas(i),rho,P,u,T,mu,gam)
+    i1 = npart + 1
     call inject_geodesic_sphere(n_shells_bnd+i, npart+1, npart_per_shell(i), shell_radii_gas(i), 0., u, rho, &
                                 npart, npartoftype, xyzh, vxyzu, igas, x0, v0, wind_emitting_sink)
+    call set_mu_gamma(i1,npart,mu,gam)
  enddo
 
  n_boundary_particles = npartoftype(iboundary)
@@ -528,14 +545,36 @@ end subroutine setup_initial_atmosphere
 
 !----------------------------------------------------------------
 !+
+!  Set mu and gamma of particles i1..i2 to those of the profile.
+!  add_or_update_particle resets them to gmw and gamma, which do not
+!  return T_gas from u_gas. Gas particles would recover through
+!  calc_muGamma, but that is not called for boundary particles.
+!+
+!----------------------------------------------------------------
+subroutine set_mu_gamma(i1,i2,mu,gam)
+ use dim,  only:update_muGamma
+ use part, only:eos_vars,imu,igamma
+ integer, intent(in) :: i1,i2
+ real,    intent(in) :: mu,gam
+
+ if (update_muGamma) then
+    eos_vars(imu,i1:i2)    = mu
+    eos_vars(igamma,i1:i2) = gam
+ endif
+
+end subroutine set_mu_gamma
+
+!----------------------------------------------------------------
+!+
 !  Reconstructs boundary particle info after resuming from a dump
 !+
 !----------------------------------------------------------------
 subroutine reconstruct_boundary_info(time,xyzh,xyzmh_ptmass)
- use part, only:iboundary,npartoftype
+ use part,           only:iboundary,npartoftype
+ use wind_pulsating, only:interp_stellar_profile
  real, intent(in) :: time,xyzh(:,:),xyzmh_ptmass(:,:)
  integer :: i
- real    :: x0(3),osc
+ real    :: x0(3),osc,rho,u,T,P,mu,gam
 
  x0  = xyzmh_ptmass(1:3,wind_emitting_sink)
  osc = deltaR_osc*sin(omega_pulsation*time + phi0)
@@ -544,6 +583,8 @@ subroutine reconstruct_boundary_info(time,xyzh,xyzmh_ptmass)
  allocate(r_boundary_equilibrium(n_boundary_particles))
  do i = 1,n_boundary_particles
     r_boundary_equilibrium(i) = norm2(xyzh(1:3,i) - x0) - osc
+    call interp_stellar_profile(r_boundary_equilibrium(i),rho,P,u,T,mu,gam)
+    call set_mu_gamma(i,i,mu,gam)  ! reset to gmw and gamma on restart, see initial
  enddo
  boundary_info_ready = .true.
 
@@ -735,6 +776,8 @@ subroutine write_options_inject(iunit)
  call write_inopt(use_file_mdot,         'use_file_mdot',     'skip measurement phase (0=off, 1=on)',iunit)
  call write_inopt(update_L,              'update_L',          'update luminosity with pulsation (0=off, 1=on)',iunit)
  call write_inopt(verbose,               'verbose',           'enable verbose output (0=off, 1=on)',iunit)
+ call write_inopt(itgas_profile,         'itgas_profile',     'gas temperature: 0=hydrostatic, 1=Teff (Rstar/r)^tgas_exp',iunit)
+ call write_inopt(tgas_exp,              'tgas_exp',          'exponent of the gas temperature profile (itgas_profile=1)',iunit)
 
 end subroutine write_options_inject
 
@@ -769,6 +812,8 @@ subroutine read_options_inject(db,nerr)
  call read_inopt(use_file_mdot,         'use_file_mdot',     db,errcount=nerr,min=0,max=1)
  call read_inopt(update_L,              'update_L',          db,errcount=nerr,min=0,max=1)
  call read_inopt(verbose,               'verbose',           db,errcount=nerr,min=0,max=1)
+ call read_inopt(itgas_profile,         'itgas_profile',     db,errcount=nerr,min=0,max=1,default=0)
+ call read_inopt(tgas_exp,              'tgas_exp',          db,errcount=nerr,min=0.,default=0.5)
 
 end subroutine read_options_inject
 

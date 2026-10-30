@@ -8,41 +8,50 @@ module wind_pulsating
 !
 ! driver to integrate the hydrostatic equilibrium equations to set the outer layers of an AGB star
 !
+! With itgas_profile=1 the gas is given a prescribed temperature instead of the
+! one needed to hold up the density profile.
+!
 ! :References: None
 !
 ! :Owner: Owen Vermeulen
 !
 ! :Runtime parameters: None
 !
-! :Dependencies: io, physcon, table_utils, units
+! :Dependencies: dust_formation, eos, io, physcon, table_utils, units
 !
  implicit none
  public :: setup_star
  public :: stellar_state,save_stellarprofile,interp_stellar_profile,calc_stellar_profile
- public :: region_mass
+ public :: region_mass,print_gas_profile
 
  private
  real :: rho_power = 2.0
 
  ! input parameters
  real :: Mstar_cgs, Rstar_cgs, Tstar_cgs, r_inner, Star_gamma, Star_mu, rho_inner_cgs
+ ! Rstar_cgs is the outer radius of the profile, Reff_cgs the radius of the star
+ real    :: Reff_cgs = 0., tgas_exp = 0.5
+ integer :: itgas_profile = 0
  real, dimension(:,:), allocatable, public :: stellar_1D
 
- ! columns of stellar_1D: r, rho, P, u, T
- integer, parameter :: ncols = 5
+ ! columns of stellar_1D, in cgs. P is P_HSE, u, T, mu and gamma are those of the gas
+ integer, parameter :: ir = 1, irho = 2, iP = 3, iu = 4, iT = 5, iPgas = 6, imu = 7, igam = 8
+ integer, parameter :: ncols = 8
 
  ! default relative change in any quantity before a new profile point is stored
  real, parameter :: eps_default = 0.01
 
  type stellar_state
-    real :: r, rho, P, u, T
+    real :: r, rho, P, u, T, P_gas, mu, gamma
  end type stellar_state
 
 contains
 
-subroutine setup_star(Mstar_in, Tstar_in, Rstar_in, r_min, mu_in, gamma_in, rho_inner_in, rho_power_in)
- real, intent(in)           :: Mstar_in, Tstar_in, Rstar_in, r_min, mu_in, gamma_in, rho_inner_in
- real, intent(in), optional :: rho_power_in
+subroutine setup_star(Mstar_in, Tstar_in, Rstar_in, r_min, mu_in, gamma_in, rho_inner_in, rho_power_in, &
+                      Reff_in, itgas_profile_in, tgas_exp_in)
+ real,    intent(in)           :: Mstar_in, Tstar_in, Rstar_in, r_min, mu_in, gamma_in, rho_inner_in
+ real,    intent(in), optional :: rho_power_in, Reff_in, tgas_exp_in
+ integer, intent(in), optional :: itgas_profile_in
 
  Mstar_cgs     = Mstar_in
  Rstar_cgs     = Rstar_in
@@ -54,6 +63,11 @@ subroutine setup_star(Mstar_in, Tstar_in, Rstar_in, r_min, mu_in, gamma_in, rho_
 
  rho_power = 2.0
  if (present(rho_power_in)) rho_power = rho_power_in
+
+ itgas_profile = 0
+ if (present(itgas_profile_in)) itgas_profile = itgas_profile_in
+ if (present(tgas_exp_in))      tgas_exp      = tgas_exp_in
+ if (present(Reff_in))          Reff_cgs      = Reff_in
 
  print *, "Setting up star with parameters:"
  print *, "Rstar_cgs  :", Rstar_cgs
@@ -107,15 +121,30 @@ end function region_mass
 
 !-----------------------------------------------------------------------
 !
-!  Set u and T from P and rho using the ideal gas law
+!  Set the gas properties. With itgas_profile=0, u and T follow from P and
+!  rho using the ideal gas law. With itgas_profile=1 the temperature is
+!  prescribed, and u uses the conversion in eos.f90 for ieos=5:
+!
+!    T = mu (gamma-1) u / Rg
 !
 !-----------------------------------------------------------------------
 subroutine set_u_and_T(state)
- use physcon, only:kboltz, mass_proton_cgs
+ use physcon,        only:kboltz, mass_proton_cgs, Rg
+ use dust_formation, only:init_muGamma
  type(stellar_state), intent(inout) :: state
 
- state%u = state%P / (state%rho * (Star_gamma - 1.))
- state%T = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
+ if (itgas_profile == 1) then
+    state%T = Tstar_cgs * (Reff_cgs / state%r)**tgas_exp
+    call init_muGamma(state%rho, state%T, state%mu, state%gamma)
+    state%u     = Rg * state%T / (state%mu * (state%gamma - 1.))
+    state%P_gas = (state%gamma - 1.) * state%rho * state%u
+ else
+    state%mu    = Star_mu
+    state%gamma = Star_gamma
+    state%u     = state%P / (state%rho * (Star_gamma - 1.))
+    state%T     = Star_mu * mass_proton_cgs / kboltz * (Star_gamma - 1.) * state%u
+    state%P_gas = state%P
+ endif
 
 end subroutine set_u_and_T
 
@@ -150,6 +179,8 @@ end subroutine init_atmosphere
 !
 !  Integrate hydrostatic equilibrium over one radial step.
 !  Works for both inward (dr < 0) and outward (dr > 0) steps.
+!  The run has no self-gravity, so with itgas_profile=1 only the sink mass
+!  counts, as in the simulation.
 !
 !-----------------------------------------------------------------------
 subroutine stellar_step(state, r_new)
@@ -161,7 +192,8 @@ subroutine stellar_step(state, r_new)
  r_mid   = 0.5 * (state%r + r_new)
  C_rho   = calc_C_rho()
  rho_mid = C_rho / r_mid**rho_power
- M_enc   = Mstar_cgs + enclosed_env_mass(r_mid, C_rho)
+ M_enc   = Mstar_cgs
+ if (itgas_profile == 0) M_enc = M_enc + enclosed_env_mass(r_mid, C_rho)
 
  state%P   = state%P - Gg * (M_enc * rho_mid / r_mid**2) * (r_new - state%r)
  state%r   = r_new
@@ -179,7 +211,7 @@ function state_to_array(state) result(array)
  type(stellar_state), intent(in) :: state
  real :: array(ncols)
 
- array = [state%r, state%rho, state%P, state%u, state%T]
+ array = [state%r, state%rho, state%P, state%u, state%T, state%P_gas, state%mu, state%gamma]
 
 end function state_to_array
 
@@ -189,7 +221,7 @@ end function state_to_array
 !  then reverse the array so it runs from r_inner to Rstar.
 !
 !  n is the number of integration steps. A point is only stored once any
-!  quantity (r, rho, P, u, T) has changed by more than a relative amount
+!  quantity (r, rho, P, u, T, ...) has changed by more than a relative amount
 !  eps (default eps_default) since the last stored point, so the stored
 !  profile has at most n points. The innermost point is always stored.
 !
@@ -232,10 +264,10 @@ subroutine calc_stellar_profile(n, eps_in)
 
  print *, ""
  print *, "Inner boundary conditions (after inward integration):"
- print *, " r    (inner) :", stellar_1D(1, 1)
- print *, " rho  (inner) :", stellar_1D(2, 1)
- print *, " P    (inner) :", stellar_1D(3, 1)
- print *, " T    (inner) :", stellar_1D(5, 1)
+ print *, " r    (inner) :", stellar_1D(ir, 1)
+ print *, " rho  (inner) :", stellar_1D(irho, 1)
+ print *, " P    (inner) :", stellar_1D(iP, 1)
+ print *, " T    (inner) :", stellar_1D(iT, 1)
  print *, " points stored:", nstored, " of ", n, " integration steps (eps =", eps, ")"
  print *, ""
 
@@ -248,12 +280,13 @@ end subroutine calc_stellar_profile
 !  Interpolate stellar profile at given radius
 !
 !-----------------------------------------------------------------------
-subroutine interp_stellar_profile(r, rho, P, u, T)
+subroutine interp_stellar_profile(r, rho, P, u, T, mu, gamma)
  use units,       only:udist, unit_density, unit_ergg, unit_pressure
  use table_utils, only:find_nearest_index, interp_1d
  use io,          only:fatal
  real, intent(in)  :: r
  real, intent(out) :: rho, P, u, T
+ real, intent(out), optional :: mu, gamma
  real    :: r_cgs, vals(ncols)
  integer :: indx, n, j
  character(len=*), parameter :: label = 'interp_stellar_profile'
@@ -274,12 +307,61 @@ subroutine interp_stellar_profile(r, rho, P, u, T)
     enddo
  endif
 
- rho = vals(2) / unit_density
- P   = vals(3) / unit_pressure
- u   = vals(4) / unit_ergg
- T   = vals(5)
+ rho = vals(irho) / unit_density
+ P   = vals(iPgas) / unit_pressure
+ u   = vals(iu) / unit_ergg
+ T   = vals(iT)
+ if (present(mu))    mu    = vals(imu)
+ if (present(gamma)) gamma = vals(igam)
 
 end subroutine interp_stellar_profile
+
+!-----------------------------------------------------------------------
+!
+!  Check that u_gas gives back T_gas through what the code does for
+!  ieos=5: equationofstate in cons2prim, then calc_muGamma in the substeps.
+!  Prints the worst relative error over the profile, then the gas
+!  properties at the radii r (code units) for comparison.
+!
+!-----------------------------------------------------------------------
+subroutine print_gas_profile(r)
+ use dust_formation, only:calc_muGamma
+ use eos,            only:ieos, equationofstate
+ use io,             only:warning
+ use units,          only:unit_density, unit_ergg
+ real, intent(in) :: r(:)
+ real    :: rho, P, u, T, mu, gamma, gamma_i, mu_i, ponrho, cs, T_eos, T_sub, pH, pH_tot, err
+ integer :: i
+ character(len=*), parameter :: label = 'print_gas_profile'
+
+ if (itgas_profile == 1) then
+    err = 0.
+    do i = 1, size(stellar_1D, 2)
+       rho     = stellar_1D(irho, i)
+       mu_i    = stellar_1D(imu, i)
+       gamma_i = stellar_1D(igam, i)
+       call equationofstate(ieos, ponrho, cs, rho/unit_density, 0., 0., 0., T_eos, &
+                            eni=stellar_1D(iu, i)/unit_ergg, gamma_local=gamma_i, mu_local=mu_i)
+       T_sub = T_eos
+       call calc_muGamma(rho, T_sub, mu_i, gamma_i, pH, pH_tot)
+       err = max(err, abs(T_eos/stellar_1D(iT, i) - 1.), abs(T_sub/stellar_1D(iT, i) - 1.))
+    enddo
+    print *, ""
+    print *, " max |T_eos/T_gas - 1| over the profile :", err
+    if (err > 1.e-6) call warning(label, 'u_gas does not return T_gas', val=err)
+ endif
+
+ print "(a)", "        r       rho(cgs)     T_gas        mu       gamma       T_eos    "
+ do i = 1, size(r)
+    call interp_stellar_profile(r(i), rho, P, u, T, mu, gamma)
+    mu_i    = mu
+    gamma_i = gamma
+    call equationofstate(ieos, ponrho, cs, rho, 0., 0., 0., T_eos, eni=u, gamma_local=gamma_i, mu_local=mu_i)
+    print "(6(1x,es11.4))", r(i), rho*unit_density, T, mu, gamma, T_eos
+ enddo
+ print *, ""
+
+end subroutine print_gas_profile
 
 !-----------------------------------------------------------------------
 !
@@ -295,9 +377,9 @@ subroutine save_stellarprofile(n, filename)
  if (iverbose >= 1) write(*,'("Saving 1D stellar model to ",A)') trim(filename)
 
  open(newunit=iunit,file=filename,status='replace')
- write(iunit,'(5(a15))') 'r','rho','P','u','T'
+ write(iunit,'(8(a15))') 'r','rho','P_HSE','u_gas','T_gas','P_gas','mu','gamma'
  do i = 1, n
-    write(iunit,'(5(1x,es14.6E3:))') stellar_1D(:, i)
+    write(iunit,'(8(1x,es14.6E3:))') stellar_1D(:, i)
  enddo
  close(iunit)
 
