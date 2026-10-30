@@ -9,7 +9,9 @@ module wind_pulsating
 ! driver to integrate the hydrostatic equilibrium equations to set the outer layers of an AGB star
 !
 ! With itgas_profile=1 the gas is given a prescribed temperature instead of the
-! one needed to hold up the density profile.
+! one needed to hold up the density profile. The difference between the
+! hydrostatic and the gas pressure gradients is tabulated as the acceleration
+! a_sup, which stands in for the support by pulsation-driven shocks.
 !
 ! :References: None
 !
@@ -22,7 +24,7 @@ module wind_pulsating
  implicit none
  public :: setup_star
  public :: stellar_state,save_stellarprofile,interp_stellar_profile,calc_stellar_profile
- public :: region_mass,print_gas_profile
+ public :: region_mass,get_support_table,print_gas_profile
 
  private
  real :: rho_power = 2.0
@@ -35,8 +37,8 @@ module wind_pulsating
  real, dimension(:,:), allocatable, public :: stellar_1D
 
  ! columns of stellar_1D, in cgs. P is P_HSE, u, T, mu and gamma are those of the gas
- integer, parameter :: ir = 1, irho = 2, iP = 3, iu = 4, iT = 5, iPgas = 6, imu = 7, igam = 8
- integer, parameter :: ncols = 8
+ integer, parameter :: ir = 1, irho = 2, iP = 3, iu = 4, iT = 5, iPgas = 6, imu = 7, igam = 8, iasup = 9
+ integer, parameter :: ncols = 9
 
  ! default relative change in any quantity before a new profile point is stored
  real, parameter :: eps_default = 0.01
@@ -211,7 +213,7 @@ function state_to_array(state) result(array)
  type(stellar_state), intent(in) :: state
  real :: array(ncols)
 
- array = [state%r, state%rho, state%P, state%u, state%T, state%P_gas, state%mu, state%gamma]
+ array = [state%r, state%rho, state%P, state%u, state%T, state%P_gas, state%mu, state%gamma, 0.]
 
 end function state_to_array
 
@@ -262,6 +264,8 @@ subroutine calc_stellar_profile(n, eps_in)
  enddo
  deallocate(tmp)
 
+ call calc_support_accel(nstored)
+
  print *, ""
  print *, "Inner boundary conditions (after inward integration):"
  print *, " r    (inner) :", stellar_1D(ir, 1)
@@ -274,6 +278,85 @@ subroutine calc_stellar_profile(n, eps_in)
  call save_stellarprofile(nstored, 'stellar_profile1D.dat')
 
 end subroutine calc_stellar_profile
+
+!-----------------------------------------------------------------------
+!
+!  First derivative of f on the (non-uniform) grid r, second order
+!  accurate: centred in the interior and one-sided at both ends. The grid
+!  is non-uniform since the profile is thinned, for which a plain centred
+!  difference would only be first order.
+!
+!-----------------------------------------------------------------------
+subroutine radial_derivative(r, f, dfdr)
+ real, intent(in)  :: r(:), f(:)
+ real, intent(out) :: dfdr(:)
+ real    :: h1, h2
+ integer :: i, n
+
+ n = size(r)
+ do i = 2, n-1
+    h1 = r(i) - r(i-1)
+    h2 = r(i+1) - r(i)
+    dfdr(i) = (h1**2*f(i+1) - h2**2*f(i-1) + (h2**2 - h1**2)*f(i)) / (h1*h2*(h1 + h2))
+ enddo
+ h1 = r(2) - r(1)
+ h2 = r(3) - r(2)
+ dfdr(1) = -(2.*h1 + h2)/(h1*(h1 + h2))*f(1) + (h1 + h2)/(h1*h2)*f(2) - h1/(h2*(h1 + h2))*f(3)
+ h1 = r(n-1) - r(n-2)
+ h2 = r(n) - r(n-1)
+ dfdr(n) = h2/(h1*(h1 + h2))*f(n-2) - (h1 + h2)/(h1*h2)*f(n-1) + (h1 + 2.*h2)/(h2*(h1 + h2))*f(n)
+
+end subroutine radial_derivative
+
+!-----------------------------------------------------------------------
+!
+!  Acceleration that holds up the profile against gravity with the gas
+!  pressure, positive outward:
+!
+!    a_sup = (dP_gas/dr - dP_HSE/dr)/rho
+!
+!  from -(1/rho) dP_gas/dr - g + a_sup = 0 and dP_HSE/dr = -rho g.
+!
+!-----------------------------------------------------------------------
+subroutine calc_support_accel(n)
+ use io,      only:fatal, warning
+ use physcon, only:Gg
+ integer, intent(in) :: n
+ real    :: dPgas(n), dPhse(n), g(n), residual
+ character(len=*), parameter :: label = 'calc_support_accel'
+
+ if (n < 3) call fatal(label, 'need at least 3 points in the stellar profile', var='n', ival=n)
+
+ call radial_derivative(stellar_1D(ir,1:n), stellar_1D(iP,1:n), dPhse)
+ call radial_derivative(stellar_1D(ir,1:n), stellar_1D(iPgas,1:n), dPgas)
+ stellar_1D(iasup,1:n) = (dPgas - dPhse) / stellar_1D(irho,1:n)
+
+ if (itgas_profile == 1) then
+    g = Gg * Mstar_cgs / stellar_1D(ir,1:n)**2
+    residual = maxval(abs(-dPgas/stellar_1D(irho,1:n) - g + stellar_1D(iasup,1:n)) / g)
+    print *, " max force residual / g :", residual
+    print *, " a_sup / g, min and max :", minval(stellar_1D(iasup,1:n)/g), maxval(stellar_1D(iasup,1:n)/g)
+    if (residual > 1.e-3) call warning(label, 'large force residual, increase n_profile_points', val=residual)
+ endif
+ if (any(stellar_1D(iasup,1:n) < 0.)) &
+    call warning(label, 'a_sup < 0: gas pressure gradient exceeds gravity', var='min(a_sup)', &
+                 val=minval(stellar_1D(iasup,1:n)))
+
+end subroutine calc_support_accel
+
+!-----------------------------------------------------------------------
+!
+!  The support acceleration table in code units, for the force routine
+!
+!-----------------------------------------------------------------------
+subroutine get_support_table(r, a_sup)
+ use units, only:udist, utime
+ real, allocatable, intent(out) :: r(:), a_sup(:)
+
+ r     = stellar_1D(ir,:) / udist
+ a_sup = stellar_1D(iasup,:) * utime**2 / udist
+
+end subroutine get_support_table
 
 !-----------------------------------------------------------------------
 !
@@ -377,9 +460,9 @@ subroutine save_stellarprofile(n, filename)
  if (iverbose >= 1) write(*,'("Saving 1D stellar model to ",A)') trim(filename)
 
  open(newunit=iunit,file=filename,status='replace')
- write(iunit,'(8(a15))') 'r','rho','P_HSE','u_gas','T_gas','P_gas','mu','gamma'
+ write(iunit,'(9(a15))') 'r','rho','P_HSE','u_gas','T_gas','P_gas','mu','gamma','a_sup'
  do i = 1, n
-    write(iunit,'(8(1x,es14.6E3:))') stellar_1D(:, i)
+    write(iunit,'(9(1x,es14.6E3:))') stellar_1D(:, i)
  enddo
  close(iunit)
 
