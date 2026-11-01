@@ -32,7 +32,7 @@ module wind_pulsating
  ! input parameters
  real :: Mstar_cgs, Rstar_cgs, Tstar_cgs, r_inner, Star_gamma, Star_mu, rho_inner_cgs
  ! Rstar_cgs is the outer radius of the profile, Reff_cgs the radius of the star
- real    :: Reff_cgs = 0., tgas_exp = 0.5
+ real    :: Reff_cgs = 0., tgas_exp = 0.5, tgas_base_width_cgs = 0.
  integer :: itgas_profile = 0
  real, dimension(:,:), allocatable, public :: stellar_1D
 
@@ -50,9 +50,9 @@ module wind_pulsating
 contains
 
 subroutine setup_star(Mstar_in, Tstar_in, Rstar_in, r_min, mu_in, gamma_in, rho_inner_in, rho_power_in, &
-                      Reff_in, itgas_profile_in, tgas_exp_in)
+                      Reff_in, itgas_profile_in, tgas_exp_in, tgas_base_width_in)
  real,    intent(in)           :: Mstar_in, Tstar_in, Rstar_in, r_min, mu_in, gamma_in, rho_inner_in
- real,    intent(in), optional :: rho_power_in, Reff_in, tgas_exp_in
+ real,    intent(in), optional :: rho_power_in, Reff_in, tgas_exp_in, tgas_base_width_in
  integer, intent(in), optional :: itgas_profile_in
 
  Mstar_cgs     = Mstar_in
@@ -69,6 +69,7 @@ subroutine setup_star(Mstar_in, Tstar_in, Rstar_in, r_min, mu_in, gamma_in, rho_
  itgas_profile = 0
  if (present(itgas_profile_in)) itgas_profile = itgas_profile_in
  if (present(tgas_exp_in))      tgas_exp      = tgas_exp_in
+ if (present(tgas_base_width_in)) tgas_base_width_cgs = tgas_base_width_in
  if (present(Reff_in))          Reff_cgs      = Reff_in
 
  print *, "Setting up star with parameters:"
@@ -129,15 +130,29 @@ end function region_mass
 !
 !    T = mu (gamma-1) u / Rg
 !
+!  With tgas_base_width > 0 the pressure blends from P_HSE at r_inner to
+!  that of the temperature law, as a cos^2 in ln(P). The gas then carries
+!  the real pressure next to the piston, with a_sup going to zero there.
+!
 !-----------------------------------------------------------------------
 subroutine set_u_and_T(state)
- use physcon,        only:kboltz, mass_proton_cgs, Rg
+ use physcon,        only:kboltz, mass_proton_cgs, Rg, pi
  use dust_formation, only:init_muGamma
  type(stellar_state), intent(inout) :: state
+ real :: x, w, P_law
 
  if (itgas_profile == 1) then
     state%T = Tstar_cgs * (Reff_cgs / state%r)**tgas_exp
     call init_muGamma(state%rho, state%T, state%mu, state%gamma)
+    if (tgas_base_width_cgs > 0.) then
+       x = (state%r - r_inner) / tgas_base_width_cgs
+       if (x < 1.) then
+          w       = cos(0.5*pi*max(x, 0.))**2
+          P_law   = state%rho * Rg * state%T / state%mu
+          state%T = T_from_pressure(state%rho, P_law**(1. - w) * state%P**w, state%T)
+          call init_muGamma(state%rho, state%T, state%mu, state%gamma)
+       endif
+    endif
     state%u     = Rg * state%T / (state%mu * (state%gamma - 1.))
     state%P_gas = (state%gamma - 1.) * state%rho * state%u
  else
@@ -149,6 +164,35 @@ subroutine set_u_and_T(state)
  endif
 
 end subroutine set_u_and_T
+
+!-----------------------------------------------------------------------
+!
+!  Temperature at which gas of density rho has pressure P, by bisection
+!  since mu depends on T through ionisation. T_lo must be below the answer.
+!
+!-----------------------------------------------------------------------
+real function T_from_pressure(rho, P, T_lo)
+ use physcon,        only:Rg
+ use dust_formation, only:init_muGamma
+ real, intent(in) :: rho, P, T_lo
+ real, parameter  :: mu_max = 2.4
+ real    :: T1, T2, T_mid, mu, gamma
+ integer :: i
+
+ T1 = T_lo
+ T2 = P * mu_max / (rho * Rg)
+ do i = 1, 60
+    T_mid = sqrt(T1*T2)
+    call init_muGamma(rho, T_mid, mu, gamma)
+    if (rho * Rg * T_mid / mu > P) then
+       T2 = T_mid
+    else
+       T1 = T_mid
+    endif
+ enddo
+ T_from_pressure = sqrt(T1*T2)
+
+end function T_from_pressure
 
 !-----------------------------------------------------------------------
 !
@@ -363,13 +407,13 @@ end subroutine get_support_table
 !  Interpolate stellar profile at given radius
 !
 !-----------------------------------------------------------------------
-subroutine interp_stellar_profile(r, rho, P, u, T, mu, gamma)
+subroutine interp_stellar_profile(r, rho, P, u, T, mu, gamma, P_HSE)
  use units,       only:udist, unit_density, unit_ergg, unit_pressure
  use table_utils, only:find_nearest_index, interp_1d
  use io,          only:fatal
  real, intent(in)  :: r
  real, intent(out) :: rho, P, u, T
- real, intent(out), optional :: mu, gamma
+ real, intent(out), optional :: mu, gamma, P_HSE
  real    :: r_cgs, vals(ncols)
  integer :: indx, n, j
  character(len=*), parameter :: label = 'interp_stellar_profile'
@@ -396,6 +440,7 @@ subroutine interp_stellar_profile(r, rho, P, u, T, mu, gamma)
  T   = vals(iT)
  if (present(mu))    mu    = vals(imu)
  if (present(gamma)) gamma = vals(igam)
+ if (present(P_HSE)) P_HSE = vals(iP) / unit_pressure
 
 end subroutine interp_stellar_profile
 

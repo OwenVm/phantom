@@ -21,7 +21,7 @@ module externalforces
 ! :Dependencies: dump_utils, extern_Bfield, extern_binary, extern_corotate,
 !   extern_densprofile, extern_geopot, extern_gnewton, extern_gwinspiral,
 !   extern_lensethirring, extern_prdrag, extern_spiral, extern_staticsine,
-!   infile_utils, io, part, physcon, units
+!   infile_utils, io, part, units
 !
  use extern_binary,        only:accradius1,mass1,accretedmass1,accretedmass2
  use extern_corotate,      only:omega_corotate  ! so public from this module
@@ -37,7 +37,6 @@ module externalforces
  public :: update_vdependent_extforce
  public :: update_externalforce
  public :: write_headeropts_extern,read_headeropts_extern
- public :: set_radial_support,radial_support_factor,get_radial_support
 
  real, public :: eps_soft = 0.d0
  real, private :: eps2_soft = 0.d0
@@ -47,15 +46,6 @@ module externalforces
  logical, public :: extract_iextern_from_hdr = .false.
 
  public :: mass1,a
-
- !
- ! temporary radial force on the gas, set by the inject module
- ! (which is compiled after this one, so the table is passed in)
- !
- integer, parameter :: nsupport = 4096
- logical :: support_is_set = .false.
- real    :: a_support(nsupport),r_support_in,r_support_out,dr_support
- real    :: t_support_start,t_support_ramp
 
  !
  ! enumerated list of external forces
@@ -549,95 +539,6 @@ subroutine update_externalforce(iexternalforce,ti,dmdt)
  end select
 
 end subroutine update_externalforce
-
-!-----------------------------------------------------------------------
-!+
-!  Set a radial force on the gas from a table of acceleration (positive
-!  outward) against radius. The table is resampled on a uniform grid so
-!  that no search is needed in the force loop. The force is on until
-!  tstart, then goes to zero as cos^2 over tramp (never if tramp <= 0).
-!+
-!-----------------------------------------------------------------------
-subroutine set_radial_support(rtab,atab,tstart,tramp)
- real, intent(in) :: rtab(:),atab(:),tstart,tramp
- integer :: i,j,n
- real    :: ri
-
- n = size(rtab)
- r_support_in  = rtab(1)
- r_support_out = rtab(n)
- dr_support    = (rtab(n) - rtab(1))/real(nsupport - 1)
- j = 1
- do i=1,nsupport
-    ri = rtab(1) + (i-1)*dr_support
-    do while (j < n-1 .and. rtab(j+1) < ri)
-       j = j + 1
-    enddo
-    a_support(i) = atab(j) + (ri - rtab(j))*(atab(j+1) - atab(j))/(rtab(j+1) - rtab(j))
- enddo
- t_support_start = tstart
- t_support_ramp  = tramp
- support_is_set  = .true.
-
-end subroutine set_radial_support
-
-!-----------------------------------------------------------------------
-!+
-!  Fraction of the radial force that is on at a given time (0 if not set)
-!+
-!-----------------------------------------------------------------------
-real function radial_support_factor(time)
- use physcon, only:pi
- real, intent(in) :: time
-
- if (.not.support_is_set) then
-    radial_support_factor = 0.
- elseif (t_support_ramp <= 0. .or. time <= t_support_start) then
-    radial_support_factor = 1.
- elseif (time >= t_support_start + t_support_ramp) then
-    radial_support_factor = 0.
- else
-    radial_support_factor = cos(0.5*pi*(time - t_support_start)/t_support_ramp)**2
- endif
-
-end function radial_support_factor
-
-!-----------------------------------------------------------------------
-!+
-!  Add a fraction f of the radial force at (xi,yi,zi), directed away from
-!  the point x0. Below the table the innermost value is used. Above it the
-!  force falls as 1/r^2, so that a particle leaving the atmosphere sees the
-!  same fraction of gravity as at the edge rather than being blown away.
-!+
-!-----------------------------------------------------------------------
-subroutine get_radial_support(xi,yi,zi,x0,f,fextxi,fextyi,fextzi)
- real, intent(in)    :: xi,yi,zi,x0(3),f
- real, intent(inout) :: fextxi,fextyi,fextzi
- real    :: dx,dy,dz,r,rgrid,acc
- integer :: i
-
- dx = xi - x0(1)
- dy = yi - x0(2)
- dz = zi - x0(3)
- r  = sqrt(dx*dx + dy*dy + dz*dz)
- if (r <= 0.) return
-
- rgrid = (r - r_support_in)/dr_support
- if (rgrid <= 0.) then
-    acc = a_support(1)
- elseif (rgrid >= nsupport - 1) then
-    acc = a_support(nsupport)*(r_support_out/r)**2
- else
-    i = int(rgrid) + 1
-    acc = a_support(i) + (rgrid - (i - 1))*(a_support(i+1) - a_support(i))
- endif
-
- acc = f*acc/r
- fextxi = fextxi + acc*dx
- fextyi = fextyi + acc*dy
- fextzi = fextzi + acc*dz
-
-end subroutine get_radial_support
 
 !-----------------------------------------------------------------------
 !+

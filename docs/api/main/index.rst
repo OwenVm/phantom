@@ -22,6 +22,7 @@ main
    extern_densprofile
    extern_gwinspiral
    extern_lensethirring
+   extern_radialsupport
    extern_spiral
    extern_staticsine
    fastmath

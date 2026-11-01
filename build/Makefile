@@ -453,6 +453,7 @@ SRCPOTS= extern_gr.f90 \
          extern_staticsine.f90 \
          extern_gwinspiral.f90 \
          extern_geopot.f90 \
+         extern_radialsupport.f90 \
          externalforces.f90
 endif
 ifeq (X$(SRCPOT), X)
