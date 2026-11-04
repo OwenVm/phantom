@@ -33,6 +33,9 @@ module cooling_solver
 !   - D06_friction   : *Decin+2006 gas-grain friction heating (1=on/0=off)*
 !   - D06_photoelectric : *Decin+2006 photoelectric heating, unattenuated (1=on/0=off)*
 !   - D06_vdrift     : *dust drift velocity (cm/s)*
+!   - H2O_abun       : *H2O abundance n_H2O/n_H2 for H2O cooling*
+!   - H2O_cooling    : *H2O rotational line cooling, Neufeld & Kaufman 1993 (1=on/0=off)*
+!   - H2O_vib_cooling : *H2O vibrational line cooling, Neufeld & Kaufman 1993 (1=on/0=off)*
 !   - high_temp      : *radiative cooling for high temperatures (1=on/0=off)*
 !   - icool_method   : *integration method (0=implicit, 1=explicit, 2=exact solution)*
 !   - lambda_shock   : *Cooling rate parameter for analytic shock solution*
@@ -44,12 +47,13 @@ module cooling_solver
 !   units
 !
 
- use cooling_functions, only:bowen_Cprime,lambda_shock_cgs,T0_value,T1_factor,CO_abun,&
+ use cooling_functions, only:bowen_Cprime,lambda_shock_cgs,T0_value,T1_factor,CO_abun,H2O_abun,&
                               D06_vdrift,D06_d2g,D06_Texc_ratio,D06_fH2O
  implicit none
  character(len=*), parameter :: label = 'cooling_library'
  integer, public :: excitation_HI = 0, relax_Bowen = 0, dust_collision = 0, &
-                    relax_Stefan = 0, shock_problem = 0, CO_cooling = 0
+                    relax_Stefan = 0, shock_problem = 0, CO_cooling = 0, H2O_cooling = 0, &
+                    H2O_vib_cooling = 0
  integer, public :: icool_method  = 0, high_temp = 0
  ! Decin et al. (2006) heating & cooling terms
  integer, public :: D06_friction = 0, D06_photoelectric = 0, D06_dustgas = 0, &
@@ -88,12 +92,17 @@ subroutine init_cooling_solver(ierr)
     call error(label,'D06_dustgas cannot be combined with relax_bowen, relax_stefan or dust_collision')
     ierr = 1
  endif
+ !both prescriptions describe H2O rotational cooling
+ if (H2O_cooling == 1 .and. D06_H2O == 1) then
+    call error(label,'H2O_cooling cannot be combined with D06_H2O')
+    ierr = 1
+ endif
  !heating terms can make Q change sign, which the exact solver does not handle
  if (icool_method == 2 .and. (D06_friction+D06_photoelectric+D06_dustgas+D06_cosmicrays) > 0) &
     call warning(label,'Decin heating terms with exact cooling solver: use icool_method=0')
  !if no cooling flag activated, disable cooling
  if ( (excitation_HI+relax_Bowen+dust_collision+relax_Stefan+shock_problem+high_temp+CO_cooling &
-       +D06_friction+D06_photoelectric+D06_dustgas+D06_cosmicrays+D06_H2O+D06_H2vib) == 0) then
+       +H2O_cooling+H2O_vib_cooling+D06_friction+D06_photoelectric+D06_dustgas+D06_cosmicrays+D06_H2O+D06_H2vib) == 0) then
     print *,'ERROR: no cooling prescription activated'
     ierr = 2
  endif
@@ -354,7 +363,7 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
  use cooling_functions, only:cooling_neutral_hydrogen,&
      cooling_Bowen_relaxation,cooling_dust_collision,&
      cooling_radiative_relaxation,piecewise_law, &
-     cooling_high_temp,testing_cooling_functions,cooling_CO_rot,&
+     cooling_high_temp,testing_cooling_functions,cooling_CO_rot,cooling_H2O_rot,cooling_H2O_vib,&
      heating_friction_D06,heating_photoelectric_D06,heating_dustgas_D06,&
      heating_cosmicrays_D06,cooling_H2O_rot_D06,cooling_H2_vib_D06
 
@@ -365,9 +374,9 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
  real, optional, intent(in) :: divv
 
  real :: Q_cgs
- real :: Q_H0, Q_relax_Bowen,  Q_col_dust, Q_relax_Stefan, Q_molec, Q_shock, Q_CO
+ real :: Q_H0, Q_relax_Bowen,  Q_col_dust, Q_relax_Stefan, Q_molec, Q_shock, Q_CO, Q_H2O_NK, Q_H2Ovib_NK
  real :: dlnQ_H0, dlnQ_relax_Bowen, dlnQ_col_dust, dlnQ_relax_Stefan
- real :: dlnQ_molec, dlnQ_shock, dlnQ_CO
+ real :: dlnQ_molec, dlnQ_shock, dlnQ_CO, dlnQ_H2O_NK, dlnQ_H2Ovib_NK
  real :: Q_hightemp, dlnQ_hightemp
  real :: Q_fric, Q_pe, Q_dg, Q_cr, Q_H2O, Q_H2vib
  real :: dlnQ_fric, dlnQ_pe, dlnQ_dg, dlnQ_cr, dlnQ_H2O, dlnQ_H2vib
@@ -384,6 +393,8 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
  Q_molec           = 0.
  Q_hightemp        = 0.
  Q_CO              = 0.
+ Q_H2O_NK          = 0.
+ Q_H2Ovib_NK       = 0.
  Q_fric            = 0.
  Q_pe              = 0.
  Q_dg              = 0.
@@ -399,6 +410,8 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
  dlnQ_molec        = 0.
  dlnQ_hightemp     = 0.
  dlnQ_CO           = 0.
+ dlnQ_H2O_NK       = 0.
+ dlnQ_H2Ovib_NK    = 0.
  dlnQ_fric         = 0.
  dlnQ_pe           = 0.
  dlnQ_dg           = 0.
@@ -411,6 +424,9 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
  if (relax_Bowen        == 1) call cooling_Bowen_relaxation(T, Teq, rho_cgs, mu, gamma,Q_relax_Bowen, dlnQ_relax_Bowen)
 
  if (CO_cooling == 1 .and. present(divv)) call cooling_CO_rot(T, rho_cgs, divv/utime, Q_CO, dlnQ_CO)
+
+ if (H2O_cooling     == 1 .and. present(divv)) call cooling_H2O_rot(T, rho_cgs, divv/utime, Q_H2O_NK, dlnQ_H2O_NK)
+ if (H2O_vib_cooling == 1 .and. present(divv)) call cooling_H2O_vib(T, rho_cgs, divv/utime, Q_H2Ovib_NK, dlnQ_H2Ovib_NK)
 
  if (dust_collision == 1 .and. K2 > 0.) call cooling_dust_collision(T, Teq, rho_cgs, K2, &
                                                         mu, Q_col_dust, dlnQ_col_dust)
@@ -431,7 +447,7 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
  if (D06_H2vib         == 1) call cooling_H2_vib_D06(T, rho_cgs, mu, Q_H2vib, dlnQ_H2vib)
 
  Q_cgs = Q_H0 + Q_relax_Bowen + Q_col_dust + Q_relax_Stefan + Q_molec + Q_shock + Q_hightemp + Q_CO &
-       + Q_fric + Q_pe + Q_dg + Q_cr + Q_H2O + Q_H2vib
+       + Q_H2O_NK + Q_H2Ovib_NK + Q_fric + Q_pe + Q_dg + Q_cr + Q_H2O + Q_H2vib
 
  if (Q_cgs == 0.) then
     dlnQ_dlnT = 0.
@@ -439,7 +455,7 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
     dlnQ_dlnT = (Q_H0*dlnQ_H0 + Q_relax_Bowen*dlnQ_relax_Bowen + Q_col_dust*dlnQ_col_dust &
                + Q_relax_Stefan*dlnQ_relax_Stefan + Q_molec*dlnQ_molec + Q_shock*dlnQ_shock&
    + Q_hightemp*dlnQ_hightemp &
-               + Q_CO*dlnQ_CO &
+               + Q_CO*dlnQ_CO + Q_H2O_NK*dlnQ_H2O_NK + Q_H2Ovib_NK*dlnQ_H2Ovib_NK &
                + Q_fric*dlnQ_fric + Q_pe*dlnQ_pe + Q_dg*dlnQ_dg + Q_cr*dlnQ_cr &
                + Q_H2O*dlnQ_H2O + Q_H2vib*dlnQ_H2vib) / Q_cgs
  endif
@@ -594,6 +610,10 @@ subroutine write_options_cooling_solver(iunit)
  call write_inopt(high_temp,'high_temp','radiative cooling for high temperatures (1=on/0=off)',iunit)
  call write_inopt(CO_cooling,'CO_cooling','CO rotational line cooling (1=on/0=off)',iunit)
  if (CO_cooling == 1) call write_inopt(CO_abun,'CO_abun','CO abundance n_CO/n_H2 for CO cooling',iunit)
+ call write_inopt(H2O_cooling,'H2O_cooling','H2O rotational line cooling, Neufeld & Kaufman 1993 (1=on/0=off)',iunit)
+ call write_inopt(H2O_vib_cooling,'H2O_vib_cooling','H2O vibrational line cooling, Neufeld & Kaufman 1993 (1=on/0=off)',iunit)
+ if ((H2O_cooling+H2O_vib_cooling) > 0) &
+    call write_inopt(H2O_abun,'H2O_abun','H2O abundance n_H2O/n_H2 for H2O cooling',iunit)
  if (shock_problem == 1) then
     call write_inopt(lambda_shock_cgs,'lambda_shock','Cooling rate parameter for analytic shock solution',iunit)
     call write_inopt(T1_factor,'T1_factor','factor by which T0 is increased (T1= T1_factor*T0)',iunit)
@@ -634,6 +654,10 @@ subroutine read_options_cooling_solver(db,nerr)
  call read_inopt(high_temp,'high_temp',db,errcount=nerr,min=0,max=1,default=high_temp)
  call read_inopt(CO_cooling,'CO_cooling',db,errcount=nerr,min=0,max=1,default=CO_cooling)
  if (CO_cooling == 1) call read_inopt(CO_abun,'CO_abun',db,errcount=nerr,min=0.,default=CO_abun)
+ call read_inopt(H2O_cooling,'H2O_cooling',db,errcount=nerr,min=0,max=1,default=H2O_cooling)
+ call read_inopt(H2O_vib_cooling,'H2O_vib_cooling',db,errcount=nerr,min=0,max=1,default=H2O_vib_cooling)
+ if ((H2O_cooling+H2O_vib_cooling) > 0) &
+    call read_inopt(H2O_abun,'H2O_abun',db,errcount=nerr,min=0.,default=H2O_abun)
  if (shock_problem == 1) then
     call read_inopt(lambda_shock_cgs,'lambda_shock',db,errcount=nerr,min=0.)
     call read_inopt(T1_factor,'T1_factor',db,errcount=nerr,min=0.)

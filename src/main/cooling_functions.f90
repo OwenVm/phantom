@@ -24,6 +24,7 @@ module cooling_functions
  real, public :: T1_factor = 20., T0_value = 0.
  real, public :: kappa_dust_min = 1e-3  ! dust opacity value below which dust cooling is not calculated
  real, public :: CO_abun = 3.e-4
+ real, public :: H2O_abun = 8.8e-4      ! n_H2O/n_H2, value adopted in Neufeld & Kaufman (1993) Sect. 4.2
  ! Decin et al. (2006) heating & cooling terms
  real, public :: D06_vdrift     = 5.e5    ! dust drift velocity (cm/s)
  real, public :: D06_d2g        = 0.01    ! dust-to-gas mass ratio
@@ -46,7 +47,7 @@ module cooling_functions
            cooling_Bowen_relaxation, &
            cooling_dust_collision, &
            cooling_radiative_relaxation, &
-           cooling_H2, cooling_CO_rot, &
+           cooling_H2, cooling_CO_rot, cooling_H2O_rot, cooling_H2O_vib, &
            testing_cooling_functions, &
            saha_fractions, &
            heating_friction_D06, heating_photoelectric_D06, &
@@ -57,6 +58,8 @@ module cooling_functions
   real, parameter  :: xH = 0.7, xHe = 0.28 !assumed H and He mass fractions
   ! Decin et al. (2006): MRN grain size distribution (silicates) and electron fraction n_e/n_Htot
   real, parameter  :: amin_D06 = 5.e-7, amax_D06 = 2.5e-5, rhos_D06 = 3.3, xe_D06 = 3.e-4
+  ! Neufeld & Kaufman (1993): temperature range of the tabulated H2O cooling parameters
+  real, parameter  :: Tmin_NK93 = 100., Tmax_NK93 = 4000.
 
 contains
 !-----------------------------------------------------------------------
@@ -308,6 +311,221 @@ end subroutine cooling_CO_rot
 
 !-----------------------------------------------------------------------
 !+
+!  Neufeld & Kaufman (1993) tables: cell (i,j) and bilinear weights w in
+!  (log T, log Ntilde) on T = 100, 200, 400, 1000, 2000, 4000 K and
+!  log10(Ntilde) = logN_min, logN_min+1, ..., logN_min+nN-1, with T and
+!  Ntilde clamped to the tabulated range. wT is the weight in T alone
+!+
+!-----------------------------------------------------------------------
+subroutine interp_weights_NK93(T, Ntilde, logN_min, nN, i, j, wT, w)
+
+ real,    intent(in)  :: T, Ntilde, logN_min
+ integer, intent(in)  :: nN
+ integer, intent(out) :: i, j
+ real,    intent(out) :: wT, w(2,2)
+ integer, parameter   :: nT = 6
+ real,    parameter   :: logT_tab(nT) = log10([Tmin_NK93, 200., 400., 1000., 2000., Tmax_NK93])
+ real                 :: x, y, wN
+
+ x = log10(min(max(T, Tmin_NK93), Tmax_NK93))
+ i = 1
+ do while (i < nT-1 .and. x > logT_tab(i+1))
+    i = i+1
+ enddo
+ wT = (x-logT_tab(i))/(logT_tab(i+1)-logT_tab(i))
+ y  = min(log10(max(Ntilde, 10.**logN_min)), logN_min+real(nN-1))
+ j  = min(int(y-logN_min)+1, nN-1)
+ wN = y-(logN_min+real(j-1))
+ w(:,1) = [1.-wT, wT]*(1.-wN)
+ w(:,2) = [1.-wT, wT]*wN
+
+end subroutine interp_weights_NK93
+
+!-----------------------------------------------------------------------
+!+
+!  Neufeld & Kaufman (1993): H2 and H2O number densities (cm^-3) in fully
+!  molecular gas, and the optical depth parameter Ntilde = n(H2O)/|div v|
+!  of a general LVG flow (their Table 1), in cm^-2 per km/s
+!+
+!-----------------------------------------------------------------------
+subroutine densities_H2O_NK93(rho_cgs, divv_cgs, nH2, nH2O, Ntilde)
+
+ use physcon, only:mass_proton_cgs
+
+ real, intent(in)  :: rho_cgs, divv_cgs   ! divv in s^-1
+ real, intent(out) :: nH2, nH2O, Ntilde
+ real, parameter   :: Ntilde_max = 1.e20  ! largest tabulated value (Table 5)
+ real              :: dvdz
+
+ nH2  = 0.5*rho_cgs/(1.4*mass_proton_cgs)
+ nH2O = H2O_abun*nH2
+ dvdz = 1.e-5*abs(divv_cgs)                ! km/s per cm
+ if (nH2O < Ntilde_max*dvdz) then
+    Ntilde = nH2O/dvdz
+ else
+    Ntilde = Ntilde_max                    ! also covers div v = 0
+ endif
+
+end subroutine densities_H2O_NK93
+
+!-----------------------------------------------------------------------
+!+
+!  H2O rotational cooling rate coefficient L (erg cm^3 s^-1), such that
+!  Lambda = L n(H2) n(H2O), from Neufeld & Kaufman (1993, ApJ 418, 263)
+!  Eq. 5 with the parameters of their Table 2 (H2O-H2 collisions in fully
+!  molecular gas, ortho:para = 3:1)
+!+
+!-----------------------------------------------------------------------
+real function rate_H2O_rot_NK93(T, nH2, Ntilde)
+
+ real, intent(in) :: T, nH2, Ntilde   ! K, cm^-3, cm^-2 per km/s
+ integer, parameter :: nT = 6, nN = 10
+ real, parameter :: logN_min = 10.    ! log10(Ntilde) = 10, 11, ..., 19
+ ! -log10(L0/erg cm^3 s^-1), independent of Ntilde
+ real, parameter :: mlogL0(nT) = [24.35, 23.87, 23.42, 22.88, 22.50, 22.14]
+ ! Table 2, one row per log10(Ntilde), columns T = 100, 200, 400, 1000, 2000, 4000 K
+ ! -log10(L_LTE/erg s^-1)
+ real, parameter :: mlogLTE(nT,nN) = reshape([ &
+      14.59, 13.85, 13.16, 12.32, 11.86, 11.64, &
+      14.59, 13.86, 13.16, 12.32, 11.86, 11.64, &
+      14.60, 13.86, 13.16, 12.32, 11.86, 11.64, &
+      14.68, 13.88, 13.17, 12.32, 11.86, 11.64, &
+      14.98, 14.05, 13.25, 12.34, 11.87, 11.65, &
+      15.53, 14.46, 13.53, 12.49, 11.97, 11.72, &
+      16.22, 15.05, 14.02, 12.87, 12.35, 12.06, &
+      17.00, 15.74, 14.63, 13.46, 12.97, 12.66, &
+      17.83, 16.50, 15.32, 14.16, 13.69, 13.36, &
+      18.70, 17.31, 16.07, 14.94, 14.46, 14.13], [nT,nN])
+ ! log10(n_1/2/cm^-3)
+ real, parameter :: logn12(nT,nN) = reshape([ &
+      9.00, 9.04, 9.19, 9.50, 9.67, 9.60, &
+      8.99, 9.04, 9.19, 9.50, 9.67, 9.60, &
+      8.96, 9.03, 9.19, 9.50, 9.66, 9.59, &
+      8.74, 8.89, 9.11, 9.47, 9.65, 9.59, &
+      8.11, 8.37, 8.73, 9.31, 9.56, 9.53, &
+      7.20, 7.51, 7.95, 8.74, 9.15, 9.20, &
+      6.22, 6.53, 6.99, 7.87, 8.38, 8.50, &
+      5.22, 5.57, 6.03, 6.94, 7.48, 7.64, &
+      4.24, 4.59, 5.09, 6.02, 6.59, 6.78, &
+      3.21, 3.58, 4.10, 5.08, 5.69, 5.89], [nT,nN])
+ ! alpha
+ real, parameter :: alpha_tab(nT,nN) = reshape([ &
+      0.43, 0.42, 0.39, 0.36, 0.34, 0.34, &
+      0.43, 0.42, 0.39, 0.36, 0.34, 0.34, &
+      0.42, 0.41, 0.39, 0.36, 0.34, 0.34, &
+      0.41, 0.39, 0.37, 0.35, 0.33, 0.33, &
+      0.42, 0.38, 0.34, 0.33, 0.32, 0.32, &
+      0.45, 0.38, 0.34, 0.32, 0.30, 0.30, &
+      0.47, 0.40, 0.35, 0.32, 0.29, 0.30, &
+      0.50, 0.42, 0.36, 0.32, 0.28, 0.29, &
+      0.52, 0.44, 0.37, 0.31, 0.27, 0.28, &
+      0.53, 0.45, 0.39, 0.31, 0.27, 0.27], [nT,nN])
+ real    :: wT, w(2,2), logL0, logLTE, n12, alpha, r
+ integer :: i, j
+
+ call interp_weights_NK93(T, Ntilde, logN_min, nN, i, j, wT, w)
+ logL0  = -((1.-wT)*mlogL0(i) + wT*mlogL0(i+1))
+ logLTE = -sum(w*mlogLTE(i:i+1,j:j+1))
+ n12    = 10.**sum(w*logn12(i:i+1,j:j+1))
+ alpha  = sum(w*alpha_tab(i:i+1,j:j+1))
+
+ ! Eq. 5 multiplied by L0, with r = L0/L_LTE (cm^3)
+ r = 10.**(logL0-logLTE)
+ rate_H2O_rot_NK93 = 10.**logL0/(1. + nH2*r + (nH2/n12)**alpha*(1.-n12*r))
+
+end function rate_H2O_rot_NK93
+
+!-----------------------------------------------------------------------
+!+
+!  H2O vibrational cooling rate coefficient L (erg cm^3 s^-1), such that
+!  Lambda = L n(H2) n(H2O), from Neufeld & Kaufman (1993) Table 5: the
+!  two-parameter fit of their Sect. 3.2 (first two terms of Eq. 5), with
+!  analytic L0 and with exp(2325/T) L_LTE interpolated in the table
+!+
+!-----------------------------------------------------------------------
+real function rate_H2O_vib_NK93(T, nH2, Ntilde)
+
+ real, intent(in) :: T, nH2, Ntilde   ! K, cm^-3, cm^-2 per km/s
+ integer, parameter :: nT = 6, nN = 8
+ real, parameter :: logN_min = 13.    ! log10(Ntilde) = 13, 14, ..., 20
+ ! Table 5, one row per log10(Ntilde), columns T = 100, 200, 400, 1000, 2000, 4000 K
+ ! -log10[exp(2325/T) L_LTE/erg s^-1]
+ real, parameter :: mlogLTE(nT,nN) = reshape([ &
+      10.98, 11.05, 11.07, 10.88, 10.67, 10.67, &
+      10.99, 11.05, 11.07, 10.88, 10.67, 10.67, &
+      11.06, 11.09, 11.09, 10.88, 10.67, 10.67, &
+      11.36, 11.31, 11.23, 10.93, 10.69, 10.68, &
+      11.91, 11.82, 11.65, 11.15, 10.79, 10.72, &
+      12.59, 12.50, 12.28, 11.61, 11.11, 10.90, &
+      13.29, 13.20, 12.99, 12.25, 11.65, 11.30, &
+      13.90, 13.90, 13.76, 13.01, 12.34, 11.88], [nT,nN])
+ real    :: Tc, wT, w(2,2), L0, LLTE
+ integer :: i, j
+
+ call interp_weights_NK93(T, Ntilde, logN_min, nN, i, j, wT, w)
+ Tc   = min(max(T, Tmin_NK93), Tmax_NK93)
+ L0   = 1.03e-26*Tc*exp(-47.5/Tc**(1./3.) - 2325./Tc)
+ LLTE = 10.**(-sum(w*mlogLTE(i:i+1,j:j+1)))*exp(-2325./Tc)
+ rate_H2O_vib_NK93 = L0/(1. + nH2*L0/LLTE)
+
+end function rate_H2O_vib_NK93
+
+!-----------------------------------------------------------------------
+!+
+!  H2O rotational cooling from Neufeld & Kaufman (1993)
+!+
+!-----------------------------------------------------------------------
+subroutine cooling_H2O_rot(T, rho_cgs, divv_cgs, Q_cgs, dlnQ_dlnT)
+
+ real, intent(in)  :: T, rho_cgs, divv_cgs   ! divv in s^-1
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real :: nH2, nH2O, Ntilde, L, L1, L2, dT
+
+ Q_cgs     = 0.
+ dlnQ_dlnT = 0.
+ if (T < Tmin_NK93) return
+
+ call densities_H2O_NK93(rho_cgs, divv_cgs, nH2, nH2O, Ntilde)
+ L     = rate_H2O_rot_NK93(T, nH2, Ntilde)
+ Q_cgs = -L*nH2*nH2O/rho_cgs
+ if (T <= Tmax_NK93) then
+    dT = 0.01*T
+    L1 = rate_H2O_rot_NK93(T+dT, nH2, Ntilde)
+    L2 = rate_H2O_rot_NK93(T-dT, nH2, Ntilde)
+    dlnQ_dlnT = T*(L1-L2)/(2.*dT*L)
+ endif
+
+end subroutine cooling_H2O_rot
+
+!-----------------------------------------------------------------------
+!+
+!  H2O vibrational cooling from Neufeld & Kaufman (1993)
+!+
+!-----------------------------------------------------------------------
+subroutine cooling_H2O_vib(T, rho_cgs, divv_cgs, Q_cgs, dlnQ_dlnT)
+
+ real, intent(in)  :: T, rho_cgs, divv_cgs   ! divv in s^-1
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ real :: nH2, nH2O, Ntilde, L, L1, L2, dT
+
+ Q_cgs     = 0.
+ dlnQ_dlnT = 0.
+ if (T < Tmin_NK93) return
+
+ call densities_H2O_NK93(rho_cgs, divv_cgs, nH2, nH2O, Ntilde)
+ L     = rate_H2O_vib_NK93(T, nH2, Ntilde)
+ Q_cgs = -L*nH2*nH2O/rho_cgs
+ if (T <= Tmax_NK93) then
+    dT = 0.01*T
+    L1 = rate_H2O_vib_NK93(T+dT, nH2, Ntilde)
+    L2 = rate_H2O_vib_NK93(T-dT, nH2, Ntilde)
+    dlnQ_dlnT = T*(L1-L2)/(2.*dT*L)
+ endif
+
+end subroutine cooling_H2O_vib
+
+!-----------------------------------------------------------------------
+!+
 !  Decin et al. (2006, A&A 456, 549) Sect. 2.2: number densities of H, H2,
 !  He and H nuclei. The H2 fraction y = 2n(H2)/n_Htot is obtained by
 !  inverting mu = 1/[xH(1-y/2)+xHe/4] (neutral gas, metals neglected)
@@ -469,8 +687,7 @@ real function cool_H2O_D06(T, nH, nH2, nHe, nHtot)
  endif
  hnu = planckh*2.6e11*sqrt(Texc)
  ! n_H2 [0.83 f_H + 0.715 f_He (f_H+2) + 4.5] = 0.83 n_H + 0.715 n_He + 4.5 n_H2
- cool_H2O_D06 = D06_fH2O*0.5*nHtot*hnu*0.21e-11*sqrt(T)*(0.83*nH+0.715*nHe+4.5*nH2) &
-                *(exp(-hnu/(kboltz*T))-exp(-hnu/(kboltz*Texc)))
+ cool_H2O_D06 = D06_fH2O*0.5*nHtot*hnu*0.21e-11*sqrt(T)*(0.83*nH+0.715*nHe+4.5*nH2)*(exp(-hnu/(kboltz*T))-exp(-hnu/(kboltz*Texc)))
 
 end function cool_H2O_D06
 
