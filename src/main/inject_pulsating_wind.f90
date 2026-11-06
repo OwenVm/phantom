@@ -8,15 +8,14 @@ module inject
 !
 ! Handles pulsating AGB stars
 !
-! :References: None
+! :References: Bowen (1988), ApJ 329, 299
 !
 ! :Owner: Owen Vermeulen
 !
 ! :Runtime parameters:
 !   - dumps_p_period    : *number of dumps per period (if save_period = 1)*
 !   - iboundary_spheres : *number of boundary spheres (piston layers)*
-!   - iboundary_u       : *boundary particle u: 0=u_gas, 1=hydrostatic (from P_HSE)*
-!   - isupport          : *radial support force on the gas (0=off, 1=on)*
+!   - isupport          : *radial support force on the gas (0=off, 1=initial profile, 2=every step, 3=alpha=1)*
 !   - itgas_profile     : *gas temperature: 0=hydrostatic, 1=Teff (Rstar/r)^tgas_exp*
 !   - iwind             : *wind type: 1=prescribed, 2=period from mass-radius relation*
 !   - mass_loss_end     : *end time for mass-loss calculation (periods)*
@@ -28,13 +27,13 @@ module inject
 !   - piston_velocity   : *piston velocity amplitude (km/s)*
 !   - pulsation_period  : *pulsation period (days)*
 !   - r_min_on_rstar    : *gas atmosphere inner radius as fraction of R_star*
+!   - ramp_periods      : *periods to ramp up the pulsation amplitude (0=off)*
 !   - reinject_enabled  : *enable dynamic reinjection (0=off, 1=on)*
 !   - rho_inner         : *inner boundary density at r_min (cgs)*
 !   - rho_power         : *density profile exponent: rho ~ r^(-rho_power)*
 !   - save_period       : *wether to save dumps as fraction of period (0=off, 1=on)*
 !   - support_r_start   : *radius where the support force starts to decline (Rstar)*
 !   - support_r_width   : *width of the cos^2 decline of the support force (Rstar, 0=no decline)*
-!   - tgas_base_width   : *width of the hot base layer where P_gas blends to P_HSE (Rstar, 0=off)*
 !   - tgas_exp          : *exponent of the gas temperature profile (itgas_profile=1)*
 !   - update_L          : *update luminosity with pulsation (0=off, 1=on)*
 !   - use_file_mdot     : *skip measurement phase (0=off, 1=on)*
@@ -42,7 +41,7 @@ module inject
 !   - wss               : *radial/tangential spacing ratio*
 !
 ! :Dependencies: dim, dust_formation, eos, extern_radialsupport,
-!   infile_utils, injectutils, io, part, physcon, timestep, units,
+!   infile_utils, injectutils, io, options, part, physcon, timestep, units,
 !   wind_pulsating
 !
  use io,      only:fatal,warning
@@ -65,6 +64,7 @@ module inject
  real    :: pulsation_period_days = 300.0
  real    :: piston_velocity_km_s  = 4.0
  real    :: phi0                  = -0.5*pi
+ real    :: ramp_periods          = 0.0
  real    :: wss                   = 1.0
  integer :: save_period           = 0
  integer :: dumps_p_period        = 10
@@ -77,8 +77,6 @@ module inject
  integer :: use_file_mdot         = 0
  integer :: itgas_profile         = 0
  real    :: tgas_exp              = 0.5
- real    :: tgas_base_width       = 0.
- integer :: iboundary_u            = 0
  integer :: isupport              = 0
  real    :: support_r_start       = 3.
  real    :: support_r_width       = 1.
@@ -88,6 +86,7 @@ module inject
  character(len=*), parameter :: label = 'inject_atmosphere'
 
  real    :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity
+ real    :: ramp_time
  real    :: r_min, r_max, Mtotal, mass_of_gas_particle
  integer :: n_shells_total, n_shells_bnd
  integer, allocatable :: npart_per_shell(:), npart_per_boundary_shell(:)
@@ -127,6 +126,7 @@ subroutine set_default_options_inject(flag)
  pulsation_period_days = 300.0
  piston_velocity_km_s  = 4.0
  phi0                  = -0.5*pi
+ ramp_periods          = 0.0
  wss                   = 1.0
  save_period           = 0
  dumps_p_period        = 10
@@ -139,8 +139,6 @@ subroutine set_default_options_inject(flag)
  use_file_mdot         = 0
  itgas_profile         = 0
  tgas_exp              = 0.5
- tgas_base_width       = 0.
- iboundary_u           = 0
  isupport              = 0
  support_r_start       = 3.
  support_r_width       = 1.
@@ -163,7 +161,7 @@ subroutine init_inject(ierr)
  use extern_radialsupport, only:set_radial_support
  use timestep,       only:dtmax
  integer, intent(out) :: ierr
- integer, parameter :: max_shells_tmp = 2000
+ integer, parameter :: max_shells_tmp = 2000, nalpha_table = 1000
  real    :: tmp_dr(max_shells_tmp), tmp_r(max_shells_tmp)
  integer :: tmp_n(max_shells_tmp)
  real    :: Mstar, Rstar, Tstar, current_radius, dr
@@ -195,6 +193,7 @@ subroutine init_inject(ierr)
  omega_pulsation  = 2.*pi/pulsation_period
  piston_velocity  = piston_velocity_km_s*km/unit_velocity
  deltaR_osc       = piston_velocity/omega_pulsation
+ ramp_time        = ramp_periods*pulsation_period
 
  r_min = r_min_on_rstar*Rstar + deltaR_osc*sin(phi0)
  if (r_min <= 0.) call fatal(label,'r_min must be > 0')
@@ -247,13 +246,27 @@ subroutine init_inject(ierr)
     call set_abundances   ! needed by init_muGamma
  endif
  call setup_star(Mstar*umass, Tstar, r_max*au, r_min*au, gmw, gamma, rho_inner, rho_power_in, &
-                 Reff_in=Rstar*au, itgas_profile_in=itgas_profile, tgas_exp_in=tgas_exp, &
-                 tgas_base_width_in=tgas_base_width*Rstar*au)
+                 Reff_in=Rstar*au, itgas_profile_in=itgas_profile, tgas_exp_in=tgas_exp)
  call calc_stellar_profile(n_profile_points)
  if (verbose == 1) call print_gas_profile([r_min, Rstar, 1.5*Rstar, 2.*Rstar])
 
- if (isupport == 1) then
-    call get_support_table(r_table, a_table)
+ if (ramp_periods > 0.) then
+    print *, 'Pulsation amplitude ramps up from zero over ', ramp_periods, ' periods'
+    if (reinject_enabled == 1 .and. use_file_mdot == 0 .and. mass_loss_start < ramp_periods) &
+       print *, ' WARNING: mass_loss_start < ramp_periods, so the mass-loss rate is measured during the ramp-up'
+ endif
+
+ if (isupport >= 1) then
+    if (isupport == 3) then
+       ! cancel the gravity of the sink, as alpha_rad = 1 does for radiation in a free wind
+       allocate(r_table(nalpha_table), a_table(nalpha_table))
+       do i = 1,nalpha_table
+          r_table(i) = 0.1*r_min*(10.*r_max/r_min)**(real(i-1)/real(nalpha_table-1))
+       enddo
+       a_table = Mstar/r_table**2
+    else
+       call get_support_table(r_table, a_table)
+    endif
     call set_radial_support(r_table, a_table, support_r_start*Rstar, support_r_width*Rstar)
     if (support_r_width > 0. .and. support_r_start*Rstar < tmp_r(nshells)) &
        call warning(label,'support force declines inside the atmosphere, which starts out of equilibrium', &
@@ -414,9 +427,93 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
     endif
  endif
 
+ if (isupport == 2) call update_support(xyzh,xyzmh_ptmass,npart)
  call apply_pulsation(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass)
 
 end subroutine inject_particles
+
+!----------------------------------------------------------------
+!+
+!  Recompute the support acceleration from the current gas, so that
+!  every radial shell is in balance (isupport=2):
+!
+!    a_sup = g + (1/rho) dP/dr
+!
+!  with rho and P volume-weighted averages over shells, from the
+!  pressures of the last force evaluation. Called every step, so it
+!  also cancels the radial waves from the piston.
+!+
+!----------------------------------------------------------------
+subroutine update_support(xyzh,xyzmh_ptmass,npart)
+ use part,                 only:eos_vars,igasP,iphase,iamtype,igas,maxphase,maxp,rhoh,massoftype,&
+                                isdead_or_accreted,iReff
+ use wind_pulsating,       only:radial_derivative
+ use extern_radialsupport, only:set_radial_support
+ real,    intent(in) :: xyzh(:,:),xyzmh_ptmass(:,:)
+ integer, intent(in) :: npart
+ integer, parameter :: nbins = 64, nmin = 50
+ integer :: i,k,n,nb(nbins)
+ real    :: x0(3),r,rlo,rhi,dlnr,pmass,vol,Rstar
+ real    :: vsum(nbins),msum(nbins),psum(nbins),rsum(nbins)
+ real    :: rbar(nbins),rhobar(nbins),pbar(nbins),dpdr(nbins),acc(nbins)
+
+ x0    = xyzmh_ptmass(1:3,wind_emitting_sink)
+ Rstar = xyzmh_ptmass(iReff,wind_emitting_sink)
+ pmass = massoftype(igas)
+
+ ! radial range of the gas, up to where the force has been tapered off
+ rlo = huge(rlo)
+ rhi = 0.
+ do i = 1,npart
+    if (.not.is_live_gas(i)) cycle
+    r   = norm2(xyzh(1:3,i) - x0)
+    rlo = min(rlo,r)
+    rhi = max(rhi,r)
+ enddo
+ if (support_r_width > 0.) rhi = min(rhi,1.05*(support_r_start + support_r_width)*Rstar)
+ if (rhi <= rlo) return
+ dlnr = log(rhi/rlo)/nbins
+
+ nb = 0; vsum = 0.; msum = 0.; psum = 0.; rsum = 0.
+ do i = 1,npart
+    if (.not.is_live_gas(i)) cycle
+    r = norm2(xyzh(1:3,i) - x0)
+    if (r > rhi) cycle
+    k   = min(nbins, 1 + int(log(r/rlo)/dlnr))
+    vol = pmass/rhoh(xyzh(4,i),pmass)
+    nb(k)   = nb(k) + 1
+    vsum(k) = vsum(k) + vol
+    msum(k) = msum(k) + pmass
+    psum(k) = psum(k) + vol*eos_vars(igasP,i)
+    rsum(k) = rsum(k) + vol*r
+ enddo
+
+ ! keep shells with enough particles for a meaningful average
+ n = 0
+ do k = 1,nbins
+    if (nb(k) < nmin) cycle
+    n = n + 1
+    rbar(n)   = rsum(k)/vsum(k)
+    rhobar(n) = msum(k)/vsum(k)
+    pbar(n)   = psum(k)/vsum(k)
+ enddo
+ if (n < 3) return
+
+ call radial_derivative(rbar(1:n),pbar(1:n),dpdr(1:n))
+ acc(1:n) = xyzmh_ptmass(4,wind_emitting_sink)/rbar(1:n)**2 + dpdr(1:n)/rhobar(1:n)
+ call set_radial_support(rbar(1:n),acc(1:n),support_r_start*Rstar,support_r_width*Rstar)
+
+contains
+
+logical function is_live_gas(j)
+ integer, intent(in) :: j
+
+ is_live_gas = .not.isdead_or_accreted(xyzh(4,j))
+ if (is_live_gas .and. maxphase==maxp) is_live_gas = (iamtype(iphase(j)) == igas)
+
+end function is_live_gas
+
+end subroutine update_support
 
 !----------------------------------------------------------------
 !+
@@ -494,24 +591,24 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(inout) :: npart,npartoftype(:)
  integer :: old_npart
- real    :: r_inject,phase,rho,u,T,P,mu,gam,x0(3),v0(3)
+ real    :: r_inject,osc,r_dot,rho,u,T,P,mu,gam,x0(3),v0(3)
 
- x0    = xyzmh_ptmass(1:3,wind_emitting_sink)
- v0    = vxyz_ptmass(1:3,wind_emitting_sink)
- phase = omega_pulsation*time + phi0
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ v0 = vxyz_ptmass(1:3,wind_emitting_sink)
+ call get_radial_terms(time,osc,r_dot)
 
  if (n_boundary_particles > 0) then
     r_inject = r_boundary_equilibrium(n_boundary_particles) + delta_r_radial(iboundary_spheres+1)
  else
     r_inject = r_min + sum(delta_r_radial(1:iboundary_spheres+1))
  endif
- r_inject = r_inject + deltaR_osc*sin(phase)
+ r_inject = r_inject + osc
  call interp_stellar_profile(r_inject,rho,P,u,T,mu,gam)
 
  old_npart      = npart
  n_reinjections = n_reinjections + 1
  call inject_geodesic_sphere(n_shells_total + n_reinjections, npart+1, particles_to_inject, r_inject, &
-                             piston_velocity*cos(phase), u, rho, npart, npartoftype, xyzh, vxyzu, igas, x0, v0, &
+                             r_dot, u, rho, npart, npartoftype, xyzh, vxyzu, igas, x0, v0, &
                              wind_emitting_sink)
  call set_mu_gamma(old_npart+1,npart,mu,gam)
 
@@ -541,19 +638,19 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real,    intent(in)    :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(inout) :: npart,npartoftype(:)
  integer :: i,i1
- real    :: rho,u,T,P,P_HSE,mu,gam,x0(3),v0(3)
+ real    :: rho,u,T,P,mu,gam,x0(3),v0(3)
 
  x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
  v0 = vxyz_ptmass(1:3,wind_emitting_sink)
 
  npart = 0
  do i = 1,n_shells_bnd
-    call interp_stellar_profile(shell_radii_bnd(i),rho,P,u,T,mu,gam,P_HSE)
-    if (iboundary_u == 1) u = P_HSE/((gam - 1.)*rho)
+    call interp_stellar_profile(shell_radii_bnd(i),rho,P,u,T,mu,gam)
     i1 = npart + 1
     call inject_geodesic_sphere(i, npart+1, npart_per_boundary_shell(i), shell_radii_bnd(i), 0., u, rho, &
                                 npart, npartoftype, xyzh, vxyzu, iboundary, x0, v0, wind_emitting_sink)
     call set_mu_gamma(i1,npart,mu,gam)
+    call set_boundary_viscosity(i1,npart)
  enddo
  do i = 1,n_shells_total
     call interp_stellar_profile(shell_radii_gas(i),rho,P,u,T,mu,gam)
@@ -598,6 +695,25 @@ end subroutine set_mu_gamma
 
 !----------------------------------------------------------------
 !+
+!  Boundary particles are never active, so their viscosity switch
+!  cannot respond and alpha would stay at its initial value of 0.
+!  Without viscosity on the boundary side, cold gas offers too little
+!  resistance and the piston sweeps through it: give the boundary
+!  the maximum alpha so that it pushes the gas.
+!+
+!----------------------------------------------------------------
+subroutine set_boundary_viscosity(i1,i2)
+ use dim,     only:maxalpha,maxp
+ use part,    only:alphaind
+ use options, only:alphamax
+ integer, intent(in) :: i1,i2
+
+ if (maxalpha==maxp) alphaind(1,i1:i2) = real(alphamax,kind=kind(alphaind))
+
+end subroutine set_boundary_viscosity
+
+!----------------------------------------------------------------
+!+
 !  Reconstructs boundary particle info after resuming from a dump
 !+
 !----------------------------------------------------------------
@@ -606,10 +722,10 @@ subroutine reconstruct_boundary_info(time,xyzh,xyzmh_ptmass)
  use wind_pulsating, only:interp_stellar_profile
  real, intent(in) :: time,xyzh(:,:),xyzmh_ptmass(:,:)
  integer :: i
- real    :: x0(3),osc,rho,u,T,P,mu,gam
+ real    :: x0(3),osc,r_dot,rho,u,T,P,mu,gam
 
  x0  = xyzmh_ptmass(1:3,wind_emitting_sink)
- osc = deltaR_osc*sin(omega_pulsation*time + phi0)
+ call get_radial_terms(time,osc,r_dot)
 
  n_boundary_particles = npartoftype(iboundary)
  allocate(r_boundary_equilibrium(n_boundary_particles))
@@ -617,6 +733,7 @@ subroutine reconstruct_boundary_info(time,xyzh,xyzmh_ptmass)
     r_boundary_equilibrium(i) = norm2(xyzh(1:3,i) - x0) - osc
     call interp_stellar_profile(r_boundary_equilibrium(i),rho,P,u,T,mu,gam)
     call set_mu_gamma(i,i,mu,gam)  ! reset to gmw and gamma on restart, see initial
+    call set_boundary_viscosity(i,i)
  enddo
  boundary_info_ready = .true.
 
@@ -637,15 +754,13 @@ subroutine apply_pulsation(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass)
  real, intent(in)    :: time,vxyz_ptmass(:,:)
  real, intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:)
  integer :: i
- real    :: phase,osc,r_dot,x0(3),v0(3),x_hat(3)
+ real    :: osc,r_dot,x0(3),v0(3),x_hat(3)
 
  if (n_boundary_particles == 0) return
 
- x0    = xyzmh_ptmass(1:3,wind_emitting_sink)
- v0    = vxyz_ptmass(1:3,wind_emitting_sink)
- phase = omega_pulsation*time + phi0
- osc   = deltaR_osc*sin(phase)
- r_dot = piston_velocity*cos(phase)
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ v0 = vxyz_ptmass(1:3,wind_emitting_sink)
+ call get_radial_terms(time,osc,r_dot)
 
  do i = 1,n_boundary_particles
     ! Radial unit vector from current position
@@ -659,6 +774,58 @@ subroutine apply_pulsation(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass)
                                  xyzmh_ptmass(iReff,wind_emitting_sink) + osc)
 
 end subroutine apply_pulsation
+
+!----------------------------------------------------------------
+!+
+!  Start-up phase (cf. Bowen 1988): instead of pulsating at full
+!  amplitude from t=0, the amplitude is grown with
+!
+!    f(t) = sin^2(pi/2 t/t_ramp)   for t < t_ramp,   f = 1 after
+!
+!  f and df/dt are continuous at both ends of the ramp, so the star
+!  starts at rest. dfdt is returned so that the piston velocity
+!  remains the time derivative of the displacement.
+!+
+!----------------------------------------------------------------
+subroutine get_amplitude_ramp(time,f,dfdt)
+ real, intent(in)  :: time
+ real, intent(out) :: f,dfdt
+ real :: x
+
+ if (ramp_time <= 0. .or. time >= ramp_time) then
+    f    = 1.
+    dfdt = 0.
+ else
+    x    = max(time,0.)/ramp_time
+    f    = sin(0.5*pi*x)**2
+    dfdt = 0.5*pi*sin(pi*x)/ramp_time
+ endif
+
+end subroutine get_amplitude_ramp
+
+!----------------------------------------------------------------
+!+
+!  Radial piston displacement and its velocity r_dot = d(osc)/dt:
+!
+!    osc = dR [f sin(w t + phi0) + (1 - f) sin(phi0)]
+!
+!  with f the start-up ramp. At t=0 the piston is at dR sin(phi0),
+!  as without a ramp, and the oscillation grows from there: for
+!  phi0 = -pi/2 the star starts at its minimum radius, which stays
+!  the bottom of the stroke while the top grows to r_eq + dR.
+!+
+!----------------------------------------------------------------
+subroutine get_radial_terms(time,osc,r_dot)
+ real, intent(in)  :: time
+ real, intent(out) :: osc,r_dot
+ real :: phase,f,dfdt
+
+ call get_amplitude_ramp(time,f,dfdt)
+ phase = omega_pulsation*time + phi0
+ osc   = deltaR_osc*(f*sin(phase) + (1. - f)*sin(phi0))
+ r_dot = f*piston_velocity*cos(phase) + dfdt*deltaR_osc*(sin(phase) - sin(phi0))
+
+end subroutine get_radial_terms
 
 !----------------------------------------------------------------
 !+
@@ -798,6 +965,7 @@ subroutine write_options_inject(iunit)
  call write_inopt(pulsation_period_days, 'pulsation_period',  'pulsation period (days)',iunit)
  call write_inopt(piston_velocity_km_s,  'piston_velocity',   'piston velocity amplitude (km/s)',iunit)
  call write_inopt(phi0,                  'phi0',              'initial phase offset (radians)',iunit)
+ call write_inopt(ramp_periods,          'ramp_periods',      'periods to ramp up the pulsation amplitude (0=off)',iunit)
  call write_inopt(wss,                   'wss',               'radial/tangential spacing ratio',iunit)
  call write_inopt(save_period,           'save_period',       'wether to save dumps as fraction of period (0=off, 1=on)',iunit)
  call write_inopt(dumps_p_period,        'dumps_p_period',    'number of dumps per period (if save_period = 1)',iunit)
@@ -810,10 +978,8 @@ subroutine write_options_inject(iunit)
  call write_inopt(verbose,               'verbose',           'enable verbose output (0=off, 1=on)',iunit)
  call write_inopt(itgas_profile,         'itgas_profile',     'gas temperature: 0=hydrostatic, 1=Teff (Rstar/r)^tgas_exp',iunit)
  call write_inopt(tgas_exp,              'tgas_exp',          'exponent of the gas temperature profile (itgas_profile=1)',iunit)
- call write_inopt(tgas_base_width,       'tgas_base_width',   &
-                  'width of the hot base layer where P_gas blends to P_HSE (Rstar, 0=off)',iunit)
- call write_inopt(iboundary_u,           'iboundary_u',       'boundary particle u: 0=u_gas, 1=hydrostatic (from P_HSE)',iunit)
- call write_inopt(isupport,              'isupport',          'radial support force on the gas (0=off, 1=on)',iunit)
+ call write_inopt(isupport,              'isupport',          &
+                  'radial support force on the gas (0=off, 1=initial profile, 2=every step, 3=alpha=1)',iunit)
  call write_inopt(support_r_start,       'support_r_start',   'radius where the support force starts to decline (Rstar)',iunit)
  call write_inopt(support_r_width,       'support_r_width',   &
                   'width of the cos^2 decline of the support force (Rstar, 0=no decline)',iunit)
@@ -841,6 +1007,7 @@ subroutine read_options_inject(db,nerr)
  call read_inopt(pulsation_period_days, 'pulsation_period',  db,errcount=nerr,min=0.)
  call read_inopt(piston_velocity_km_s,  'piston_velocity',   db,errcount=nerr,min=0.)
  call read_inopt(phi0,                  'phi0',              db,errcount=nerr,min=-pi,max=pi)
+ call read_inopt(ramp_periods,          'ramp_periods',      db,errcount=nerr,min=0.,default=0.)
  call read_inopt(wss,                   'wss',               db,errcount=nerr,min=epsilon(wss),max=10.)
  call read_inopt(save_period,           'save_period',       db,errcount=nerr,min=0,max=1)
  call read_inopt(dumps_p_period,        'dumps_p_period',    db,errcount=nerr,min=0)
@@ -853,9 +1020,7 @@ subroutine read_options_inject(db,nerr)
  call read_inopt(verbose,               'verbose',           db,errcount=nerr,min=0,max=1)
  call read_inopt(itgas_profile,         'itgas_profile',     db,errcount=nerr,min=0,max=1,default=0)
  call read_inopt(tgas_exp,              'tgas_exp',          db,errcount=nerr,min=0.,default=0.5)
- call read_inopt(tgas_base_width,       'tgas_base_width',   db,errcount=nerr,min=0.,default=0.)
- call read_inopt(iboundary_u,           'iboundary_u',       db,errcount=nerr,min=0,max=1,default=0)
- call read_inopt(isupport,              'isupport',          db,errcount=nerr,min=0,max=1,default=0)
+ call read_inopt(isupport,              'isupport',          db,errcount=nerr,min=0,max=3,default=0)
  call read_inopt(support_r_start,       'support_r_start',   db,errcount=nerr,min=0.,default=3.)
  call read_inopt(support_r_width,       'support_r_width',   db,errcount=nerr,min=0.,default=1.)
 
