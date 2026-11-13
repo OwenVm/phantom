@@ -878,7 +878,6 @@ ifeq ($(SETUP), pulsating_wind_replay)
 #   the particles crossing r_inj in one period of dumps of a pulsating_wind run
     SETUPFILE= setup_wind_replay.f90
     SRCINJECT= utils_replay.f90 inject_replay.f90
-    MODFILE= moddump_replay.f90
     SINK_RADIATION=yes
     DUST_NUCLEATION=yes
     INJECT_PARTICLES=yes

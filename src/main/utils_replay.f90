@@ -6,25 +6,8 @@
 !--------------------------------------------------------------------------!
 module replayutils
 !
-! Core routines for stitching an inner wind simulation to an outer one by
-! periodic replay of particle tracks.
-!
-! The outer run reads one period of dumps of the inner run (records) and
-! turns them into a track table: the path of every particle through the
-! buffer shell r_b < r < r_inj, Hermite-interpolated between dumps, with
-! exact entry and exit times. The table is replayed with period t_rec.
-!
-! A track starts when a particle crosses r_b outwards and ends when it
-! crosses r_inj outwards (release: the particle becomes gas in the outer
-! run) or r_b inwards (drop). With only one period of data the tracks are
-! clipped to the window [t0,t0+t_rec]: a particle already in the buffer at
-! t0 starts there (it appears at the start of every cycle) and a particle
-! still in the buffer at t0+t_rec ends there (vanish). The replayed buffer
-! then matches the inner one at every phase, and every crossing of r_inj
-! in the window is replayed once per cycle.
-!
-! This module depends on no other Phantom module, so that it can also be
-! used by the test suite.
+! Track table of the periodic track replay (see inject_replay), and the
+! routines that replay it in the outer run.
 !
 ! :References: None
 !
@@ -32,1347 +15,1616 @@ module replayutils
 !
 ! :Runtime parameters: None
 !
-! :Dependencies: None
+! :Dependencies: dim, dump_utils, fileutils, infile_utils, io, kernel,
+!   part, partinject, physcon, readwrite_dumps_common, sortutils, units
 !
+ use io, only:fatal,warning
  implicit none
 
- integer, parameter, public :: sp = selected_real_kind(6,37)
- integer, parameter, public :: dp = selected_real_kind(15,307)
- integer, parameter, public :: i4 = selected_int_kind(9)
- integer, parameter, public :: i8 = selected_int_kind(18)
-
- integer, parameter, public :: lenlabel = 16
- ! columns of the sink data stored in the log and the table
- integer, parameter, public :: nsinkcol = 11
- integer, parameter, public :: isk_m = 7, isk_lum = 8, isk_teff = 9, isk_reff = 10, isk_hacc = 11
- ! how a track ends
- integer, parameter, public :: iend_release = 1, iend_drop = 2, iend_vanish = 3
- ! per-cycle transformations of the replayed tracks
- integer, parameter, public :: irot_none = 0, irot_random = 1, irot_mirror = 2
-
- real(dp), parameter :: pi = 3.141592653589793_dp
- real(dp), parameter :: solarm_cgs = 1.9891e33_dp, year_cgs = 3.1556926e7_dp
- real(dp), parameter :: km_cgs = 1.e5_dp, au_cgs = 1.496e13_dp
-
- character(len=16), parameter :: tabmagic = 'PHANTOMREPLAYTAB'
- integer(i4),       parameter :: tabversion = 1
-
- !
- ! one record (dump): the sinks and the gas particles in the band
- ! (positions and velocities relative to the centre of mass of the sinks)
- !
- type, public :: replay_record
-    real(dp) :: time = 0._dp
-    real(dp) :: xc(3) = 0._dp, vc(3) = 0._dp
-    integer  :: nsink = 0, nsel = 0
-    real(dp),    allocatable :: sink(:,:)
-    integer(i8), allocatable :: iorig(:)
-    real(sp),    allocatable :: x(:,:),v(:,:),u(:),h(:),scal(:,:)
- end type replay_record
-
- !
- ! the track table
- !
- type, public :: track_table
-    integer  :: nscal = 0, nsink = 0, ntracks = 0, nsamp = 0, nsinkrec = 0
-    real(dp) :: udist = 1._dp, umass = 1._dp, utime = 1._dp, pmass = 0._dp
-    real(dp) :: r_inj = 0._dp, r_b = 0._dp, t0 = 0._dp, t_rec = 0._dp, period = 0._dp
-    character(len=lenlabel), allocatable :: label(:)
-    ! per track
-    real(dp), allocatable :: t_entry(:),t_exit(:)
-    integer,  allocatable :: iend(:),isamp1(:),nsampk(:)
-    ! per sample
-    real(dp), allocatable :: ts(:)
-    real(sp), allocatable :: xs(:,:),vs(:,:),us(:),hs(:),scal(:,:)
-    ! sink history over the window
-    real(dp), allocatable :: tsink(:),sink(:,:,:)
- end type track_table
-
- !
- ! spawn order of the replay instances
- !
- type, public :: replay_schedule
-    real(dp) :: t_epoch = 0._dp, t0 = 0._dp, t_rec = 1._dp
-    integer  :: ntr = 0, jnext = 1, mcycle = 0
-    integer,  allocatable :: order(:),coff(:)
-    real(dp), allocatable :: phase(:)
- end type replay_schedule
-
- !
- ! track being followed by the builder
- !
- type :: open_track
-    integer  :: n = 0
-    logical  :: used = .false., unknown = .false.
-    real(dp) :: t_entry = 0._dp
-    real(dp), allocatable :: t(:)
-    real(sp), allocatable :: x(:,:),v(:,:),u(:),h(:),s(:,:)
- end type open_track
-
- type, public :: replay_builder
-    real(dp) :: r_inj = 0._dp, r_b = 0._dp, t0 = 0._dp, t_rec = 0._dp, dt_table = 0._dp
-    real(dp) :: tsink_lo = 0._dp, tsink_hi = 0._dp, tprev = 0._dp
-    integer  :: nscal = 0, nprev = 0, nfree = 0
-    logical  :: include_drop = .true., clip = .false.
-    integer(i8), allocatable :: piorig(:)
-    real(sp),    allocatable :: px(:,:),pv(:,:),pu(:),ph(:),ps(:,:)
-    integer,     allocatable :: ptr(:),freelist(:)
-    type(open_track), allocatable :: otr(:)
-    type(track_table) :: tab
-    ! statistics
-    integer  :: nrel = 0, ndrop = 0, nunknown = 0, nlost = 0, nskipdrop = 0, ndip = 0, nopen = 0
-    integer  :: nappear = 0, nvanish = 0
-    real(dp) :: tres_min = huge(1._dp), tres_max = 0._dp, tres_sum = 0._dp, amin = huge(1._dp)
- end type replay_builder
-
- public :: hermite_eval,find_sphere_crossing,shell_flux
- public :: sort_index_i8,sort_index_dp,percentile,find_label
- public :: alloc_record,record_stats
- public :: builder_init,builder_add_record,builder_finalise
- public :: write_track_table,read_track_table,read_track_table_header
- public :: interp_track
- public :: schedule_init,schedule_reset,schedule_next_spawn,active_instances_at
- public :: cycle_rotation
-
+ ! used by inject_replay
+ public :: init_replay, start_replay, buffer_is_intact, rebuild_buffer, &
+           replay_tracks, kill_inner_gas, replay_luminosity, get_centre_of_mass
+ public :: dt_replay, window_start, replay_period, replay_started, particle_mass, n_dumps, n_sinks, dump_time
+ ! used by the setup of the outer run
+ public :: inner_dump, read_inner_dump, inner_infile, merge_sinks
  private
+
+ integer,          parameter :: nbase         = 8   ! particle state: x(3), v(3), u, h, then the scalars
+ integer,          parameter :: lenlabel      = 16
+ integer,          parameter :: iend_release  = 1   ! track leaves through r_inj: becomes gas
+ integer,          parameter :: iend_drop     = 2   ! track leaves through r_b: removed
+ integer,          parameter :: iend_vanish   = 3   ! track still in the buffer at the end of the window: removed
+ integer,          parameter :: iend_open     = 0
+ integer,          parameter :: iend_discard  = -1
+ integer,          parameter :: table_version = 2
+ character(len=*), parameter :: table_magic   = 'PHANTOMREPLAYTAB'
+ character(len=*), parameter :: table_file    = 'replay_tracks.dat'
+ character(len=*), parameter :: label         = 'utils_replay'
+
+ ! one full dump of the inner run
+ type inner_dump
+    real    :: time      = 0.
+    real    :: udist     = 1.
+    real    :: umass     = 1.
+    real    :: utime     = 1.
+    real    :: pmass     = 0.
+    real    :: gamma     = 0.
+    real    :: polyk     = 0.
+    integer :: npart     = 0
+    integer :: nptmass   = 0
+    logical :: got_iorig = .false.
+    real,            allocatable :: xyz(:,:), vxyz(:,:), u(:), h(:), scalars(:,:)
+    integer(kind=8), allocatable :: iorig(:)
+    integer(kind=1), allocatable :: itype(:)
+    logical,         allocatable :: got_scalar(:)
+    real,            allocatable :: xyzmh_ptmass(:,:), vxyz_ptmass(:,:)
+ end type inner_dump
+
+ ! the gas of one dump in the band around the buffer, in order of id
+ type band
+    real    :: time = 0.
+    integer :: n    = 0
+    integer(kind=8), allocatable :: id(:)
+    real(kind=4),    allocatable :: state(:,:)
+    integer,         allocatable :: track(:)   ! track of each particle (0 if none)
+ end type band
+
+ ! track table
+ character(len=200) :: table_dumpfile = ''
+ real    :: table_udist   = 1.
+ real    :: table_umass   = 1.
+ real    :: table_utime   = 1.
+ real    :: particle_mass = 0.
+ real    :: r_inj         = 0.
+ real    :: r_b           = 0.
+ real    :: window_start  = 0.
+ real    :: replay_period = 0.
+ integer :: n_scalars     = 0
+ integer :: n_tracks      = 0
+ integer :: n_samples     = 0
+ integer :: n_dumps       = 0
+ integer :: n_sinks       = 0
+ character(len=lenlabel), allocatable :: scalar_names(:)
+ real,         allocatable :: track_t_entry(:), track_t_exit(:), sample_time(:)
+ integer,      allocatable :: track_end(:), track_first(:), track_last(:)
+ real(kind=4), allocatable :: sample_state(:,:)
+ real,         allocatable :: dump_time(:), dump_lum(:,:)
+ integer,      allocatable :: sample_track(:)   ! track of each sample, until the table is finished
+
+ ! checks of the inner dumps, printed when the table is built
+ integer :: n_lost = 0, n_out = 0, n_in = 0, n_moved = 0
+ real    :: sum_moved = 0.
+
+ ! replaying the track table
+ real    :: dt_replay      = 0.
+ integer :: cycle_last     = 0
+ logical :: replay_started = .false.
+ ! the particle on each track (0 if none), the last cycle in which the track started, and the iorig of the particle
+ integer,         allocatable :: track_particle(:), track_cycle(:)
+ integer(kind=8), allocatable :: track_particle_id(:)
+ ! rows of the recorded quantities in the particle state (0 if not recorded)
+ integer :: irow_mu = 0, irow_gamma = 0, irow_alpha = 0, irow_tdust = 0, irow_abundance = 0
+ ! counts of the current cycle
+ integer :: n_spawned = 0, n_released = 0, n_removed = 0, n_killed = 0
 
 contains
 
-!-----------------------------------------------------------------------
+!----------------------------------------------------------------
 !+
-!  Cubic Hermite interpolation of a path between two samples (x,v at ta
-!  and tb). The velocity is the exact time derivative of the position.
+!  Read the track table, or build it if it was made from other
+!  dumps or for another r_inj, and prepare the replay
 !+
-!-----------------------------------------------------------------------
-pure subroutine hermite_eval(xa,va,xb,vb,ta,tb,t,x,v)
- real(dp), intent(in)  :: xa(3),va(3),xb(3),vb(3),ta,tb,t
- real(dp), intent(out) :: x(3),v(3)
- real(dp) :: dt,s,s2,s3,h00,h10,h01,h11,d00,d10,d11
+!----------------------------------------------------------------
+subroutine init_replay(dumpfile,r_inj_wanted)
+ use physcon, only:au
+ use units,   only:udist,umass,utime
+ use part,    only:abundance_label,nabundances
+ character(len=*), intent(in) :: dumpfile
+ real,             intent(in) :: r_inj_wanted
+ real, allocatable :: h_over_v(:)
+ real    :: vmag
+ integer :: i,n,ierr
 
- dt = tb - ta
- if (dt <= 0._dp) then
-    x = xa + va*(t - ta)
-    v = va
-    return
- endif
- s   = (t - ta)/dt
- s2  = s*s
- s3  = s2*s
- h00 = 2._dp*s3 - 3._dp*s2 + 1._dp
- h10 = s3 - 2._dp*s2 + s
- h01 = -2._dp*s3 + 3._dp*s2
- h11 = s3 - s2
- d00 = 6._dp*s2 - 6._dp*s
- d10 = 3._dp*s2 - 4._dp*s + 1._dp
- d11 = 3._dp*s2 - 2._dp*s
- x = h00*xa + h10*dt*va + h01*xb + h11*dt*vb
- v = d00*(xa - xb)/dt + d10*va + d11*vb
-
-end subroutine hermite_eval
-
-!-----------------------------------------------------------------------
-!+
-!  Time at which the Hermite path between two samples crosses the sphere
-!  of radius r, by bisection on g = |x|^2 - r^2. found is false if g has
-!  the same sign at both ends.
-!+
-!-----------------------------------------------------------------------
-subroutine find_sphere_crossing(xa,va,xb,vb,ta,tb,r,tc,found)
- real(dp), intent(in)  :: xa(3),va(3),xb(3),vb(3),ta,tb,r
- real(dp), intent(out) :: tc
- logical,  intent(out) :: found
- integer,  parameter   :: maxiter = 200
- real(dp) :: glo,ghi,gm,tlo,thi,tm,x(3),v(3)
- integer  :: iter
-
- glo = dot_product(xa,xa) - r*r
- ghi = dot_product(xb,xb) - r*r
- tc  = ta
- found = .false.
- if (glo > 0._dp .and. ghi > 0._dp) return
- if (glo < 0._dp .and. ghi < 0._dp) return
- found = .true.
- if (abs(glo) <= tiny(glo)) return
- if (abs(ghi) <= tiny(ghi)) then
-    tc = tb
-    return
- endif
- tlo = ta
- thi = tb
- do iter = 1,maxiter
-    tm = 0.5_dp*(tlo + thi)
-    call hermite_eval(xa,va,xb,vb,ta,tb,tm,x,v)
-    gm = dot_product(x,x) - r*r
-    if (gm*glo < 0._dp) then
-       thi = tm
-    else
-       tlo = tm
-       glo = gm
-    endif
-    if (thi - tlo <= 1.e-14_dp*(tb - ta)) exit
- enddo
- tc = 0.5_dp*(tlo + thi)
-
-end subroutine find_sphere_crossing
-
-!-----------------------------------------------------------------------
-!+
-!  State at time t between two samples: Hermite for x and v, linear for
-!  u and the scalars, log-linear for h (scalars are not extrapolated)
-!+
-!-----------------------------------------------------------------------
-subroutine interp_state(ta,xa,va,ua,ha,sa,tb,xb,vb,ub,hb,sb,t,x,v,u,h,s)
- real(dp), intent(in)  :: ta,tb,t
- real(sp), intent(in)  :: xa(3),va(3),ua,ha,sa(:),xb(3),vb(3),ub,hb,sb(:)
- real(dp), intent(out) :: x(3),v(3),u,h,s(:)
- real(dp) :: f
-
- call hermite_eval(real(xa,dp),real(va,dp),real(xb,dp),real(vb,dp),ta,tb,t,x,v)
- f = 0._dp
- if (tb > ta) f = min(max((t - ta)/(tb - ta),0._dp),1._dp)
- u = (1._dp - f)*ua + f*ub
- if (ha > 0. .and. hb > 0.) then
-    h = exp((1._dp - f)*log(real(ha,dp)) + f*log(real(hb,dp)))
+ call read_track_table(ierr)
+ if (ierr /= 0 .or. table_dumpfile /= dumpfile .or. abs(r_inj/r_inj_wanted - 1.) > 1.e-6) then
+    call build_track_table(dumpfile,r_inj_wanted)
+    call write_track_table(ierr)
+    if (ierr /= 0) call warning(label,'could not write '//table_file)
  else
-    h = (1._dp - f)*ha + f*hb
+    print *, ''
+    print *, 'Track table read from '//table_file
  endif
- if (size(s) > 0) s = (1._dp - f)*sa + f*sb
+ if (n_tracks < 1) call fatal(label,'no tracks in the table')
+ if (abs(table_udist/udist - 1.) > 1.e-6 .or. abs(table_umass/umass - 1.) > 1.e-6 .or. &
+     abs(table_utime/utime - 1.) > 1.e-6) call fatal(label,'units differ from those of the inner run')
 
-end subroutine interp_state
-
-!-----------------------------------------------------------------------
-!+
-!  Mass flux through a sphere of radius rshell from the particles within
-!  dr/2 of it, Mdot = (1/dr) sum m v_r, separately for outflow and inflow
-!  (both positive). vr_flux is the flux-weighted outflow speed and wflux
-!  the outward flux of the quantity w (per unit mass).
-!+
-!-----------------------------------------------------------------------
-pure subroutine shell_flux(n,r,vr,pmass,rshell,dr,mdot_out,mdot_in,vr_flux,w,wflux)
- integer,  intent(in)  :: n
- real(dp), intent(in)  :: r(:),vr(:),pmass,rshell,dr
- real(dp), intent(out) :: mdot_out,mdot_in,vr_flux
- real(dp), intent(in),  optional :: w(:)
- real(dp), intent(out), optional :: wflux
- real(dp) :: sum_vr,sum_vr2,sum_in,sum_w
- integer  :: i
-
- sum_vr = 0._dp; sum_vr2 = 0._dp; sum_in = 0._dp; sum_w = 0._dp
- do i = 1,n
-    if (abs(r(i) - rshell) >= 0.5_dp*dr) cycle
-    if (vr(i) > 0._dp) then
-       sum_vr  = sum_vr  + vr(i)
-       sum_vr2 = sum_vr2 + vr(i)**2
-       if (present(w)) sum_w = sum_w + vr(i)*w(i)
-    else
-       sum_in  = sum_in  - vr(i)
+ ! time between two calls: at most P/50, and the time to move 0.1 h in the buffer
+ allocate(h_over_v(n_samples))
+ n = 0
+ do i = 1,n_samples
+    vmag = norm2(real(sample_state(4:6,i)))
+    if (vmag > 0. .and. sample_state(8,i) > 0.) then
+       n = n + 1
+       h_over_v(n) = sample_state(8,i)/vmag
     endif
  enddo
- mdot_out = 0._dp; mdot_in = 0._dp; vr_flux = 0._dp
- if (dr > 0._dp) then
-    mdot_out = pmass*sum_vr/dr
-    mdot_in  = pmass*sum_in/dr
- endif
- if (sum_vr > 0._dp) vr_flux = sum_vr2/sum_vr
- if (present(wflux)) then
-    wflux = 0._dp
-    if (dr > 0._dp) wflux = pmass*sum_w/dr
- endif
+ dt_replay = 0.02*replay_period
+ if (n > 0) dt_replay = min(dt_replay,0.1*percentile(h_over_v(1:n),0.05))
 
-end subroutine shell_flux
+ ! rows of the recorded quantities in the particle state
+ irow_mu        = find_scalar_row('eos:mu',1)
+ irow_gamma     = find_scalar_row('eos:gamma',1)
+ irow_alpha     = find_scalar_row('alpha',1)
+ irow_tdust     = find_scalar_row('Tdust',1)
+ irow_abundance = find_scalar_row('abund:'//trim(abundance_label(1)),nabundances)
 
-!-----------------------------------------------------------------------
+ if (allocated(track_particle)) deallocate(track_particle,track_cycle,track_particle_id)
+ allocate(track_particle(n_tracks),track_cycle(n_tracks),track_particle_id(n_tracks))
+ track_particle = 0
+ replay_started = .false.
+
+ print *, ''
+ print *, ' Tracks                     :', n_tracks
+ print *, ' Samples                    :', n_samples
+ print *, ' r_b (au)                   :', r_b*udist/au
+ print *, ' r_inj (au)                 :', r_inj*udist/au
+ print *, ' Start of the window        :', window_start
+ print *, ' Replay period              :', replay_period
+ print *, ' dtinject                   :', dt_replay
+ print *, ''
+
+end subroutine init_replay
+
+!----------------------------------------------------------------
 !+
-!  Heapsort index of 8-byte integer keys (ascending)
+!  Row in the particle state of the n quantities starting with
+!  name (0 if they are not in the table)
 !+
-!-----------------------------------------------------------------------
-subroutine sort_index_i8(n,key,idx)
- integer,     intent(in)  :: n
- integer(i8), intent(in)  :: key(:)
- integer,     intent(out) :: idx(:)
- integer     :: i,j,l,ir,it
- integer(i8) :: kt
-
- do i = 1,n
-    idx(i) = i
- enddo
- if (n < 2) return
- l  = n/2 + 1
- ir = n
- do
-    if (l > 1) then
-       l  = l - 1
-       it = idx(l)
-       kt = key(it)
-    else
-       it = idx(ir)
-       kt = key(it)
-       idx(ir) = idx(1)
-       ir = ir - 1
-       if (ir == 1) then
-          idx(1) = it
-          exit
-       endif
-    endif
-    i = l
-    j = l + l
-    do while (j <= ir)
-       if (j < ir) then
-          if (key(idx(j)) < key(idx(j+1))) j = j + 1
-       endif
-       if (kt < key(idx(j))) then
-          idx(i) = idx(j)
-          i = j
-          j = j + j
-       else
-          j = ir + 1
-       endif
-    enddo
-    idx(i) = it
- enddo
-
-end subroutine sort_index_i8
-
-!-----------------------------------------------------------------------
-!+
-!  Heapsort index of real keys (ascending)
-!+
-!-----------------------------------------------------------------------
-subroutine sort_index_dp(n,key,idx)
- integer,  intent(in)  :: n
- real(dp), intent(in)  :: key(:)
- integer,  intent(out) :: idx(:)
- integer  :: i,j,l,ir,it
- real(dp) :: kt
-
- do i = 1,n
-    idx(i) = i
- enddo
- if (n < 2) return
- l  = n/2 + 1
- ir = n
- do
-    if (l > 1) then
-       l  = l - 1
-       it = idx(l)
-       kt = key(it)
-    else
-       it = idx(ir)
-       kt = key(it)
-       idx(ir) = idx(1)
-       ir = ir - 1
-       if (ir == 1) then
-          idx(1) = it
-          exit
-       endif
-    endif
-    i = l
-    j = l + l
-    do while (j <= ir)
-       if (j < ir) then
-          if (key(idx(j)) < key(idx(j+1))) j = j + 1
-       endif
-       if (kt < key(idx(j))) then
-          idx(i) = idx(j)
-          i = j
-          j = j + j
-       else
-          j = ir + 1
-       endif
-    enddo
-    idx(i) = it
- enddo
-
-end subroutine sort_index_dp
-
-!-----------------------------------------------------------------------
-!+
-!  The q-th quantile (0 <= q <= 1) of the first n values of a
-!+
-!-----------------------------------------------------------------------
-real(dp) function percentile(n,a,q)
- integer,  intent(in) :: n
- real(dp), intent(in) :: a(:),q
- integer, allocatable :: idx(:)
- integer :: j
-
- percentile = 0._dp
- if (n < 1) return
- allocate(idx(n))
- call sort_index_dp(n,a,idx)
- j = min(max(1,nint(q*(n-1)) + 1),n)
- percentile = a(idx(j))
-
-end function percentile
-
-!-----------------------------------------------------------------------
-!+
-!  Index of a label in a list (0 if absent)
-!+
-!-----------------------------------------------------------------------
-integer function find_label(label,name)
- character(len=*), intent(in) :: label(:),name
+!----------------------------------------------------------------
+integer function find_scalar_row(name,n)
+ character(len=*), intent(in) :: name
+ integer,          intent(in) :: n
  integer :: i
 
- find_label = 0
- do i = 1,size(label)
-    if (trim(adjustl(label(i))) == trim(adjustl(name))) then
-       find_label = i
+ find_scalar_row = 0
+ do i = 1,n_scalars
+    if (trim(scalar_names(i)) == trim(name)) then
+       if (i + n - 1 <= n_scalars) find_scalar_row = nbase + i
        return
     endif
  enddo
 
-end function find_label
+end function find_scalar_row
 
-!-----------------------------------------------------------------------
+!----------------------------------------------------------------
 !+
-!  Make sure a record can hold nsink sinks and nsel particles
+!  Build the track table from one period of dumps of the inner run
 !+
-!-----------------------------------------------------------------------
-subroutine alloc_record(rec,nsink,nsel,nscal)
- type(replay_record), intent(inout) :: rec
- integer,             intent(in)    :: nsink,nsel,nscal
- integer :: ncap
+!----------------------------------------------------------------
+subroutine build_track_table(dumpfile,r_inj_new)
+ use physcon,   only:au,solarm,years
+ use units,     only:udist,umass,utime
+ use kernel,    only:radkern
+ use part,      only:igas,ilum
+ use fileutils, only:getnextfilename
+ character(len=*), intent(in) :: dumpfile
+ real,             intent(in) :: r_inj_new
+ type(inner_dump) :: dump
+ type(band)       :: prev,now
+ character(len=200) :: filename
+ character(len=lenlabel), allocatable :: all_names(:)
+ integer, allocatable :: icolumn(:)
+ real,    allocatable :: h_near(:)
+ real    :: xc(3),vc(3),r,buffer_width,umdot
+ integer :: i,n,n_dumps_read,n_release
+ logical :: iexist
 
- if (allocated(rec%sink)) then
-    if (size(rec%sink,2) < nsink) deallocate(rec%sink)
- endif
- if (.not.allocated(rec%sink)) allocate(rec%sink(nsinkcol,max(nsink,1)))
+ filename = dumpfile
+ print *, ''
+ print *, 'Building the track table from '//trim(filename)//' and the following dumps'
+ call read_dump_or_die(filename,dump)
+ if (.not. dump%got_iorig) call fatal(label,trim(filename)//' has no particle ids (iorig)')
+ if (abs(dump%udist/udist - 1.) > 1.e-6 .or. abs(dump%umass/umass - 1.) > 1.e-6 .or. &
+     abs(dump%utime/utime - 1.) > 1.e-6) call fatal(label,'units of '//trim(filename)//' differ from those of this run')
 
- if (allocated(rec%iorig)) then
-    if (size(rec%iorig) >= nsel .and. size(rec%scal,1) == max(nscal,1)) return
-    deallocate(rec%iorig,rec%x,rec%v,rec%u,rec%h,rec%scal)
- endif
- ncap = max(nsel + nsel/5,16)
- allocate(rec%iorig(ncap),rec%x(3,ncap),rec%v(3,ncap),rec%u(ncap),rec%h(ncap),rec%scal(max(nscal,1),ncap))
+ call clear_table()
+ n_lost    = 0
+ n_out     = 0
+ n_in      = 0
+ n_moved   = 0
+ sum_moved = 0.
+ replay_period = calculate_replay_period(dumpfile,dump)
 
-end subroutine alloc_record
-
-!-----------------------------------------------------------------------
-!+
-!  Set up the builder. head carries the header of the table to build:
-!  units, particle mass, r_inj, r_b, window [t0,t0+t_rec], period and the
-!  labels of the scalars. With clip, the tracks are clipped to the window
-!  (see the module description).
-!+
-!-----------------------------------------------------------------------
-subroutine builder_init(b,head,dt_table,include_drop,clip)
- type(replay_builder), intent(inout) :: b
- type(track_table),    intent(in)    :: head
- real(dp),             intent(in)    :: dt_table
- logical,              intent(in)    :: include_drop,clip
-
- b%r_inj        = head%r_inj
- b%r_b          = head%r_b
- b%t0           = head%t0
- b%t_rec        = head%t_rec
- b%dt_table     = dt_table
- b%include_drop = include_drop
- b%clip         = clip
- b%nscal        = head%nscal
- b%tsink_lo     = head%t0 - 0.05_dp*head%t_rec
- b%tsink_hi     = head%t0 + 1.05_dp*head%t_rec
- b%nprev        = 0
-
- b%tab%udist  = head%udist
- b%tab%umass  = head%umass
- b%tab%utime  = head%utime
- b%tab%pmass  = head%pmass
- b%tab%r_inj  = head%r_inj
- b%tab%r_b    = head%r_b
- b%tab%t0     = head%t0
- b%tab%t_rec  = head%t_rec
- b%tab%period = head%period
- b%tab%nscal  = head%nscal
- if (allocated(b%tab%label)) deallocate(b%tab%label)
- allocate(b%tab%label(max(head%nscal,0)))
- if (head%nscal > 0) b%tab%label = head%label(1:head%nscal)
- b%tab%ntracks  = 0
- b%tab%nsamp    = 0
- b%tab%nsinkrec = 0
- b%tab%nsink    = 0
-
-end subroutine builder_init
-
-!-----------------------------------------------------------------------
-!+
-!  Add one record to the builder. Particles are matched with the previous
-!  record by iorig; for each particle the path between the two records is
-!  checked for crossings of r_b and r_inj.
-!+
-!-----------------------------------------------------------------------
-subroutine builder_add_record(b,rec)
- type(replay_builder), intent(inout) :: b
- type(replay_record),  intent(in)    :: rec
- integer,     allocatable :: idx(:),ctr(:)
- integer(i8), allocatable :: ciorig(:)
- real(sp),    allocatable :: cx(:,:),cv(:,:),cu(:),ch(:),cs(:,:)
- integer :: n,i,j,ns,itr
-
- n  = rec%nsel
- ns = max(b%nscal,1)
- allocate(idx(n),ctr(n),ciorig(n),cx(3,n),cv(3,n),cu(n),ch(n),cs(ns,n))
- call sort_index_i8(n,rec%iorig,idx)
- do j = 1,n
-    ciorig(j) = rec%iorig(idx(j))
-    cx(:,j)   = rec%x(:,idx(j))
-    cv(:,j)   = rec%v(:,idx(j))
-    cu(j)     = rec%u(idx(j))
-    ch(j)     = rec%h(idx(j))
-    cs(:,j)   = rec%scal(1:ns,idx(j))
+ ! buffer width: 1.2 kernel radii of the 90th percentile of h at r_inj
+ call get_centre_of_mass(dump%nptmass,dump%xyzmh_ptmass,dump%vxyz_ptmass,xc,vc)
+ allocate(h_near(dump%npart))
+ n = 0
+ do i = 1,dump%npart
+    r = norm2(dump%xyz(:,i) - xc)
+    if (dump%itype(i) == igas .and. abs(r - r_inj_new) < 0.05*r_inj_new) then
+       n = n + 1
+       h_near(n) = dump%h(i)
+    endif
  enddo
- ctr = 0
+ if (n < 20) call fatal(label,'too few particles at r_inj in '//trim(filename)//' to set the buffer width')
+ buffer_width = 1.2*radkern*percentile(h_near(1:n),0.9)
+ if (buffer_width >= r_inj_new) call fatal(label,'buffer wider than r_inj',var='buffer width (au)',val=buffer_width*udist/au)
 
+ ! what the table is built from, and the per-particle quantities found in the dump
+ table_dumpfile = dumpfile
+ table_udist    = udist
+ table_umass    = umass
+ table_utime    = utime
+ particle_mass  = dump%pmass
+ r_inj          = r_inj_new
+ r_b            = r_inj_new - buffer_width
+ window_start   = dump%time
+ call get_scalar_names(all_names)
+ n_scalars = count(dump%got_scalar)
+ allocate(icolumn(n_scalars),scalar_names(n_scalars))
+ n = 0
+ do i = 1,size(all_names)
+    if (dump%got_scalar(i)) then
+       n = n + 1
+       icolumn(n)      = i
+       scalar_names(n) = all_names(i)
+    endif
+ enddo
+
+ ! add the dumps until one period has been covered
+ n_dumps_read = 0
+ do
+    call get_band(dump,icolumn,r_inj_new - 1.5*buffer_width,r_inj_new + 0.5*buffer_width,now)
+    call record_luminosity(dump%time,dump%xyzmh_ptmass(ilum,1:dump%nptmass))
+    call add_dump_to_table(prev,now)
+    prev = now
+    n_dumps_read = n_dumps_read + 1
+    if (dump%time >= window_start + replay_period*(1. - 1.e-6)) exit
+    filename = getnextfilename(filename)
+    inquire(file=trim(filename),exist=iexist)
+    if (.not. iexist) call fatal(label,'the dumps end before one replay period: '//trim(filename)//' is missing')
+    call read_dump_or_die(filename,dump)
+    if (dump%time <= prev%time) call fatal(label,trim(filename)//' is not later than the previous dump')
+ enddo
+ call finish_track_table(prev)
+
+ umdot     = (umass/solarm)/(utime/years)
+ n_release = count(track_end(1:n_tracks) == iend_release)
+ print *, ''
+ print *, ' Dumps read                 :', n_dumps_read, ' (up to '//trim(filename)//')'
+ print *, ' Start of the window        :', window_start
+ print *, ' Replay period              :', replay_period
+ print *, ' r_b (au)                   :', r_b*udist/au
+ print *, ' r_inj (au)                 :', r_inj*udist/au
+ print *, ' Release tracks             :', n_release
+ print *, ' Drop tracks                :', count(track_end(1:n_tracks) == iend_drop)
+ print *, ' In the buffer at the start :', count(track_t_entry(1:n_tracks) <= window_start)
+ print *, ' In the buffer at the end   :', count(track_end(1:n_tracks) == iend_vanish)
+ print *, ' Samples                    :', n_samples
+ print *, ' Replayed Mdot (Msun/yr)    :', n_release*particle_mass/replay_period*umdot
+ if (n_out > 0) print *, ' Crossings of r_inj in/out  :', real(n_in)/n_out
+ print *, ''
+ if (n_in > 0.05*n_out) call warning(label,'more than 5% of the gas crossing r_inj falls back: '// &
+                                           'r_inj is too close to the star')
+ if (n_moved > 0) then
+    if (sum_moved/n_moved > 0.5) call warning(label,'particles move more than h/2 between dumps: '// &
+                                                    'write dumps more often')
+ endif
+ if (n_lost > 0) call warning(label,'particles left the band between two dumps without crossing r_inj or r_b', &
+                              var='n',ival=n_lost)
+
+end subroutine build_track_table
+
+!----------------------------------------------------------------
+!+
+!  Replay period: the orbital period of a binary, otherwise the
+!  pulsation period in the .in file of the inner run
+!+
+!----------------------------------------------------------------
+real function calculate_replay_period(dumpfile,dump) result(period)
+ use physcon,      only:au,days,pi
+ use units,        only:udist,utime,get_G_code
+ use infile_utils, only:open_db_from_file,close_db,inopts,read_inopt
+ use io,           only:ireadin
+ character(len=*), intent(in) :: dumpfile
+ type(inner_dump), intent(in) :: dump
+ type(inopts), allocatable :: db(:)
+ character(len=200) :: infile
+ real    :: pulsation_period_days,pulsation_period,dx(3),dv(3),gm,one_over_a
+ integer :: ierr
+
+ ! pulsation period in the .in file of the inner run (0 if not found); with iwind=2
+ ! the inner run computes it, and writes it to its .in file at every dump
+ period                = 0.
+ pulsation_period_days = 0.
+ infile                = inner_infile(dumpfile)
+ call open_db_from_file(db,infile,ireadin,ierr)
+ if (ierr == 0) call read_inopt(pulsation_period_days,'pulsation_period',db,err=ierr)
+ call close_db(db)
+ if (ierr /= 0) pulsation_period_days = 0.
+ pulsation_period = pulsation_period_days*days/utime
+
+ select case(dump%nptmass)
+ case(1)
+    if (pulsation_period <= 0.) call fatal(label,'single star, but no pulsation_period in '//trim(infile))
+    period = pulsation_period
+    print *, 'Single star: replay period = pulsation period (days):',pulsation_period_days
+ case(2)
+    ! semi-major axis from the energy of the relative orbit (vis-viva)
+    dx         = dump%xyzmh_ptmass(1:3,2) - dump%xyzmh_ptmass(1:3,1)
+    dv         = dump%vxyz_ptmass(1:3,2) - dump%vxyz_ptmass(1:3,1)
+    gm         = get_G_code()*(dump%xyzmh_ptmass(4,1) + dump%xyzmh_ptmass(4,2))
+    one_over_a = 2./norm2(dx) - dot_product(dv,dv)/gm
+    if (one_over_a <= 0.) call fatal(label,'the two sinks of '//trim(dumpfile)//' are not bound')
+    period = 2.*pi*sqrt(1./(one_over_a**3*gm))
+    print *, 'Binary: replay period = orbital period (days):',period*utime/days
+    print *, 'Semi-major axis (au)                         :',udist/(one_over_a*au)
+    if (pulsation_period > 0. .and. abs(period/pulsation_period - nint(period/pulsation_period)) > 0.01) &
+       call warning(label,'the pulsation is not periodic with the orbit',var='P_orb/P_puls',val=period/pulsation_period)
+ case default
+    call fatal(label,'the replay period is only known for one or two sinks',var='nptmass',ival=dump%nptmass)
+ end select
+
+end function calculate_replay_period
+
+!----------------------------------------------------------------
+!+
+!  The .in file of the run that wrote a dump (wind_00440 -> wind.in)
+!+
+!----------------------------------------------------------------
+function inner_infile(dumpfile) result(infile)
+ character(len=*), intent(in) :: dumpfile
+ character(len=200) :: infile
+
+ infile = dumpfile(1:max(index(dumpfile,'_',back=.true.)-1,1))//'.in'
+
+end function inner_infile
+
+!----------------------------------------------------------------
+!+
+!  The gas of a dump in the band r_min <= r <= r_max, relative to
+!  the centre of mass of the sinks, in order of id
+!+
+!----------------------------------------------------------------
+subroutine get_band(dump,icolumn,r_min,r_max,now)
+ use part,      only:igas
+ use sortutils, only:indexx
+ type(inner_dump), intent(in)  :: dump
+ integer,          intent(in)  :: icolumn(:)
+ real,             intent(in)  :: r_min,r_max
+ type(band),       intent(out) :: now
+ integer, allocatable :: iband(:),isort(:)
+ real    :: xc(3),vc(3),r
+ integer :: i,j,n
+
+ call get_centre_of_mass(dump%nptmass,dump%xyzmh_ptmass,dump%vxyz_ptmass,xc,vc)
+ allocate(iband(dump%npart))
+ n = 0
+ do i = 1,dump%npart
+    r = norm2(dump%xyz(:,i) - xc)
+    if (dump%itype(i) == igas .and. r >= r_min .and. r <= r_max) then
+       n = n + 1
+       iband(n) = i
+    endif
+ enddo
+ allocate(isort(n))
+ call indexx(n,dump%iorig(iband(1:n)),isort)
+
+ now%time = dump%time
+ now%n    = n
+ allocate(now%id(n),now%state(nbase+size(icolumn),n),now%track(n))
+ do j = 1,n
+    i = iband(isort(j))
+    now%id(j)             = dump%iorig(i)
+    now%state(1:3,j)      = real(dump%xyz(:,i) - xc,kind=4)
+    now%state(4:6,j)      = real(dump%vxyz(:,i) - vc,kind=4)
+    now%state(7,j)        = real(dump%u(i),kind=4)
+    now%state(8,j)        = real(dump%h(i),kind=4)
+    now%state(nbase+1:,j) = real(dump%scalars(icolumn,i),kind=4)
+ enddo
+ now%track = 0
+
+end subroutine get_band
+
+!----------------------------------------------------------------
+!+
+!  Names of the per-particle quantities copied from the inner run,
+!  in the order of the rows of dump%scalars
+!+
+!----------------------------------------------------------------
+subroutine get_scalar_names(names)
+ use part, only:nabundances,abundance_label
+ character(len=lenlabel), allocatable, intent(out) :: names(:)
+ integer :: i
+
+ allocate(names(4+nabundances))
+ names(1) = 'eos:mu'
+ names(2) = 'eos:gamma'
+ names(3) = 'alpha'
+ names(4) = 'Tdust'
+ do i = 1,nabundances
+    names(4+i) = 'abund:'//trim(abundance_label(i))
+ enddo
+
+end subroutine get_scalar_names
+
+!----------------------------------------------------------------
+!+
+!  Read what is needed from a full dump of the inner run
+!+
+!----------------------------------------------------------------
+subroutine read_inner_dump(filename,dump,ierr)
+ use dump_utils, only:open_dumpfile_r,read_header,free_header,extract,read_global_block_header, &
+                      read_block_header,read_array,dump_h,lentag,lenid,ndatatypes
+ use readwrite_dumps_common, only:get_options_from_fileid
+ use io,         only:idisk1
+ use part,       only:maxtypes,igas,nsinkproperties,xyzmh_ptmass_label,vxyz_ptmass_label, &
+                      nabundances,abundance_label
+ character(len=*), intent(in)  :: filename
+ type(inner_dump), intent(out) :: dump   ! intent(out): emptied on entry
+ integer,          intent(out) :: ierr
+ integer, parameter :: maxarraylengths = 12
+ type(dump_h) :: hdr
+ character(len=lenid)  :: fileid
+ character(len=lentag) :: tag
+ integer(kind=8) :: number8(maxarraylengths)
+ integer :: nums(ndatatypes,maxarraylengths)
+ integer :: nblocks,narraylengths,iblock,j,ik,k,np,ns,i1,i2,is1,is2,ierr1
+ real    :: massoftype(maxtypes),rk2
+ logical :: tagged,phantomdump,smalldump,use_dust,matched
+ logical :: gotx(3),gotv(3),gotu,goth,gott,gots(nsinkproperties),gotvs(3)
+
+ call open_dumpfile_r(idisk1,filename,fileid,ierr,requiretags=.true.)
+ if (ierr /= 0) return
+ call get_options_from_fileid(fileid,tagged,phantomdump,smalldump,use_dust,ierr1)
+ if (smalldump .or. .not. tagged) ierr = 1
+ if (ierr == 0) call read_header(idisk1,hdr,ierr,tagged=.true.)
+ if (ierr /= 0) then
+    close(idisk1)
+    return
+ endif
+ massoftype = 0.
+ call extract('time',dump%time,hdr,ierr1)
+ call extract('udist',dump%udist,hdr,ierr1)
+ call extract('umass',dump%umass,hdr,ierr1)
+ call extract('utime',dump%utime,hdr,ierr1)
+ call extract('massoftype',massoftype,hdr,ierr1)
+ call extract('gamma',dump%gamma,hdr,ierr1)
+ call extract('RK2',rk2,hdr,ierr1)
+ call extract('nparttot',np,hdr,ierr1)
+ call extract('nptmass',ns,hdr,ierr1,default=0)
+ dump%pmass = massoftype(igas)
+ dump%polyk = rk2/1.5
+ call read_global_block_header(nblocks,narraylengths,hdr,idisk1,ierr)
+ call free_header(hdr,ierr1)
+ if (ierr /= 0) then
+    close(idisk1)
+    return
+ endif
+
+ allocate(dump%xyz(3,np),dump%vxyz(3,np),dump%u(np),dump%h(np),dump%iorig(np),dump%itype(np))
+ allocate(dump%scalars(4+nabundances,np),dump%got_scalar(4+nabundances))
+ allocate(dump%xyzmh_ptmass(nsinkproperties,ns),dump%vxyz_ptmass(3,ns))
+ dump%u            = 0.
+ dump%itype        = int(igas,kind=1)
+ dump%got_scalar   = .false.
+ dump%xyzmh_ptmass = 0.
+ dump%vxyz_ptmass  = 0.
+
+ i2  = 0
+ is2 = 0
+ do iblock = 1,nblocks
+    call read_block_header(narraylengths,number8,nums,idisk1,ierr)
+    i1  = i2 + 1
+    i2  = i2 + int(number8(1))
+    is1 = is2 + 1
+    if (narraylengths >= 2) is2 = is2 + int(number8(2))
+    do j = 1,narraylengths
+       do ik = 1,ndatatypes
+          do k = 1,nums(ik,j)
+             if (ierr /= 0) exit
+             read(idisk1,iostat=ierr) tag
+             matched = .false.
+             if (j == 1) then
+                ! particle arrays
+                call read_array(dump%xyz,['x','y','z'],gotx,ik,i1,i2,0,idisk1,tag,matched,ierr)
+                call read_array(dump%vxyz,['vx','vy','vz'],gotv,ik,i1,i2,0,idisk1,tag,matched,ierr)
+                call read_array(dump%u,'u',gotu,ik,i1,i2,0,idisk1,tag,matched,ierr)
+                call read_array(dump%h,'h',goth,ik,i1,i2,0,idisk1,tag,matched,ierr)
+                call read_array(dump%iorig,'iorig',dump%got_iorig,ik,i1,i2,0,idisk1,tag,matched,ierr)
+                call read_array(dump%itype,'itype',gott,ik,i1,i2,0,idisk1,tag,matched,ierr)
+                call read_array(dump%scalars(1:4,:),['mu   ','gamma','alpha','Tdust'], &
+                                dump%got_scalar(1:4),ik,i1,i2,0,idisk1,tag,matched,ierr)
+                call read_array(dump%scalars(5:,:),abundance_label,dump%got_scalar(5:), &
+                                ik,i1,i2,0,idisk1,tag,matched,ierr)
+             elseif (j == 2) then
+                ! sink arrays
+                call read_array(dump%xyzmh_ptmass,xyzmh_ptmass_label,gots,ik,is1,is2,0,idisk1,tag,matched,ierr)
+                call read_array(dump%vxyz_ptmass,vxyz_ptmass_label,gotvs,ik,is1,is2,0,idisk1,tag,matched,ierr)
+             endif
+             if (.not. matched) read(idisk1,iostat=ierr)
+          enddo
+       enddo
+    enddo
+ enddo
+ close(idisk1)
+ dump%npart   = i2
+ dump%nptmass = is2
+
+end subroutine read_inner_dump
+
+!----------------------------------------------------------------
+!+
+!  Read a dump of the inner run, and stop if that fails
+!+
+!----------------------------------------------------------------
+subroutine read_dump_or_die(filename,dump)
+ character(len=*), intent(in)  :: filename
+ type(inner_dump), intent(out) :: dump
+ integer :: ierr
+
+ call read_inner_dump(filename,dump,ierr)
+ if (ierr /= 0) call fatal(label,'cannot read '//trim(filename))
+
+end subroutine read_dump_or_die
+
+!----------------------------------------------------------------
+!+
+!  Add the band particles of a dump to the table: they are matched
+!  with those of the previous dump by their id
+!+
+!----------------------------------------------------------------
+subroutine add_dump_to_table(prev,now)
+ type(band), intent(in)    :: prev
+ type(band), intent(inout) :: now
+ integer(kind=8) :: id_prev,id_now
+ integer :: i,j,k
+ real    :: r
+
+ ! walk through the particles of both dumps in order of id
  i = 1
  j = 1
- do while (i <= b%nprev .or. j <= n)
-    if (i <= b%nprev .and. j <= n) then
-       if (b%piorig(i) == ciorig(j)) then
-          itr = b%ptr(i)
-          call process_interval(b,itr,b%tprev,b%px(:,i),b%pv(:,i),b%pu(i),b%ph(i),b%ps(:,i), &
-                                rec%time,cx(:,j),cv(:,j),cu(j),ch(j),cs(:,j))
-          ctr(j) = itr
-          i = i + 1
-          j = j + 1
-       elseif (b%piorig(i) < ciorig(j)) then
-          call left_band(i)
-          i = i + 1
-       else
-          call entered_band(j)
-          j = j + 1
+ do while (i <= prev%n .or. j <= now%n)
+    id_prev = huge(id_prev)
+    id_now  = huge(id_now)
+    if (i <= prev%n) id_prev = prev%id(i)
+    if (j <= now%n)  id_now  = now%id(j)
+    if (id_prev < id_now) then
+       ! left the band without crossing r_b or r_inj: moved too far between dumps
+       if (prev%track(i) > 0) then
+          track_end(prev%track(i)) = iend_discard
+          n_lost = n_lost + 1
        endif
-    elseif (i <= b%nprev) then
-       call left_band(i)
        i = i + 1
+    elseif (id_now < id_prev) then
+       ! new in the band: a track starts if it is already in the buffer (first dump)
+       r = norm2(real(now%state(1:3,j)))
+       if (r > r_b .and. r < r_inj) then
+          now%track(j) = new_track(now%time)
+          call add_sample(now%track(j),now%time,now%state(:,j))
+       endif
+       j = j + 1
     else
-       call entered_band(j)
+       k = prev%track(i)
+       call follow_particle(k,prev%time,prev%state(:,i),now%time,now%state(:,j))
+       now%track(j) = k
+       i = i + 1
        j = j + 1
     endif
  enddo
 
- call store_sinks(b,rec)
+end subroutine add_dump_to_table
 
- call move_alloc(ciorig,b%piorig)
- call move_alloc(cx,b%px)
- call move_alloc(cv,b%pv)
- call move_alloc(cu,b%pu)
- call move_alloc(ch,b%ph)
- call move_alloc(cs,b%ps)
- call move_alloc(ctr,b%ptr)
- b%nprev = n
- b%tprev = rec%time
-
-contains
-
- ! a particle that was followed has left the band: should not happen for a track
- subroutine left_band(ip)
-  integer, intent(in) :: ip
-
-  if (b%ptr(ip) > 0) then
-     b%nlost = b%nlost + 1
-     call free_track(b,b%ptr(ip))
-  endif
-
- end subroutine left_band
-
- ! a particle seen for the first time; if it is already inside the buffer its
- ! entry was not recorded (first record, or a gap in the log)
- subroutine entered_band(jp)
-  integer, intent(in) :: jp
-  real(dp) :: r
-  integer  :: k
-
-  r = norm2(real(cx(:,jp),dp))
-  if (r > b%r_b .and. r < b%r_inj) then
-     k = new_track(b)
-     b%otr(k)%unknown = .true.
-     b%otr(k)%t_entry = rec%time
-     call add_sample(b%otr(k),rec%time,cx(:,jp),cv(:,jp),cu(jp),ch(jp),cs(:,jp))
-     ctr(jp) = k
-  endif
-
- end subroutine entered_band
-
-end subroutine builder_add_record
-
-!-----------------------------------------------------------------------
+!----------------------------------------------------------------
 !+
-!  Path of one particle between two records (a,b): open, extend or close
-!  its track
+!  Path of one particle between two dumps (1: previous, 2: this
+!  one): start, extend or end its track k (0 if it has none)
 !+
-!-----------------------------------------------------------------------
-subroutine process_interval(b,itr,ta,xa,va,ua,ha,sa,tb,xb,vb,ub,hb,sb)
- type(replay_builder), intent(inout) :: b
- integer,              intent(inout) :: itr
- real(dp),             intent(in)    :: ta,tb
- real(sp),             intent(in)    :: xa(3),va(3),ua,ha,sa(:),xb(3),vb(3),ub,hb,sb(:)
- real(dp) :: ra,rb,te,tx
- logical  :: entered
+!----------------------------------------------------------------
+subroutine follow_particle(k,t1,state1,t2,state2)
+ integer,      intent(inout) :: k
+ real,         intent(in)    :: t1,t2
+ real(kind=4), intent(in)    :: state1(:),state2(:)
+ real    :: r1,r2,t_entry,t_exit
+ logical :: entered
 
- ra = norm2(real(xa,dp))
- rb = norm2(real(xb,dp))
- entered = .false.
- te = ta
- if (itr == 0) then
-    if (ra < b%r_b .and. rb >= b%r_b) then
-       te  = crossing_time(b%r_b)
-       itr = new_track(b)
-       b%otr(itr)%t_entry = te
-       call add_sample(b%otr(itr),ta,xa,va,ua,ha,sa)
-       call add_interp(te)
-       entered = .true.
-    else
-       return
-    endif
+ r1 = norm2(real(state1(1:3)))
+ r2 = norm2(real(state2(1:3)))
+
+ ! diagnostics
+ if (t1 < window_start + replay_period) then
+    if (r1 <  r_inj .and. r2 >= r_inj) n_out = n_out + 1
+    if (r1 >= r_inj .and. r2 <  r_inj) n_in  = n_in + 1
+ endif
+ if (r1 > r_b .and. r1 < r_inj .and. state1(8) > 0.) then
+    sum_moved = sum_moved + norm2(real(state2(1:3) - state1(1:3)))/state1(8)
+    n_moved   = n_moved + 1
  endif
 
- if (rb >= b%r_inj) then
-    tx = max(crossing_time(b%r_inj),te)
-    call add_interp(tx)
-    call add_sample(b%otr(itr),tb,xb,vb,ub,hb,sb)
-    call close_track(b,itr,tx,iend_release)
- elseif (rb < b%r_b) then
+ entered = .false.
+ t_entry = t1
+ if (k == 0) then
+    if (r1 >= r_b .or. r2 < r_b) return    ! does not enter the buffer
+    t_entry = crossing_time(r_b,t1,state1,t2,state2)
+    k = new_track(t_entry)
+    call add_sample(k,t1,state1)
+    call add_interpolated_sample(k,t_entry,t1,state1,t2,state2)
+    entered = .true.
+ endif
+
+ if (r2 >= r_inj) then
+    ! leaves through r_inj: released
+    t_exit = max(crossing_time(r_inj,t1,state1,t2,state2),t_entry)
+    call add_interpolated_sample(k,t_exit,t1,state1,t2,state2)
+    call add_sample(k,t2,state2)
+    call end_track(k,t_exit,iend_release)
+ elseif (r2 < r_b) then
     if (entered) then
-       ! entered and left within one interval
-       b%ndip = b%ndip + 1
-       call free_track(b,itr)
-       itr = 0
+       ! in and out of the buffer between two dumps: ignored
+       track_end(k) = iend_discard
+       k = 0
     else
-       tx = crossing_time(b%r_b)
-       call add_interp(tx)
-       call add_sample(b%otr(itr),tb,xb,vb,ub,hb,sb)
-       call close_track(b,itr,tx,iend_drop)
+       ! leaves through r_b: dropped
+       t_exit = crossing_time(r_b,t1,state1,t2,state2)
+       call add_interpolated_sample(k,t_exit,t1,state1,t2,state2)
+       call add_sample(k,t2,state2)
+       call end_track(k,t_exit,iend_drop)
     endif
  else
-    call add_sample(b%otr(itr),tb,xb,vb,ub,hb,sb)
+    call add_sample(k,t2,state2)
  endif
 
-contains
+end subroutine follow_particle
 
- real(dp) function crossing_time(r)
-  real(dp), intent(in) :: r
-  logical  :: found
-  real(dp) :: f
-
-  call find_sphere_crossing(real(xa,dp),real(va,dp),real(xb,dp),real(vb,dp),ta,tb,r,crossing_time,found)
-  if (.not.found) then
-     f = 0._dp
-     if (abs(rb - ra) > 0._dp) f = min(max((r - ra)/(rb - ra),0._dp),1._dp)
-     crossing_time = ta + f*(tb - ta)
-  endif
-
- end function crossing_time
-
- subroutine add_interp(t)
-  real(dp), intent(in) :: t
-  real(dp) :: x(3),v(3),u,h,s(size(sa))
-
-  call interp_state(ta,xa,va,ua,ha,sa,tb,xb,vb,ub,hb,sb,t,x,v,u,h,s)
-  call add_sample(b%otr(itr),t,real(x,sp),real(v,sp),real(u,sp),real(h,sp),real(s,sp))
-
- end subroutine add_interp
-
-end subroutine process_interval
-
-!-----------------------------------------------------------------------
+!----------------------------------------------------------------
 !+
-!  Track bookkeeping
+!  Time at which the path between two dumps crosses radius r
 !+
-!-----------------------------------------------------------------------
-integer function new_track(b) result(itr)
- type(replay_builder), intent(inout) :: b
- type(open_track), allocatable :: tmp(:)
- integer, allocatable :: itmp(:)
- integer :: ncap,k
+!----------------------------------------------------------------
+real function crossing_time(r,t1,state1,t2,state2)
+ real,         intent(in) :: r,t1,t2
+ real(kind=4), intent(in) :: state1(:),state2(:)
+ real    :: r1,r2,f
+ logical :: found
 
- if (.not.allocated(b%otr)) then
-    allocate(b%otr(1024),b%freelist(1024))
-    b%nfree = 1024
-    do k = 1,1024
-       b%freelist(k) = 1025 - k
-    enddo
+ call find_sphere_crossing(real(state1(1:3)),real(state1(4:6)),real(state2(1:3)),real(state2(4:6)), &
+                           t1,t2,r,crossing_time,found)
+ if (.not. found) then
+    ! no sign change found: linear in radius
+    r1 = norm2(real(state1(1:3)))
+    r2 = norm2(real(state2(1:3)))
+    f  = 0.
+    if (r2 /= r1) f = min(max((r - r1)/(r2 - r1),0.),1.)
+    crossing_time = t1 + f*(t2 - t1)
  endif
- if (b%nfree == 0) then
-    ncap = size(b%otr)
-    allocate(tmp(2*ncap))
-    tmp(1:ncap) = b%otr(1:ncap)
-    call move_alloc(tmp,b%otr)
-    allocate(itmp(2*ncap))
-    call move_alloc(itmp,b%freelist)
-    do k = 1,ncap
-       b%freelist(k) = 2*ncap + 1 - k
-    enddo
-    b%nfree = ncap
+
+end function crossing_time
+
+!----------------------------------------------------------------
+!+
+!  Add to track k the interpolated state at time t
+!+
+!----------------------------------------------------------------
+subroutine add_interpolated_sample(k,t,t1,state1,t2,state2)
+ integer,      intent(in) :: k
+ real,         intent(in) :: t,t1,t2
+ real(kind=4), intent(in) :: state1(:),state2(:)
+ real :: state(size(state1))
+
+ call interpolate_state(t1,state1,t2,state2,t,state)
+ call add_sample(k,t,real(state,kind=4))
+
+end subroutine add_interpolated_sample
+
+!----------------------------------------------------------------
+!+
+!  Track k ends at time t_exit: keep the part of it inside the window
+!+
+!----------------------------------------------------------------
+subroutine end_track(k,t_exit,iend)
+ integer, intent(inout) :: k
+ real,    intent(in)    :: t_exit
+ integer, intent(in)    :: iend
+ real :: window_end
+
+ window_end = window_start + replay_period
+ if (t_exit < window_end) then
+    track_t_exit(k) = t_exit
+    track_end(k)    = iend
+ elseif (track_t_entry(k) < window_end) then
+    track_t_exit(k) = window_end
+    track_end(k)    = iend_vanish
+ else
+    track_end(k)    = iend_discard
  endif
- itr = b%freelist(b%nfree)
- b%nfree = b%nfree - 1
- b%otr(itr)%used    = .true.
- b%otr(itr)%unknown = .false.
- b%otr(itr)%n       = 0
- b%otr(itr)%t_entry = 0._dp
+ k = 0
+
+end subroutine end_track
+
+!----------------------------------------------------------------
+!+
+!  Start a new track at time t_entry
+!+
+!----------------------------------------------------------------
+integer function new_track(t_entry) result(k)
+ real, intent(in) :: t_entry
+
+ k = n_tracks + 1
+ n_tracks = k
+ call grow_real(track_t_entry,k)
+ call grow_real(track_t_exit,k)
+ call grow_int(track_end,k)
+ track_t_entry(k) = t_entry
+ track_t_exit(k)  = t_entry
+ track_end(k)     = iend_open
 
 end function new_track
 
-subroutine free_track(b,itr)
- type(replay_builder), intent(inout) :: b
- integer,              intent(in)    :: itr
+!----------------------------------------------------------------
+!+
+!  Add a sample (time t, particle state) to track k
+!+
+!----------------------------------------------------------------
+subroutine add_sample(k,t,state)
+ integer,      intent(in) :: k
+ real,         intent(in) :: t
+ real(kind=4), intent(in) :: state(:)
+ integer :: j
 
- if (.not.b%otr(itr)%used) return
- b%otr(itr)%used = .false.
- b%otr(itr)%n    = 0
- b%nfree = b%nfree + 1
- b%freelist(b%nfree) = itr
-
-end subroutine free_track
-
-subroutine add_sample(ot,t,x,v,u,h,s)
- type(open_track), intent(inout) :: ot
- real(dp),         intent(in)    :: t
- real(sp),         intent(in)    :: x(3),v(3),u,h,s(:)
- real(dp), allocatable :: rtmp(:)
- real(sp), allocatable :: tmp1(:),tmp2(:,:)
- integer :: ncap,ns
-
- ns = size(s)
- if (.not.allocated(ot%t)) then
-    allocate(ot%t(32),ot%x(3,32),ot%v(3,32),ot%u(32),ot%h(32),ot%s(max(ns,1),32))
- endif
- if (ot%n >= size(ot%t)) then
-    ncap = 2*size(ot%t)
-    allocate(rtmp(ncap)); rtmp(1:ot%n) = ot%t(1:ot%n); call move_alloc(rtmp,ot%t)
-    allocate(tmp2(3,ncap)); tmp2(:,1:ot%n) = ot%x(:,1:ot%n); call move_alloc(tmp2,ot%x)
-    allocate(tmp2(3,ncap)); tmp2(:,1:ot%n) = ot%v(:,1:ot%n); call move_alloc(tmp2,ot%v)
-    allocate(tmp1(ncap)); tmp1(1:ot%n) = ot%u(1:ot%n); call move_alloc(tmp1,ot%u)
-    allocate(tmp1(ncap)); tmp1(1:ot%n) = ot%h(1:ot%n); call move_alloc(tmp1,ot%h)
-    allocate(tmp2(size(ot%s,1),ncap)); tmp2(:,1:ot%n) = ot%s(:,1:ot%n); call move_alloc(tmp2,ot%s)
- endif
- ot%n = ot%n + 1
- ot%t(ot%n)   = t
- ot%x(:,ot%n) = x
- ot%v(:,ot%n) = v
- ot%u(ot%n)   = u
- ot%h(ot%n)   = h
- if (ns > 0) ot%s(1:ns,ot%n) = s
+ j = n_samples + 1
+ n_samples = j
+ call grow_int(sample_track,j)
+ call grow_real(sample_time,j)
+ call grow_real4(sample_state,j,size(state))
+ sample_track(j)   = k
+ sample_time(j)    = t
+ sample_state(:,j) = state
 
 end subroutine add_sample
 
-!-----------------------------------------------------------------------
+!----------------------------------------------------------------
 !+
-!  A track has ended at time tx: keep it if it ends inside the window
+!  Record the luminosity of the sinks at a dump
 !+
-!-----------------------------------------------------------------------
-subroutine close_track(b,itr,tx,iend)
- type(replay_builder), intent(inout) :: b
- integer,              intent(inout) :: itr
- real(dp),             intent(in)    :: tx
- integer,              intent(in)    :: iend
- real(dp) :: tres
+!----------------------------------------------------------------
+subroutine record_luminosity(time,lum)
+ real, intent(in) :: time,lum(:)
+ real, allocatable :: time_tmp(:),lum_tmp(:,:)
 
- if (b%clip .and. tx >= b%t0 + b%t_rec .and. b%otr(itr)%t_entry < b%t0 + b%t_rec) then
-    ! left the buffer just after the window: the piece ends at the window end
-    call keep_track(b%t0 + b%t_rec,iend_vanish)
- elseif (tx >= b%t0 .and. tx < b%t0 + b%t_rec) then
-    if (b%otr(itr)%unknown .and. .not.b%clip) then
-       if (iend == iend_release) b%nunknown = b%nunknown + 1
-    elseif (iend == iend_drop .and. .not.b%include_drop) then
-       b%nskipdrop = b%nskipdrop + 1
-    else
-       call keep_track(tx,iend)
-    endif
+ if (n_dumps == 0) then
+    n_sinks = size(lum)
+ elseif (size(lum) /= n_sinks) then
+    return   ! the number of sinks changed
  endif
- call free_track(b,itr)
- itr = 0
-
-contains
-
- subroutine keep_track(tend,iendk)
-  real(dp), intent(in) :: tend
-  integer,  intent(in) :: iendk
-
-  call append_track(b,b%otr(itr),tend,iendk)
-  select case(iendk)
-  case(iend_release)
-     b%nrel = b%nrel + 1
-  case(iend_drop)
-     b%ndrop = b%ndrop + 1
-  case default
-     b%nvanish = b%nvanish + 1
-  end select
-  if (b%otr(itr)%unknown) b%nappear = b%nappear + 1
-  tres = tend - b%otr(itr)%t_entry
-  b%tres_min = min(b%tres_min,tres)
-  b%tres_max = max(b%tres_max,tres)
-  b%tres_sum = b%tres_sum + tres
-  b%amin     = min(b%amin,b%otr(itr)%t_entry - b%t0)
-
- end subroutine keep_track
-
-end subroutine close_track
-
-!-----------------------------------------------------------------------
-!+
-!  Append a finished track to the table, keeping the sample before entry,
-!  the entry and exit states, the sample after exit and interior samples
-!  spaced by at least dt_table
-!+
-!-----------------------------------------------------------------------
-subroutine append_track(b,ot,tx,iend)
- type(replay_builder), intent(inout) :: b
- type(open_track),     intent(in)    :: ot
- real(dp),             intent(in)    :: tx
- integer,              intent(in)    :: iend
- logical, allocatable :: keep(:)
- integer  :: n,j,nkeep,ns,i0
- real(dp) :: tl
-
- n  = ot%n
- ns = b%nscal
- allocate(keep(n))
- if (n <= 4 .or. b%dt_table <= 0._dp) then
-    keep = .true.
- else
-    keep = .false.
-    keep(1:2) = .true.
-    keep(n-1:n) = .true.
-    tl = ot%t(2)
-    do j = 3,n-2
-       if (ot%t(j) - tl >= (1._dp - 1.e-6_dp)*b%dt_table) then
-          keep(j) = .true.
-          tl = ot%t(j)
-       endif
-    enddo
+ allocate(time_tmp(n_dumps+1),lum_tmp(n_sinks,n_dumps+1))
+ if (n_dumps > 0) then
+    time_tmp(1:n_dumps)  = dump_time(1:n_dumps)
+    lum_tmp(:,1:n_dumps) = dump_lum(:,1:n_dumps)
  endif
- nkeep = count(keep)
- call ensure_table_capacity(b%tab,b%tab%ntracks+1,b%tab%nsamp+nkeep)
+ n_dumps = n_dumps + 1
+ time_tmp(n_dumps)  = time
+ lum_tmp(:,n_dumps) = lum
+ call move_alloc(time_tmp,dump_time)
+ call move_alloc(lum_tmp,dump_lum)
 
- b%tab%ntracks = b%tab%ntracks + 1
- b%tab%t_entry(b%tab%ntracks) = ot%t_entry
- b%tab%t_exit(b%tab%ntracks)  = tx
- b%tab%iend(b%tab%ntracks)    = iend
- b%tab%isamp1(b%tab%ntracks)  = b%tab%nsamp + 1
- b%tab%nsampk(b%tab%ntracks)  = nkeep
- i0 = b%tab%nsamp
- do j = 1,n
-    if (.not.keep(j)) cycle
-    i0 = i0 + 1
-    b%tab%ts(i0)   = ot%t(j)
-    b%tab%xs(:,i0) = ot%x(:,j)
-    b%tab%vs(:,i0) = ot%v(:,j)
-    b%tab%us(i0)   = ot%u(j)
-    b%tab%hs(i0)   = ot%h(j)
-    if (ns > 0) b%tab%scal(1:ns,i0) = ot%s(1:ns,j)
+end subroutine record_luminosity
+
+!----------------------------------------------------------------
+!+
+!  Finish the table: tracks still open in the last dump end at the
+!  end of the window, discarded tracks are dropped, and the samples
+!  of each track are put next to each other
+!+
+!----------------------------------------------------------------
+subroutine finish_track_table(last_dump)
+ type(band), intent(in) :: last_dump
+ integer,      allocatable :: new_number(:),n_samples_track(:),next(:),track_end_new(:),first(:),last(:)
+ real,         allocatable :: t_entry(:),t_exit(:),time(:)
+ real(kind=4), allocatable :: state(:,:)
+ integer :: i,j,k,m
+
+ do i = 1,last_dump%n
+    k = last_dump%track(i)
+    if (k > 0) call end_track(k,window_start + replay_period,iend_vanish)
  enddo
- b%tab%nsamp = i0
 
-end subroutine append_track
-
-subroutine ensure_table_capacity(tab,ntr,nsamp)
- type(track_table), intent(inout) :: tab
- integer,           intent(in)    :: ntr,nsamp
- real(dp), allocatable :: rtmp(:)
- integer,  allocatable :: itmp(:)
- real(sp), allocatable :: tmp1(:),tmp2(:,:)
- integer :: ncap,nold,ns
-
- ns = max(tab%nscal,1)
- if (.not.allocated(tab%t_entry)) then
-    ncap = max(ntr,4096)
-    allocate(tab%t_entry(ncap),tab%t_exit(ncap),tab%iend(ncap),tab%isamp1(ncap),tab%nsampk(ncap))
- elseif (ntr > size(tab%t_entry)) then
-    ncap = max(ntr,2*size(tab%t_entry))
-    nold = tab%ntracks
-    allocate(rtmp(ncap)); rtmp(1:nold) = tab%t_entry(1:nold); call move_alloc(rtmp,tab%t_entry)
-    allocate(rtmp(ncap)); rtmp(1:nold) = tab%t_exit(1:nold);  call move_alloc(rtmp,tab%t_exit)
-    allocate(itmp(ncap)); itmp(1:nold) = tab%iend(1:nold);    call move_alloc(itmp,tab%iend)
-    allocate(itmp(ncap)); itmp(1:nold) = tab%isamp1(1:nold);  call move_alloc(itmp,tab%isamp1)
-    allocate(itmp(ncap)); itmp(1:nold) = tab%nsampk(1:nold);  call move_alloc(itmp,tab%nsampk)
- endif
-
- if (.not.allocated(tab%ts)) then
-    ncap = max(nsamp,65536)
-    allocate(tab%ts(ncap),tab%xs(3,ncap),tab%vs(3,ncap),tab%us(ncap),tab%hs(ncap),tab%scal(ns,ncap))
- elseif (nsamp > size(tab%ts)) then
-    ncap = max(nsamp,2*size(tab%ts))
-    nold = tab%nsamp
-    allocate(rtmp(ncap));    rtmp(1:nold)   = tab%ts(1:nold);     call move_alloc(rtmp,tab%ts)
-    allocate(tmp2(3,ncap));  tmp2(:,1:nold) = tab%xs(:,1:nold);   call move_alloc(tmp2,tab%xs)
-    allocate(tmp2(3,ncap));  tmp2(:,1:nold) = tab%vs(:,1:nold);   call move_alloc(tmp2,tab%vs)
-    allocate(tmp1(ncap));    tmp1(1:nold)   = tab%us(1:nold);     call move_alloc(tmp1,tab%us)
-    allocate(tmp1(ncap));    tmp1(1:nold)   = tab%hs(1:nold);     call move_alloc(tmp1,tab%hs)
-    allocate(tmp2(ns,ncap)); tmp2(:,1:nold) = tab%scal(:,1:nold); call move_alloc(tmp2,tab%scal)
- endif
-
-end subroutine ensure_table_capacity
-
-!-----------------------------------------------------------------------
-!+
-!  Keep the sink history over the window (for the luminosity replay)
-!+
-!-----------------------------------------------------------------------
-subroutine store_sinks(b,rec)
- type(replay_builder), intent(inout) :: b
- type(replay_record),  intent(in)    :: rec
- real(dp), allocatable :: rtmp(:),stmp(:,:,:)
- integer :: ncap,n
-
- if (rec%nsink < 1) return
- if (rec%time < b%tsink_lo .or. rec%time > b%tsink_hi) return
- if (b%tab%nsinkrec == 0) then
-    b%tab%nsink = rec%nsink
-    if (allocated(b%tab%tsink)) deallocate(b%tab%tsink,b%tab%sink)
-    allocate(b%tab%tsink(256),b%tab%sink(nsinkcol,rec%nsink,256))
- elseif (rec%nsink /= b%tab%nsink) then
-    return
- endif
- n = b%tab%nsinkrec
- if (n >= size(b%tab%tsink)) then
-    ncap = 2*size(b%tab%tsink)
-    allocate(rtmp(ncap)); rtmp(1:n) = b%tab%tsink(1:n); call move_alloc(rtmp,b%tab%tsink)
-    allocate(stmp(nsinkcol,b%tab%nsink,ncap)); stmp(:,:,1:n) = b%tab%sink(:,:,1:n)
-    call move_alloc(stmp,b%tab%sink)
- endif
- n = n + 1
- b%tab%tsink(n)    = rec%time
- b%tab%sink(:,:,n) = rec%sink(:,1:b%tab%nsink)
- b%tab%nsinkrec    = n
-
-end subroutine store_sinks
-
-!-----------------------------------------------------------------------
-!+
-!  Finish: tracks still open could end inside the window if the recording
-!  stopped too early, so they are counted
-!+
-!-----------------------------------------------------------------------
-subroutine builder_finalise(b,tab)
- type(replay_builder), intent(inout) :: b
- type(track_table),    intent(out)   :: tab
- integer :: k
-
- b%nopen = 0
- if (allocated(b%otr)) then
-    do k = 1,size(b%otr)
-       if (b%otr(k)%used) then
-          if (b%clip .and. b%otr(k)%t_entry < b%t0 + b%t_rec) then
-             call append_track(b,b%otr(k),b%t0 + b%t_rec,iend_vanish)
-             b%nvanish = b%nvanish + 1
-             if (b%otr(k)%unknown) b%nappear = b%nappear + 1
-          elseif (.not.b%otr(k)%unknown) then
-             b%nopen = b%nopen + 1
-          endif
-          call free_track(b,k)
-       endif
-    enddo
- endif
- call ensure_table_capacity(b%tab,max(b%tab%ntracks,1),max(b%tab%nsamp,1))
- tab = b%tab
-
-end subroutine builder_finalise
-
-!-----------------------------------------------------------------------
-!+
-!  Mass flux through r_inj and smoothing length there, from one record:
-!  h is averaged over the particles within hwin of r_inj, and the shell
-!  estimator uses dr = mean h
-!+
-!-----------------------------------------------------------------------
-subroutine record_stats(rec,pmass,r_inj,hwin,mout,mdin,vrf,h90,hmean)
- type(replay_record), intent(in)  :: rec
- real(dp),            intent(in)  :: pmass,r_inj,hwin
- real(dp),            intent(out) :: mout,mdin,vrf,h90,hmean
- real(dp), allocatable :: r(:),vr(:),hl(:)
- integer  :: i,n,nh
- real(dp) :: dr
-
- n = rec%nsel
- allocate(r(max(n,1)),vr(max(n,1)),hl(max(n,1)))
- nh = 0
- do i = 1,n
-    r(i)  = norm2(real(rec%x(:,i),dp))
-    vr(i) = 0._dp
-    if (r(i) > 0._dp) vr(i) = dot_product(real(rec%x(:,i),dp),real(rec%v(:,i),dp))/r(i)
-    if (abs(r(i) - r_inj) < hwin) then
-       nh = nh + 1
-       hl(nh) = rec%h(i)
+ ! new numbers of the tracks kept (0 if dropped), and their number of samples
+ allocate(new_number(n_tracks))
+ m = 0
+ do k = 1,n_tracks
+    new_number(k) = 0
+    if (track_end(k) > 0) then
+       m = m + 1
+       new_number(k) = m
     endif
  enddo
- if (nh >= 3) then
-    hmean = sum(hl(1:nh))/nh
-    h90   = percentile(nh,hl,0.9_dp)
-    dr    = hmean
+ allocate(n_samples_track(0:m))
+ n_samples_track = 0
+ do j = 1,n_samples
+    n_samples_track(new_number(sample_track(j))) = n_samples_track(new_number(sample_track(j))) + 1
+ enddo
+
+ ! the tracks kept, each with its range of samples
+ allocate(t_entry(m),t_exit(m),track_end_new(m),first(m),last(m),next(m))
+ j = 0
+ do k = 1,n_tracks
+    if (new_number(k) == 0) cycle
+    m = new_number(k)
+    t_entry(m)       = track_t_entry(k)
+    t_exit(m)        = track_t_exit(k)
+    track_end_new(m) = track_end(k)
+    first(m)         = j + 1
+    j                = j + n_samples_track(m)
+    last(m)          = j
+ enddo
+
+ ! their samples, which were recorded in time order and stay in time order
+ allocate(time(j),state(size(sample_state,1),j))
+ next = first
+ do j = 1,n_samples
+    m = new_number(sample_track(j))
+    if (m == 0) cycle
+    time(next(m))    = sample_time(j)
+    state(:,next(m)) = sample_state(:,j)
+    next(m) = next(m) + 1
+ enddo
+
+ n_tracks  = size(t_entry)
+ n_samples = size(time)
+ call move_alloc(t_entry,track_t_entry)
+ call move_alloc(t_exit,track_t_exit)
+ call move_alloc(track_end_new,track_end)
+ call move_alloc(first,track_first)
+ call move_alloc(last,track_last)
+ call move_alloc(time,sample_time)
+ call move_alloc(state,sample_state)
+ if (allocated(sample_track)) deallocate(sample_track)
+
+end subroutine finish_track_table
+
+!----------------------------------------------------------------
+!+
+!  State of track k at time t (recorded time). Outside its samples
+!  the position is extrapolated linearly
+!+
+!----------------------------------------------------------------
+subroutine get_track_state(k,t,state)
+ integer, intent(in)  :: k
+ real,    intent(in)  :: t
+ real,    intent(out) :: state(:)
+ integer :: lo,hi,mid
+
+ lo = track_first(k)
+ hi = track_last(k)
+ if (t <= sample_time(lo) .or. lo == hi) then
+    call extrapolate_sample(lo,t,state)
+ elseif (t >= sample_time(hi)) then
+    call extrapolate_sample(hi,t,state)
  else
-    hmean = 0._dp
-    h90   = 0._dp
-    dr    = hwin
- endif
- call shell_flux(n,r,vr,pmass,r_inj,dr,mout,mdin,vrf)
-
-end subroutine record_stats
-
-!-----------------------------------------------------------------------
-!+
-!  Write / read the track table
-!+
-!-----------------------------------------------------------------------
-subroutine write_track_table(fname,tab,ierr)
- character(len=*),  intent(in)  :: fname
- type(track_table), intent(in)  :: tab
- integer,           intent(out) :: ierr
- integer :: iunit,nt,ns,nsc
-
- open(newunit=iunit,file=fname,access='stream',form='unformatted',status='replace',action='write',iostat=ierr)
- if (ierr /= 0) return
- nt  = tab%ntracks
- ns  = tab%nsamp
- nsc = tab%nscal
- write(iunit) tabmagic,tabversion
- write(iunit) tab%udist,tab%umass,tab%utime,tab%pmass,tab%r_inj,tab%r_b,tab%t0,tab%t_rec,tab%period
- write(iunit) int(nsc,i4),int(tab%nsink,i4),int(nt,i4),int(ns,i4),int(tab%nsinkrec,i4)
- if (nsc > 0) write(iunit) tab%label(1:nsc)
- if (nt > 0) write(iunit) tab%t_entry(1:nt),tab%t_exit(1:nt),int(tab%iend(1:nt),i4), &
-                          int(tab%isamp1(1:nt),i4),int(tab%nsampk(1:nt),i4)
- if (ns > 0) then
-    write(iunit) tab%ts(1:ns),tab%xs(:,1:ns),tab%vs(:,1:ns),tab%us(1:ns),tab%hs(1:ns)
-    if (nsc > 0) write(iunit) tab%scal(1:nsc,1:ns)
- endif
- if (tab%nsinkrec > 0 .and. tab%nsink > 0) write(iunit) tab%tsink(1:tab%nsinkrec), &
-     tab%sink(:,1:tab%nsink,1:tab%nsinkrec)
- close(iunit)
-
-end subroutine write_track_table
-
-subroutine read_table_header_unit(iunit,tab,ierr)
- integer,           intent(in)    :: iunit
- type(track_table), intent(inout) :: tab
- integer,           intent(out)   :: ierr
- character(len=16) :: magic
- integer(i4) :: iversion,nsc,nsk,nt,ns,nsr
-
- read(iunit,iostat=ierr) magic,iversion
- if (ierr /= 0) return
- if (magic /= tabmagic .or. iversion /= tabversion) then
-    ierr = 1
-    return
- endif
- read(iunit,iostat=ierr) tab%udist,tab%umass,tab%utime,tab%pmass,tab%r_inj,tab%r_b,tab%t0,tab%t_rec,tab%period
- if (ierr /= 0) return
- read(iunit,iostat=ierr) nsc,nsk,nt,ns,nsr
- if (ierr /= 0) return
- tab%nscal    = nsc
- tab%nsink    = nsk
- tab%ntracks  = nt
- tab%nsamp    = ns
- tab%nsinkrec = nsr
- if (allocated(tab%label)) deallocate(tab%label)
- allocate(tab%label(max(nsc,0)))
- if (nsc > 0) read(iunit,iostat=ierr) tab%label(1:nsc)
-
-end subroutine read_table_header_unit
-
-subroutine read_track_table_header(fname,tab,ierr)
- character(len=*),  intent(in)  :: fname
- type(track_table), intent(out) :: tab
- integer,           intent(out) :: ierr
- integer :: iunit
-
- open(newunit=iunit,file=fname,access='stream',form='unformatted',status='old',action='read',iostat=ierr)
- if (ierr /= 0) return
- call read_table_header_unit(iunit,tab,ierr)
- close(iunit)
-
-end subroutine read_track_table_header
-
-subroutine read_track_table(fname,tab,ierr)
- character(len=*),  intent(in)  :: fname
- type(track_table), intent(out) :: tab
- integer,           intent(out) :: ierr
- integer(i4), allocatable :: itmp(:,:)
- integer :: iunit,nt,ns,nsc
-
- open(newunit=iunit,file=fname,access='stream',form='unformatted',status='old',action='read',iostat=ierr)
- if (ierr /= 0) return
- call read_table_header_unit(iunit,tab,ierr)
- if (ierr /= 0) then
-    close(iunit)
-    return
- endif
- nt  = tab%ntracks
- ns  = tab%nsamp
- nsc = tab%nscal
- allocate(tab%t_entry(max(nt,1)),tab%t_exit(max(nt,1)),tab%iend(max(nt,1)), &
-          tab%isamp1(max(nt,1)),tab%nsampk(max(nt,1)),itmp(max(nt,1),3))
- allocate(tab%ts(max(ns,1)),tab%xs(3,max(ns,1)),tab%vs(3,max(ns,1)),tab%us(max(ns,1)), &
-          tab%hs(max(ns,1)),tab%scal(max(nsc,1),max(ns,1)))
- if (nt > 0) then
-    read(iunit,iostat=ierr) tab%t_entry(1:nt),tab%t_exit(1:nt),itmp(1:nt,1),itmp(1:nt,2),itmp(1:nt,3)
-    if (ierr /= 0) goto 10
-    tab%iend(1:nt)   = itmp(1:nt,1)
-    tab%isamp1(1:nt) = itmp(1:nt,2)
-    tab%nsampk(1:nt) = itmp(1:nt,3)
- endif
- if (ns > 0) then
-    read(iunit,iostat=ierr) tab%ts(1:ns),tab%xs(:,1:ns),tab%vs(:,1:ns),tab%us(1:ns),tab%hs(1:ns)
-    if (ierr /= 0) goto 10
-    if (nsc > 0) read(iunit,iostat=ierr) tab%scal(1:nsc,1:ns)
-    if (ierr /= 0) goto 10
- endif
- if (tab%nsinkrec > 0 .and. tab%nsink > 0) then
-    allocate(tab%tsink(tab%nsinkrec),tab%sink(nsinkcol,tab%nsink,tab%nsinkrec))
-    read(iunit,iostat=ierr) tab%tsink,tab%sink
- else
-    tab%nsinkrec = 0
- endif
-10 close(iunit)
-
-end subroutine read_track_table
-
-!-----------------------------------------------------------------------
-!+
-!  State of track k at recorded time tau. Outside the samples the
-!  position is extrapolated linearly.
-!+
-!-----------------------------------------------------------------------
-subroutine interp_track(tab,k,tau,x,v,u,h,s)
- type(track_table), intent(in)  :: tab
- integer,           intent(in)  :: k
- real(dp),          intent(in)  :: tau
- real(dp),          intent(out) :: x(3),v(3),u,h,s(:)
- integer :: i1,i2,lo,hi,mid,ns
-
- ns = tab%nscal
- i1 = tab%isamp1(k)
- i2 = i1 + tab%nsampk(k) - 1
- if (tau <= tab%ts(i1) .or. i2 == i1) then
-    call sample_state(i1,tau - tab%ts(i1))
- elseif (tau >= tab%ts(i2)) then
-    call sample_state(i2,tau - tab%ts(i2))
- else
-    lo = i1
-    hi = i2
+    ! the two samples around t
     do while (hi - lo > 1)
        mid = (lo + hi)/2
-       if (tab%ts(mid) <= tau) then
+       if (sample_time(mid) <= t) then
           lo = mid
        else
           hi = mid
        endif
     enddo
-    call interp_state(tab%ts(lo),tab%xs(:,lo),tab%vs(:,lo),tab%us(lo),tab%hs(lo),tab%scal(1:ns,lo), &
-                      tab%ts(hi),tab%xs(:,hi),tab%vs(:,hi),tab%us(hi),tab%hs(hi),tab%scal(1:ns,hi), &
-                      tau,x,v,u,h,s(1:ns))
+    call interpolate_state(sample_time(lo),sample_state(:,lo),sample_time(hi),sample_state(:,hi),t,state)
  endif
 
-contains
+end subroutine get_track_state
 
- subroutine sample_state(i,dt)
-  integer,  intent(in) :: i
-  real(dp), intent(in) :: dt
-
-  x = tab%xs(:,i) + tab%vs(:,i)*dt
-  v = tab%vs(:,i)
-  u = tab%us(i)
-  h = tab%hs(i)
-  if (ns > 0) s(1:ns) = tab%scal(1:ns,i)
-
- end subroutine sample_state
-
-end subroutine interp_track
-
-!-----------------------------------------------------------------------
+!----------------------------------------------------------------
 !+
-!  Spawn order of the replay instances. Instance (k,n) of track k in
-!  cycle n is active for t_epoch + n t_rec + a_k <= t < t_epoch + n t_rec + b_k,
-!  with a_k = t_entry - t0 and b_k = t_exit - t0. With the entry phase
-!  phi_k = a_k mod t_rec and offset c_k = floor(a_k/t_rec), track k is
-!  spawned in global cycle M at t_epoch + M t_rec + phi_k as instance
-!  n = M - c_k, so that sorting by phi_k gives increasing spawn times.
+!  State of sample i, moved in a straight line to time t
 !+
-!-----------------------------------------------------------------------
-subroutine schedule_init(sch,tab,t_epoch)
- type(replay_schedule), intent(out) :: sch
- type(track_table),     intent(in)  :: tab
- real(dp),              intent(in)  :: t_epoch
- integer  :: k
- real(dp) :: a
+!----------------------------------------------------------------
+subroutine extrapolate_sample(i,t,state)
+ integer, intent(in)  :: i
+ real,    intent(in)  :: t
+ real,    intent(out) :: state(:)
 
- sch%t_epoch = t_epoch
- sch%t0      = tab%t0
- sch%t_rec   = tab%t_rec
- sch%ntr     = tab%ntracks
- allocate(sch%order(max(sch%ntr,1)),sch%coff(max(sch%ntr,1)),sch%phase(max(sch%ntr,1)))
- do k = 1,sch%ntr
-    a = tab%t_entry(k) - tab%t0
-    sch%coff(k)  = floor(a/sch%t_rec)
-    sch%phase(k) = a - sch%coff(k)*sch%t_rec
-    if (sch%phase(k) >= sch%t_rec) then
-       sch%phase(k) = sch%phase(k) - sch%t_rec
-       sch%coff(k)  = sch%coff(k) + 1
-    endif
-    if (sch%phase(k) < 0._dp) sch%phase(k) = 0._dp
- enddo
- call sort_index_dp(sch%ntr,sch%phase,sch%order)
- sch%mcycle = 0
- sch%jnext  = 1
+ state      = sample_state(:,i)
+ state(1:3) = state(1:3) + state(4:6)*(t - sample_time(i))
 
-end subroutine schedule_init
+end subroutine extrapolate_sample
 
-!-----------------------------------------------------------------------
+!----------------------------------------------------------------
 !+
-!  Point the schedule at the first spawn strictly after time t
+!  State at time t between two samples: Hermite for x and v,
+!  linear for u and the scalars, log-linear for h
 !+
-!-----------------------------------------------------------------------
-subroutine schedule_reset(sch,t)
- type(replay_schedule), intent(inout) :: sch
- real(dp),              intent(in)    :: t
- integer  :: m,lo,hi,mid
- real(dp) :: ph
+!----------------------------------------------------------------
+subroutine interpolate_state(t1,state1,t2,state2,t,state)
+ real,         intent(in)  :: t1,t2,t
+ real(kind=4), intent(in)  :: state1(:),state2(:)
+ real,         intent(out) :: state(:)
+ real :: f
 
- if (sch%ntr < 1) return
- m  = floor((t - sch%t_epoch)/sch%t_rec)
- ph = t - sch%t_epoch - m*sch%t_rec
- ! first j with phase(order(j)) > ph
- lo = 0
- hi = sch%ntr + 1
- do while (hi - lo > 1)
-    mid = (lo + hi)/2
-    if (sch%phase(sch%order(mid)) > ph) then
-       hi = mid
-    else
-       lo = mid
-    endif
- enddo
- if (hi > sch%ntr) then
-    sch%mcycle = m + 1
-    sch%jnext  = 1
+ call hermite_interpolation(real(state1(1:3)),real(state1(4:6)),real(state2(1:3)),real(state2(4:6)), &
+                            t1,t2,t,state(1:3),state(4:6))
+ f = 0.
+ if (t2 > t1) f = min(max((t - t1)/(t2 - t1),0.),1.)
+ state(7) = (1. - f)*state1(7) + f*state2(7)
+ if (state1(8) > 0. .and. state2(8) > 0.) then
+    state(8) = exp((1. - f)*log(real(state1(8))) + f*log(real(state2(8))))
  else
-    sch%mcycle = m
-    sch%jnext  = hi
+    state(8) = (1. - f)*state1(8) + f*state2(8)
  endif
+ state(nbase+1:) = (1. - f)*state1(nbase+1:) + f*state2(nbase+1:)
 
-end subroutine schedule_reset
+end subroutine interpolate_state
 
-!-----------------------------------------------------------------------
+!----------------------------------------------------------------
 !+
-!  Next instance (k,n) to spawn, if its spawn time is <= t
+!  Cubic Hermite interpolation of a path between (x1,v1) at t1
+!  and (x2,v2) at t2. The velocity is the time derivative of x
 !+
-!-----------------------------------------------------------------------
-subroutine schedule_next_spawn(sch,t,k,n,found)
- type(replay_schedule), intent(inout) :: sch
- real(dp),              intent(in)    :: t
- integer,               intent(out)   :: k,n
- logical,               intent(out)   :: found
+!----------------------------------------------------------------
+pure subroutine hermite_interpolation(x1,v1,x2,v2,t1,t2,t,x,v)
+ real, intent(in)  :: x1(3),v1(3),x2(3),v2(3),t1,t2,t
+ real, intent(out) :: x(3),v(3)
+ real :: dt,s,s2,s3
 
- found = .false.
- k = 0
- n = 0
- if (sch%ntr < 1) return
- do
-    k = sch%order(sch%jnext)
-    if (sch%t_epoch + sch%mcycle*sch%t_rec + sch%phase(k) > t) return
-    n = sch%mcycle - sch%coff(k)
-    sch%jnext = sch%jnext + 1
-    if (sch%jnext > sch%ntr) then
-       sch%jnext  = 1
-       sch%mcycle = sch%mcycle + 1
+ dt = t2 - t1
+ if (dt <= 0.) then
+    x = x1 + v1*(t - t1)
+    v = v1
+    return
+ endif
+ s  = (t - t1)/dt
+ s2 = s*s
+ s3 = s2*s
+ x = (2.*s3 - 3.*s2 + 1.)*x1 + (s3 - 2.*s2 + s)*dt*v1 &
+   + (-2.*s3 + 3.*s2)*x2 + (s3 - s2)*dt*v2
+ v = (6.*s2 - 6.*s)*(x1 - x2)/dt + (3.*s2 - 4.*s + 1.)*v1 + (3.*s2 - 2.*s)*v2
+
+end subroutine hermite_interpolation
+
+!----------------------------------------------------------------
+!+
+!  Time tc at which the Hermite path crosses the sphere of radius
+!  r, by bisection on |x|^2 - r^2 (found is false if it has the
+!  same sign at both ends)
+!+
+!----------------------------------------------------------------
+subroutine find_sphere_crossing(x1,v1,x2,v2,t1,t2,r,tc,found)
+ real,    intent(in)  :: x1(3),v1(3),x2(3),v2(3),t1,t2,r
+ real,    intent(out) :: tc
+ logical, intent(out) :: found
+ real    :: g_lo,g_hi,g_mid,t_lo,t_hi,x(3),v(3)
+ integer :: iter
+
+ g_lo  = dot_product(x1,x1) - r*r
+ g_hi  = dot_product(x2,x2) - r*r
+ tc    = t1
+ found = (g_lo <= 0. .or. g_hi <= 0.) .and. (g_lo >= 0. .or. g_hi >= 0.)
+ if (.not. found .or. abs(g_lo) <= tiny(g_lo)) return
+ if (abs(g_hi) <= tiny(g_hi)) then
+    tc = t2
+    return
+ endif
+ t_lo = t1
+ t_hi = t2
+ do iter = 1,200
+    tc = 0.5*(t_lo + t_hi)
+    call hermite_interpolation(x1,v1,x2,v2,t1,t2,tc,x,v)
+    g_mid = dot_product(x,x) - r*r
+    if (g_mid*g_lo < 0.) then
+       t_hi = tc
+    else
+       t_lo = tc
+       g_lo = g_mid
     endif
-    if (n >= 0) then
-       found = .true.
-       return
-    endif
+    if (t_hi - t_lo <= 1.e-14*(t2 - t1)) exit
  enddo
+ tc = 0.5*(t_lo + t_hi)
 
-end subroutine schedule_next_spawn
+end subroutine find_sphere_crossing
 
-!-----------------------------------------------------------------------
+!----------------------------------------------------------------
 !+
-!  All instances (k,n) active at time t (start or restart)
+!  Transformation applied to replay cycle n: none (mode 0), a
+!  random rotation (mode 1, reproducible, none for n = 0), or the
+!  mirror z -> -z for odd n (mode 2)
 !+
-!-----------------------------------------------------------------------
-subroutine active_instances_at(sch,tab,t,nact,klist,nlist)
- type(replay_schedule), intent(in)  :: sch
- type(track_table),     intent(in)  :: tab
- real(dp),              intent(in)  :: t
- integer,               intent(out) :: nact
- integer, allocatable,  intent(out) :: klist(:),nlist(:)
- integer, allocatable :: ktmp(:),ntmp(:)
- integer  :: k,n,nmin,nmax,ncap
- real(dp) :: a,b
+!----------------------------------------------------------------
+subroutine get_cycle_rotation(n,mode,rot)
+ integer, intent(in)  :: n,mode
+ real,    intent(out) :: rot(3,3)
+ integer(kind=8), parameter :: iseed = 20261108_8
+ real,            parameter :: pi = 3.141592653589793
+ integer(kind=8) :: state
+ real    :: u1,u2,u3,qw,qx,qy,qz
+ integer :: i
 
- ncap = max(1024,sch%ntr)
- allocate(klist(ncap),nlist(ncap))
- nact = 0
- do k = 1,sch%ntr
-    a = tab%t_entry(k) - tab%t0
-    b = tab%t_exit(k)  - tab%t0
-    nmax = floor((t - sch%t_epoch - a)/sch%t_rec)
-    nmin = max(0,floor((t - sch%t_epoch - b)/sch%t_rec) + 1)
-    do n = nmin,nmax
-       if (nact >= ncap) then
-          ncap = 2*ncap
-          allocate(ktmp(ncap),ntmp(ncap))
-          ktmp(1:nact) = klist(1:nact)
-          ntmp(1:nact) = nlist(1:nact)
-          call move_alloc(ktmp,klist)
-          call move_alloc(ntmp,nlist)
-       endif
-       nact = nact + 1
-       klist(nact) = k
-       nlist(nact) = n
-    enddo
- enddo
-
-end subroutine active_instances_at
-
-!-----------------------------------------------------------------------
-!+
-!  Transformation applied to the tracks of replay cycle n: none, a
-!  random rotation (deterministic in n and iseed, identity for n = 0)
-!  or the mirror z -> -z for odd n
-!+
-!-----------------------------------------------------------------------
-subroutine cycle_rotation(n,mode,iseed,rot)
- integer,  intent(in)  :: n,mode,iseed
- real(dp), intent(out) :: rot(3,3)
- integer(i8) :: state
- real(dp) :: u1,u2,u3,qw,qx,qy,qz
- integer  :: i
-
- rot = 0._dp
+ rot = 0.
  do i = 1,3
-    rot(i,i) = 1._dp
+    rot(i,i) = 1.
  enddo
  select case(mode)
- case(irot_random)
+ case(1)
     if (n == 0) return
-    state = mod(abs(int(iseed,i8))*7919_i8 + abs(int(n,i8))*104729_i8 + 12345_i8,2147483646_i8) + 1_i8
-    do i = 1,8
+    state = mod(iseed*7919_8 + abs(int(n,kind=8))*104729_8 + 12345_8,2147483646_8) + 1_8
+    do i = 1,9
        u1 = park_miller(state)
     enddo
-    u1 = park_miller(state)
     u2 = park_miller(state)
     u3 = park_miller(state)
     ! uniform random unit quaternion (Shoemake 1992)
-    qw = sqrt(1._dp - u1)*sin(2._dp*pi*u2)
-    qx = sqrt(1._dp - u1)*cos(2._dp*pi*u2)
-    qy = sqrt(u1)*sin(2._dp*pi*u3)
-    qz = sqrt(u1)*cos(2._dp*pi*u3)
-    rot(1,:) = [1._dp - 2._dp*(qy*qy + qz*qz), 2._dp*(qx*qy - qw*qz), 2._dp*(qx*qz + qw*qy)]
-    rot(2,:) = [2._dp*(qx*qy + qw*qz), 1._dp - 2._dp*(qx*qx + qz*qz), 2._dp*(qy*qz - qw*qx)]
-    rot(3,:) = [2._dp*(qx*qz - qw*qy), 2._dp*(qy*qz + qw*qx), 1._dp - 2._dp*(qx*qx + qy*qy)]
- case(irot_mirror)
-    if (mod(abs(n),2) == 1) rot(3,3) = -1._dp
+    qw = sqrt(1. - u1)*sin(2.*pi*u2)
+    qx = sqrt(1. - u1)*cos(2.*pi*u2)
+    qy = sqrt(u1)*sin(2.*pi*u3)
+    qz = sqrt(u1)*cos(2.*pi*u3)
+    rot(1,:) = [1. - 2.*(qy*qy + qz*qz), 2.*(qx*qy - qw*qz), 2.*(qx*qz + qw*qy)]
+    rot(2,:) = [2.*(qx*qy + qw*qz), 1. - 2.*(qx*qx + qz*qz), 2.*(qy*qz - qw*qx)]
+    rot(3,:) = [2.*(qx*qz - qw*qy), 2.*(qy*qz + qw*qx), 1. - 2.*(qx*qx + qy*qy)]
+ case(2)
+    if (mod(abs(n),2) == 1) rot(3,3) = -1.
  end select
 
-contains
+end subroutine get_cycle_rotation
 
- real(dp) function park_miller(st)
-  integer(i8), intent(inout) :: st
+!----------------------------------------------------------------
+!+
+!  Park-Miller random number generator: next number in (0,1)
+!+
+!----------------------------------------------------------------
+real function park_miller(state)
+ integer(kind=8), intent(inout) :: state
 
-  st = mod(16807_i8*st,2147483647_i8)
-  park_miller = real(st,dp)/2147483647._dp
+ state = mod(16807_8*state,2147483647_8)
+ park_miller = real(state)/2147483647.
 
- end function park_miller
+end function park_miller
 
-end subroutine cycle_rotation
+!----------------------------------------------------------------
+!+
+!  Empty the track table
+!+
+!----------------------------------------------------------------
+subroutine clear_table()
+
+ table_dumpfile = ''
+ table_udist    = 1.
+ table_umass    = 1.
+ table_utime    = 1.
+ particle_mass  = 0.
+ r_inj          = 0.
+ r_b            = 0.
+ window_start   = 0.
+ replay_period  = 0.
+ n_scalars      = 0
+ n_tracks       = 0
+ n_samples      = 0
+ n_dumps        = 0
+ n_sinks        = 0
+ if (allocated(scalar_names))  deallocate(scalar_names)
+ if (allocated(track_t_entry)) deallocate(track_t_entry)
+ if (allocated(track_t_exit))  deallocate(track_t_exit)
+ if (allocated(track_end))     deallocate(track_end)
+ if (allocated(track_first))   deallocate(track_first)
+ if (allocated(track_last))    deallocate(track_last)
+ if (allocated(sample_time))   deallocate(sample_time)
+ if (allocated(sample_state))  deallocate(sample_state)
+ if (allocated(dump_time))     deallocate(dump_time)
+ if (allocated(dump_lum))      deallocate(dump_lum)
+ if (allocated(sample_track))  deallocate(sample_track)
+
+end subroutine clear_table
+
+!----------------------------------------------------------------
+!+
+!  Write the track table to file
+!+
+!----------------------------------------------------------------
+subroutine write_track_table(ierr)
+ integer, intent(out) :: ierr
+ integer :: iunit
+
+ open(newunit=iunit,file=table_file,access='stream',form='unformatted',status='replace',action='write',iostat=ierr)
+ if (ierr /= 0) return
+ write(iunit) table_magic,table_version
+ write(iunit) table_dumpfile,table_udist,table_umass,table_utime,particle_mass,r_inj,r_b,window_start,replay_period
+ write(iunit) n_scalars,n_tracks,n_samples,n_dumps,n_sinks
+ write(iunit) scalar_names(1:n_scalars)
+ write(iunit) track_t_entry(1:n_tracks),track_t_exit(1:n_tracks),track_end(1:n_tracks), &
+              track_first(1:n_tracks),track_last(1:n_tracks)
+ write(iunit) sample_time(1:n_samples),sample_state(:,1:n_samples)
+ write(iunit) dump_time(1:n_dumps),dump_lum(:,1:n_dumps)
+ close(iunit)
+
+end subroutine write_track_table
+
+!----------------------------------------------------------------
+!+
+!  Read the track table from file
+!+
+!----------------------------------------------------------------
+subroutine read_track_table(ierr)
+ integer, intent(out) :: ierr
+ character(len=len(table_magic)) :: magic
+ integer :: iunit,version
+
+ call clear_table()
+ open(newunit=iunit,file=table_file,access='stream',form='unformatted',status='old',action='read',iostat=ierr)
+ if (ierr /= 0) return
+ read(iunit,iostat=ierr) magic,version
+ if (ierr == 0 .and. (magic /= table_magic .or. version /= table_version)) ierr = 1
+ if (ierr == 0) read(iunit,iostat=ierr) table_dumpfile,table_udist,table_umass,table_utime,particle_mass, &
+                                        r_inj,r_b,window_start,replay_period
+ if (ierr == 0) read(iunit,iostat=ierr) n_scalars,n_tracks,n_samples,n_dumps,n_sinks
+ if (ierr == 0) then
+    allocate(scalar_names(n_scalars),track_t_entry(n_tracks),track_t_exit(n_tracks),track_end(n_tracks), &
+             track_first(n_tracks),track_last(n_tracks),sample_time(n_samples), &
+             sample_state(nbase+n_scalars,n_samples),dump_time(n_dumps),dump_lum(n_sinks,n_dumps))
+    read(iunit,iostat=ierr) scalar_names
+ endif
+ if (ierr == 0) read(iunit,iostat=ierr) track_t_entry,track_t_exit,track_end,track_first,track_last
+ if (ierr == 0) read(iunit,iostat=ierr) sample_time,sample_state
+ if (ierr == 0) read(iunit,iostat=ierr) dump_time,dump_lum
+ close(iunit)
+
+end subroutine read_track_table
+
+!----------------------------------------------------------------
+!+
+!  Make room for n elements (the size is doubled when needed)
+!+
+!----------------------------------------------------------------
+subroutine grow_real(a,n)
+ real, allocatable, intent(inout) :: a(:)
+ integer,           intent(in)    :: n
+ real, allocatable :: tmp(:)
+
+ if (.not. allocated(a)) allocate(a(0))
+ if (n <= size(a)) return
+ allocate(tmp(max(n,2*size(a),1024)))
+ tmp(1:size(a)) = a
+ call move_alloc(tmp,a)
+
+end subroutine grow_real
+
+subroutine grow_int(a,n)
+ integer, allocatable, intent(inout) :: a(:)
+ integer,              intent(in)    :: n
+ integer, allocatable :: tmp(:)
+
+ if (.not. allocated(a)) allocate(a(0))
+ if (n <= size(a)) return
+ allocate(tmp(max(n,2*size(a),1024)))
+ tmp(1:size(a)) = a
+ call move_alloc(tmp,a)
+
+end subroutine grow_int
+
+subroutine grow_real4(a,n,nrow)
+ real(kind=4), allocatable, intent(inout) :: a(:,:)
+ integer,                   intent(in)    :: n,nrow
+ real(kind=4), allocatable :: tmp(:,:)
+
+ if (.not. allocated(a)) allocate(a(nrow,0))
+ if (n <= size(a,2)) return
+ allocate(tmp(nrow,max(n,2*size(a,2),1024)))
+ tmp(:,1:size(a,2)) = a
+ call move_alloc(tmp,a)
+
+end subroutine grow_real4
+
+!----------------------------------------------------------------
+!+
+!  Replay the tracks up to cycle ncycle: normally only that cycle,
+!  two cycles when one has ended since the last step
+!+
+!----------------------------------------------------------------
+subroutine replay_tracks(time,ncycle,irotate,xc,vc,npart,npartoftype,xyzh,vxyzu,xyzmh_ptmass)
+ real,    intent(in)    :: time,xc(3),vc(3)
+ integer, intent(in)    :: ncycle,irotate
+ integer, intent(inout) :: npart,npartoftype(:)
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:)
+ integer :: icycle
+
+ do icycle = cycle_last,ncycle
+    call replay_cycle(icycle,time,irotate,xc,vc,npart,npartoftype,xyzh,vxyzu,xyzmh_ptmass)
+    if (icycle < ncycle) call report_cycle(icycle)
+ enddo
+ cycle_last = ncycle
+
+end subroutine replay_tracks
+
+!----------------------------------------------------------------
+!+
+!  Create, move, release and remove the particles of the tracks
+!  in cycle icycle
+!+
+!----------------------------------------------------------------
+subroutine replay_cycle(icycle,time,irotate,xc,vc,npart,npartoftype,xyzh,vxyzu,xyzmh_ptmass)
+ use part, only:iboundary,kill_particle
+ integer, intent(in)    :: icycle,irotate
+ real,    intent(in)    :: time,xc(3),vc(3)
+ integer, intent(inout) :: npart,npartoftype(:)
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:)
+ real    :: tau,rot(3,3)
+ integer :: k
+
+ tau = time - icycle*replay_period
+ call get_cycle_rotation(icycle,irotate,rot)
+ do k = 1,n_tracks
+    if (track_cycle(k) < icycle .and. track_t_entry(k) <= tau) then
+       ! the recorded particle enters the buffer
+       track_cycle(k) = icycle
+       if (tau < track_t_exit(k)) then
+          call spawn_particle(k,tau,rot,xc,vc,npart,npartoftype,xyzh,vxyzu)
+          n_spawned = n_spawned + 1
+       elseif (track_end(k) == iend_release) then
+          ! the whole track was passed since the last step
+          call release_particle(npart+1,k,tau,rot,xc,vc,npart,npartoftype,xyzh,vxyzu,xyzmh_ptmass)
+       endif
+    elseif (track_particle(k) > 0) then
+       if (tau < track_t_exit(k)) then
+          call put_particle_on_track(track_particle(k),iboundary,k,tau,rot,xc,vc,npart,npartoftype,xyzh,vxyzu)
+       elseif (track_end(k) == iend_release) then
+          call release_particle(track_particle(k),k,tau,rot,xc,vc,npart,npartoftype,xyzh,vxyzu,xyzmh_ptmass)
+          track_particle(k) = 0
+       else
+          call kill_particle(track_particle(k),npartoftype)
+          track_particle(k) = 0
+          n_removed = n_removed + 1
+       endif
+    endif
+ enddo
+
+end subroutine replay_cycle
+
+!----------------------------------------------------------------
+!+
+!  First call of a run (start or restart): the buffer is rebuilt
+!  from the table, so nothing needs to be saved in the dumps
+!+
+!----------------------------------------------------------------
+subroutine start_replay(time,ncycle,npart,npartoftype,xyzh)
+ real,    intent(in)    :: time
+ integer, intent(in)    :: ncycle,npart
+ integer, intent(inout) :: npartoftype(:)
+ real,    intent(inout) :: xyzh(:,:)
+ real    :: tau
+ integer :: k,n_boundary_removed
+
+ call remove_boundary_particles(npart,npartoftype,xyzh,n_boundary_removed)
+ tau = time - ncycle*replay_period
+ do k = 1,n_tracks
+    track_particle(k) = 0
+    if (track_t_exit(k) <= tau) then
+       track_cycle(k) = ncycle       ! already over in this cycle
+    else
+       track_cycle(k) = ncycle - 1   ! started when tau reaches its entry time
+    endif
+ enddo
+ cycle_last     = ncycle
+ replay_started = .true.
+
+ print *, ''
+ print *, 'Replay starts at t =',time,' in cycle',ncycle
+ print *, 'Boundary particles removed:',n_boundary_removed
+
+end subroutine start_replay
+
+!----------------------------------------------------------------
+!+
+!  The particle arrays are reordered when dead particles are
+!  removed (before a dump is written): check that the buffer
+!  particles are still in place
+!+
+!----------------------------------------------------------------
+logical function buffer_is_intact(npart,xyzh)
+ use part, only:iorig,iphase,iamtype,iboundary,isdead_or_accreted
+ integer, intent(in) :: npart
+ real,    intent(in) :: xyzh(:,:)
+ integer :: i,k
+
+ buffer_is_intact = .true.
+ do k = 1,n_tracks
+    i = track_particle(k)
+    if (i == 0) cycle
+    if (i > npart) then
+       buffer_is_intact = .false.
+    elseif (iorig(i) /= track_particle_id(k) .or. iamtype(iphase(i)) /= iboundary .or. &
+            isdead_or_accreted(xyzh(4,i))) then
+       buffer_is_intact = .false.
+    endif
+    if (.not. buffer_is_intact) return
+ enddo
+
+end function buffer_is_intact
+
+!----------------------------------------------------------------
+!+
+!  Create the buffer particles again
+!+
+!----------------------------------------------------------------
+subroutine rebuild_buffer(time,irotate,xc,vc,npart,npartoftype,xyzh,vxyzu)
+ real,    intent(in)    :: time,xc(3),vc(3)
+ integer, intent(in)    :: irotate
+ integer, intent(inout) :: npart,npartoftype(:)
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
+ real    :: tau,rot(3,3)
+ integer :: k,n_boundary_removed
+
+ call remove_boundary_particles(npart,npartoftype,xyzh,n_boundary_removed)
+ tau = time - cycle_last*replay_period
+ call get_cycle_rotation(cycle_last,irotate,rot)
+ do k = 1,n_tracks
+    if (track_particle(k) > 0) call spawn_particle(k,tau,rot,xc,vc,npart,npartoftype,xyzh,vxyzu)
+ enddo
+
+end subroutine rebuild_buffer
+
+!----------------------------------------------------------------
+!+
+!  New boundary particle on track k
+!+
+!----------------------------------------------------------------
+subroutine spawn_particle(k,tau,rot,xc,vc,npart,npartoftype,xyzh,vxyzu)
+ use part, only:iorig,iboundary
+ integer, intent(in)    :: k
+ real,    intent(in)    :: tau,rot(3,3),xc(3),vc(3)
+ integer, intent(inout) :: npart,npartoftype(:)
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
+
+ call put_particle_on_track(npart+1,iboundary,k,tau,rot,xc,vc,npart,npartoftype,xyzh,vxyzu)
+ track_particle(k)    = npart
+ track_particle_id(k) = iorig(npart)
+
+end subroutine spawn_particle
+
+!----------------------------------------------------------------
+!+
+!  Particle i (npart+1 for a new one) on track k becomes gas,
+!  taking its mass from the sink
+!+
+!----------------------------------------------------------------
+subroutine release_particle(i,k,tau,rot,xc,vc,npart,npartoftype,xyzh,vxyzu,xyzmh_ptmass)
+ use part, only:igas,nptmass
+ integer, intent(in)    :: i,k
+ real,    intent(in)    :: tau,rot(3,3),xc(3),vc(3)
+ integer, intent(inout) :: npart,npartoftype(:)
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:)
+
+ call put_particle_on_track(i,igas,k,tau,rot,xc,vc,npart,npartoftype,xyzh,vxyzu)
+ if (nptmass > 0) xyzmh_ptmass(4,1) = xyzmh_ptmass(4,1) - particle_mass
+ n_released = n_released + 1
+
+end subroutine release_particle
+
+!----------------------------------------------------------------
+!+
+!  Put particle i (npart+1 for a new one) on track k at time tau,
+!  as a particle of type itype
+!+
+!----------------------------------------------------------------
+subroutine put_particle_on_track(i,itype,k,tau,rot,xc,vc,npart,npartoftype,xyzh,vxyzu)
+ use part,       only:iboundary,igas,iphase,iunknown
+ use partinject, only:add_or_update_particle
+ integer, intent(in)    :: i,itype,k
+ real,    intent(in)    :: tau,rot(3,3),xc(3),vc(3)
+ integer, intent(inout) :: npart,npartoftype(:)
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
+ real :: state(nbase+n_scalars),x(3),v(3)
+
+ call get_track_state(k,tau,state)
+ x = xc + matmul(rot,state(1:3))
+ v = vc + matmul(rot,state(4:6))
+ if (itype == iboundary .and. i <= npart) then
+    ! a boundary particle moved along its track (add_or_update_particle would not update h)
+    xyzh(1:3,i)  = x
+    xyzh(4,i)    = state(8)
+    vxyzu(1:3,i) = v
+    if (size(vxyzu,1) >= 4) vxyzu(4,i) = state(7)
+ else
+    call add_or_update_particle(itype,x,v,state(8),state(7),i,npart,npartoftype,xyzh,vxyzu)
+ endif
+ ! after add_or_update_particle, which resets mu, gamma and alpha
+ call apply_scalars(i,state)
+ ! so that update_injected_particles sets the timestep of the new gas particle
+ if (itype == igas) iphase(i) = int(iunknown,kind=kind(iphase))
+
+end subroutine put_particle_on_track
+
+!----------------------------------------------------------------
+!+
+!  Copy the recorded per-particle quantities to particle i
+!+
+!----------------------------------------------------------------
+subroutine apply_scalars(i,state)
+ use dim,  only:update_muGamma,maxalpha,maxp,store_dust_temperature,h2chemistry
+ use part, only:eos_vars,imu,igamma,alphaind,dust_temp,abundance,nabundances
+ integer, intent(in) :: i
+ real,    intent(in) :: state(:)
+
+ if (update_muGamma .and. irow_mu > 0)    eos_vars(imu,i)    = state(irow_mu)
+ if (update_muGamma .and. irow_gamma > 0) eos_vars(igamma,i) = state(irow_gamma)
+ if (maxalpha == maxp .and. irow_alpha > 0) alphaind(1,i) = real(state(irow_alpha),kind=kind(alphaind))
+ if (store_dust_temperature .and. irow_tdust > 0) dust_temp(i) = state(irow_tdust)
+ if (h2chemistry .and. irow_abundance > 0) &
+    abundance(1:nabundances,i) = state(irow_abundance:irow_abundance+nabundances-1)
+
+end subroutine apply_scalars
+
+!----------------------------------------------------------------
+!+
+!  Remove all boundary particles
+!+
+!----------------------------------------------------------------
+subroutine remove_boundary_particles(npart,npartoftype,xyzh,n_boundary_removed)
+ use part, only:iphase,iamtype,iboundary,isdead_or_accreted,kill_particle
+ integer, intent(in)    :: npart
+ integer, intent(inout) :: npartoftype(:)
+ real,    intent(inout) :: xyzh(:,:)
+ integer, intent(out)   :: n_boundary_removed
+ integer :: i
+
+ n_boundary_removed = 0
+ do i = 1,npart
+    if (isdead_or_accreted(xyzh(4,i))) cycle
+    if (iamtype(iphase(i)) == iboundary) then
+       call kill_particle(i,npartoftype)
+       n_boundary_removed = n_boundary_removed + 1
+    endif
+ enddo
+
+end subroutine remove_boundary_particles
+
+!----------------------------------------------------------------
+!+
+!  Remove the gas that has fallen back inside r_b
+!+
+!----------------------------------------------------------------
+subroutine kill_inner_gas(xc,npart,npartoftype,xyzh)
+ use part, only:iphase,iamtype,igas,isdead_or_accreted,kill_particle
+ real,    intent(in)    :: xc(3)
+ integer, intent(in)    :: npart
+ integer, intent(inout) :: npartoftype(:)
+ real,    intent(inout) :: xyzh(:,:)
+ real    :: dx(3)
+ integer :: i
+
+ do i = 1,npart
+    if (isdead_or_accreted(xyzh(4,i))) cycle
+    if (iamtype(iphase(i)) /= igas) cycle
+    dx = xyzh(1:3,i) - xc
+    if (dot_product(dx,dx) < r_b**2) then
+       call kill_particle(i,npartoftype)
+       n_killed = n_killed + 1
+    endif
+ enddo
+
+end subroutine kill_inner_gas
+
+!----------------------------------------------------------------
+!+
+!  Sink luminosity at the same phase of the recorded window (if
+!  the sinks were merged, the luminosities of the inner sinks are
+!  summed)
+!+
+!----------------------------------------------------------------
+subroutine replay_luminosity(time,xyzmh_ptmass)
+ use part, only:nptmass,ilum
+ real, intent(in)    :: time
+ real, intent(inout) :: xyzmh_ptmass(:,:)
+ real    :: t,f
+ integer :: j
+
+ if (n_dumps < 2 .or. n_sinks < 1 .or. nptmass < 1) return
+ t = window_start + modulo(time - window_start,replay_period)
+ j = 1
+ do while (j < n_dumps - 1 .and. dump_time(j+1) <= t)
+    j = j + 1
+ enddo
+ f = min(max((t - dump_time(j))/(dump_time(j+1) - dump_time(j)),0.),1.)
+ if (nptmass == n_sinks) then
+    xyzmh_ptmass(ilum,1:nptmass) = (1. - f)*dump_lum(:,j) + f*dump_lum(:,j+1)
+ else
+    xyzmh_ptmass(ilum,1) = sum((1. - f)*dump_lum(:,j) + f*dump_lum(:,j+1))
+ endif
+
+end subroutine replay_luminosity
+
+!----------------------------------------------------------------
+!+
+!  Centre of mass of the sinks (the tracks are relative to it)
+!+
+!----------------------------------------------------------------
+subroutine get_centre_of_mass(nsink,xyzmh,vxyz,xc,vc)
+ integer, intent(in)  :: nsink
+ real,    intent(in)  :: xyzmh(:,:),vxyz(:,:)
+ real,    intent(out) :: xc(3),vc(3)
+ real    :: mtot
+ integer :: k
+
+ xc   = 0.
+ vc   = 0.
+ mtot = 0.
+ do k = 1,nsink
+    if (xyzmh(4,k) <= 0.) cycle
+    xc   = xc + xyzmh(4,k)*xyzmh(1:3,k)
+    vc   = vc + xyzmh(4,k)*vxyz(1:3,k)
+    mtot = mtot + xyzmh(4,k)
+ enddo
+ if (mtot > 0.) then
+    xc = xc/mtot
+    vc = vc/mtot
+ endif
+
+end subroutine get_centre_of_mass
+
+!----------------------------------------------------------------
+!+
+!  Merge the sinks into one at their centre of mass, with their
+!  total mass and luminosity (the other properties are those of
+!  sink 1)
+!+
+!----------------------------------------------------------------
+subroutine merge_sinks(nptmass,xyzmh_ptmass,vxyz_ptmass)
+ use part, only:ilum
+ integer, intent(inout) :: nptmass
+ real,    intent(inout) :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ real :: xc(3),vc(3)
+
+ call get_centre_of_mass(nptmass,xyzmh_ptmass,vxyz_ptmass,xc,vc)
+ xyzmh_ptmass(1:3,1)  = xc
+ vxyz_ptmass(1:3,1)   = vc
+ xyzmh_ptmass(4,1)    = sum(xyzmh_ptmass(4,1:nptmass))
+ xyzmh_ptmass(ilum,1) = sum(xyzmh_ptmass(ilum,1:nptmass))
+ xyzmh_ptmass(:,2:nptmass) = 0.
+ vxyz_ptmass(:,2:nptmass)  = 0.
+ nptmass = 1
+
+end subroutine merge_sinks
+
+!----------------------------------------------------------------
+!+
+!  Summary of a replay cycle
+!+
+!----------------------------------------------------------------
+subroutine report_cycle(icycle)
+ use units,   only:umass,utime
+ use physcon, only:solarm,years
+ integer, intent(in) :: icycle
+
+ print *, ''
+ print *, ' Replay cycle               :', icycle
+ print *, ' Particles spawned          :', n_spawned
+ print *, ' Particles released         :', n_released
+ print *, ' Removed at end of track    :', n_removed
+ print *, ' Fallen back inside r_b     :', n_killed
+ print *, ' Replayed Mdot (Msun/yr)    :', n_released*particle_mass/replay_period*(umass/solarm)/(utime/years)
+ print *, ''
+ n_spawned  = 0
+ n_released = 0
+ n_removed  = 0
+ n_killed   = 0
+
+end subroutine report_cycle
+
+!----------------------------------------------------------------
+!+
+!  The q-th quantile (0 <= q <= 1) of a
+!+
+!----------------------------------------------------------------
+real function percentile(a,q)
+ use sortutils, only:indexx
+ real, intent(in) :: a(:),q
+ integer, allocatable :: isort(:)
+ integer :: n
+
+ n = size(a)
+ percentile = 0.
+ if (n < 1) return
+ allocate(isort(n))
+ call indexx(n,a,isort)
+ percentile = a(isort(min(max(1,nint(q*(n-1)) + 1),n)))
+
+end function percentile
 
 end module replayutils

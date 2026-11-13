@@ -70,7 +70,6 @@ subroutine testsuite(string,first,last,ntests,npass,nfail)
  use testlum,      only:test_lum
  use testmpi,      only:test_mpi
  use testlinalg,   only:test_linalg
- use testreplay,   only:test_replay
  use timing,       only:get_timings,print_time
  use mpiutils,     only:barrier_mpi
  use dim,          only:do_radiation,use_apr,gr,mpi,use_sinktree,maxp
@@ -82,7 +81,7 @@ subroutine testsuite(string,first,last,ntests,npass,nfail)
  logical :: doptmass,dognewton,dosedov,doexternf,doindtstep,dogravity,dogeom
  logical :: dosetdisc,dosetstar,doeos,docooling,dodust,donimhd,docorotate,doany,dogrowth
  logical :: dogr,doradiation,dopart,dopoly,dompi,dohier,dodamp,dowind
- logical :: doiorig,doapr,dounits,dolum,dosinktree,doorbits,dolinalg,doreplay
+ logical :: doiorig,doapr,dounits,dolum,dosinktree,doorbits,dolinalg
  real(kind=4) :: twall1,tcpu1,twall2,tcpu2
 
  call summary_initialise
@@ -142,7 +141,6 @@ subroutine testsuite(string,first,last,ntests,npass,nfail)
  dosinktree  = .false.
  doorbits    = .false.
  dolinalg    = .false.
- doreplay    = .false.
 
  if (index(string,'deriv')     /= 0) doderivs    = .true.
  if (index(string,'grav')      /= 0) dogravity   = .true.
@@ -170,11 +168,10 @@ subroutine testsuite(string,first,last,ntests,npass,nfail)
  if (index(string,'units')     /= 0) dounits     = .true.
  if (index(string,'sinktree')  /= 0) dosinktree  = .true.
  if (index(string,'orbits')    /= 0) doorbits    = .true.
- if (index(string,'replay')    /= 0) doreplay    = .true.
 
  doany = any((/doderivs,dogravity,dodust,dogrowth,donimhd,dorwdump,&
                doptmass,docooling,dogeom,dogr,docoala,doradiation,&
-               dopart,dopoly,dohier,dodamp,dowind,doiorig,doapr,dounits,dolum,doorbits,doreplay/))
+               dopart,dopoly,dohier,dodamp,dowind,doiorig,doapr,dounits,dolum,doorbits/))
 
  select case(trim(string))
  case('kernel','kern')
@@ -233,8 +230,6 @@ subroutine testsuite(string,first,last,ntests,npass,nfail)
     dosinktree = .true.
  case('linalg')
     dolinalg = .true.
- case('replay')
-    doreplay = .true.
  case default
     if (.not.doany) testall = .true.
  end select
@@ -480,12 +475,6 @@ subroutine testsuite(string,first,last,ntests,npass,nfail)
  if (doiorig .or. testall) then
     call test_iorig(ntests,npass)
     call set_default_options_testsuite(iverbose) ! restore defaults
- endif
-!
-!--test of periodic track replay
-!
- if (doreplay .or. testall) then
-    call test_replay(ntests,npass)
  endif
 !
 !--test of luminosity output
