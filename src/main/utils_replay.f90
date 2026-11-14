@@ -16,7 +16,8 @@ module replayutils
 ! :Runtime parameters: None
 !
 ! :Dependencies: dim, dump_utils, fileutils, infile_utils, io, kernel,
-!   part, partinject, physcon, readwrite_dumps_common, sortutils, units
+!   part, partinject, physcon, readwrite_dumps_common, sortutils, timing,
+!   units
 !
  use io, only:fatal,warning
  implicit none
@@ -126,10 +127,16 @@ subroutine init_replay(dumpfile,r_inj_wanted)
  integer :: i,n,ierr
 
  call read_track_table(ierr)
- if (ierr /= 0 .or. table_dumpfile /= dumpfile .or. abs(r_inj/r_inj_wanted - 1.) > 1.e-6) then
+ if (ierr == 0 .and. (table_dumpfile /= dumpfile .or. abs(r_inj/r_inj_wanted - 1.) > 1.e-6)) then
+    print *, ''
+    print *, table_file//' was built from other dumps or for another r_inj'
+    ierr = 1
+ endif
+ if (ierr /= 0) then
     call build_track_table(dumpfile,r_inj_wanted)
     call write_track_table(ierr)
     if (ierr /= 0) call warning(label,'could not write '//table_file)
+    if (ierr == 0) print *, 'Track table written to '//table_file
  else
     print *, ''
     print *, 'Track table read from '//table_file
@@ -206,7 +213,9 @@ subroutine build_track_table(dumpfile,r_inj_new)
  use units,     only:udist,umass,utime
  use kernel,    only:radkern
  use part,      only:igas,ilum
- use fileutils, only:getnextfilename
+ use fileutils, only:getnextfilename,basename
+ use timing,    only:getused
+ use io,        only:stdout
  character(len=*), intent(in) :: dumpfile
  real,             intent(in) :: r_inj_new
  type(inner_dump) :: dump
@@ -216,9 +225,11 @@ subroutine build_track_table(dumpfile,r_inj_new)
  integer, allocatable :: icolumn(:)
  real,    allocatable :: h_near(:)
  real    :: xc(3),vc(3),r,buffer_width,umdot
+ real(kind=4) :: t_start,t_now   ! wall time (s), from getused
  integer :: i,n,n_dumps_read,n_release
  logical :: iexist
 
+ call getused(t_start)
  filename = dumpfile
  print *, ''
  print *, 'Building the track table from '//trim(filename)//' and the following dumps'
@@ -271,7 +282,14 @@ subroutine build_track_table(dumpfile,r_inj_new)
     endif
  enddo
 
- ! add the dumps until one period has been covered
+ print *, ''
+ print *, ' Window (code time)         :', window_start, ' to', window_start + replay_period
+ print *, ' Buffer, r_b to r_inj (au)  :', r_b*udist/au, ' to', r_inj*udist/au
+ print "(1x,a,99(1x,a))", ' Recorded per particle      : x v u h', (trim(scalar_names(i)), i=1,n_scalars)
+ print *, ''
+ print "(1x,a)", '        time % of P   in band  in buffer  released    samples  wall (s)   dump'
+
+ ! add the dumps until one period has been covered, with one line of progress per dump
  n_dumps_read = 0
  do
     call get_band(dump,icolumn,r_inj_new - 1.5*buffer_width,r_inj_new + 0.5*buffer_width,now)
@@ -279,6 +297,11 @@ subroutine build_track_table(dumpfile,r_inj_new)
     call add_dump_to_table(prev,now)
     prev = now
     n_dumps_read = n_dumps_read + 1
+    call getused(t_now)
+    print "(1x,f12.4,i6,'%',i10,i11,i10,i11,f10.2,3x,a)", dump%time, &
+          nint(100.*(dump%time - window_start)/replay_period), now%n, count(now%track > 0), &
+          count(track_end(1:n_tracks) == iend_release), n_samples, t_now - t_start, trim(basename(filename))
+    flush(stdout)
     if (dump%time >= window_start + replay_period*(1. - 1.e-6)) exit
     filename = getnextfilename(filename)
     inquire(file=trim(filename),exist=iexist)
@@ -291,18 +314,15 @@ subroutine build_track_table(dumpfile,r_inj_new)
  umdot     = (umass/solarm)/(utime/years)
  n_release = count(track_end(1:n_tracks) == iend_release)
  print *, ''
- print *, ' Dumps read                 :', n_dumps_read, ' (up to '//trim(filename)//')'
- print *, ' Start of the window        :', window_start
- print *, ' Replay period              :', replay_period
- print *, ' r_b (au)                   :', r_b*udist/au
- print *, ' r_inj (au)                 :', r_inj*udist/au
+ print *, ' Dumps read                 :', n_dumps_read
  print *, ' Release tracks             :', n_release
  print *, ' Drop tracks                :', count(track_end(1:n_tracks) == iend_drop)
  print *, ' In the buffer at the start :', count(track_t_entry(1:n_tracks) <= window_start)
  print *, ' In the buffer at the end   :', count(track_end(1:n_tracks) == iend_vanish)
- print *, ' Samples                    :', n_samples
  print *, ' Replayed Mdot (Msun/yr)    :', n_release*particle_mass/replay_period*umdot
  if (n_out > 0) print *, ' Crossings of r_inj in/out  :', real(n_in)/n_out
+ call getused(t_now)
+ print "(1x,a,f10.2)", ' Time to build (s)          :', t_now - t_start
  print *, ''
  if (n_in > 0.05*n_out) call warning(label,'more than 5% of the gas crossing r_inj falls back: '// &
                                            'r_inj is too close to the star')
