@@ -212,7 +212,7 @@ subroutine build_track_table(dumpfile,r_inj_new)
  use physcon,   only:au,solarm,years
  use units,     only:udist,umass,utime
  use kernel,    only:radkern
- use part,      only:igas,ilum
+ use part,      only:igas,iboundary,ilum
  use fileutils, only:getnextfilename,basename
  use timing,    only:getused
  use io,        only:stdout
@@ -224,7 +224,7 @@ subroutine build_track_table(dumpfile,r_inj_new)
  character(len=lenlabel), allocatable :: all_names(:)
  integer, allocatable :: icolumn(:)
  real,    allocatable :: h_near(:)
- real    :: xc(3),vc(3),r,buffer_width,umdot
+ real    :: xc(3),vc(3),r,r_boundary,buffer_width,umdot
  real(kind=4) :: t_start,t_now   ! wall time (s), from getused
  integer :: i,n,n_dumps_read,n_release
  logical :: iexist
@@ -246,20 +246,27 @@ subroutine build_track_table(dumpfile,r_inj_new)
  sum_moved = 0.
  replay_period = calculate_replay_period(dumpfile,dump)
 
- ! buffer width: 1.2 kernel radii of the 90th percentile of h at r_inj
+ ! buffer width: 1.2 kernel radii of the 90th percentile of h at r_inj, and the outermost
+ ! boundary particle of the inner run (for a nested replay: the r_inj of the inner run)
  call get_centre_of_mass(dump%nptmass,dump%xyzmh_ptmass,dump%vxyz_ptmass,xc,vc)
  allocate(h_near(dump%npart))
  n = 0
+ r_boundary = 0.
  do i = 1,dump%npart
     r = norm2(dump%xyz(:,i) - xc)
     if (dump%itype(i) == igas .and. abs(r - r_inj_new) < 0.05*r_inj_new) then
        n = n + 1
        h_near(n) = dump%h(i)
+    elseif (dump%itype(i) == iboundary) then
+       r_boundary = max(r_boundary,r)
     endif
  enddo
  if (n < 20) call fatal(label,'too few particles at r_inj in '//trim(filename)//' to set the buffer width')
  buffer_width = 1.2*radkern*percentile(h_near(1:n),0.9)
  if (buffer_width >= r_inj_new) call fatal(label,'buffer wider than r_inj',var='buffer width (au)',val=buffer_width*udist/au)
+ ! the band around the buffer must be gas in the inner run, outside its boundary particles
+ if (r_inj_new - 1.5*buffer_width <= r_boundary) call fatal(label,'the band around the buffer reaches the '// &
+    'boundary particles of the inner run: increase r_inj',var='r_inj (au) at least',val=(r_boundary + 1.5*buffer_width)*udist/au)
 
  ! what the table is built from, and the per-particle quantities found in the dump
  table_dumpfile = dumpfile
@@ -337,8 +344,9 @@ end subroutine build_track_table
 
 !----------------------------------------------------------------
 !+
-!  Replay period: the orbital period of a binary, otherwise the
-!  pulsation period in the .in file of the inner run
+!  Replay period: that of the inner run if it is itself a replay
+!  run (nested replay), otherwise the orbital period of a binary,
+!  or the pulsation period in the .in file of the inner run
 !+
 !----------------------------------------------------------------
 real function calculate_replay_period(dumpfile,dump) result(period)
@@ -350,19 +358,32 @@ real function calculate_replay_period(dumpfile,dump) result(period)
  type(inner_dump), intent(in) :: dump
  type(inopts), allocatable :: db(:)
  character(len=200) :: infile
- real    :: pulsation_period_days,pulsation_period,dx(3),dv(3),gm,one_over_a
+ real    :: pulsation_period_days,pulsation_period,inner_replay_period,dx(3),dv(3),gm,one_over_a
  integer :: ierr
 
- ! pulsation period in the .in file of the inner run (0 if not found); with iwind=2
- ! the inner run computes it, and writes it to its .in file at every dump
+ ! in the .in file of the inner run (0 if not found): the pulsation period (with iwind=2 the
+ ! inner run computes it, and writes it to its .in file at every dump), and the replay period
+ ! (code units) that a replay run writes to its .in file
  period                = 0.
  pulsation_period_days = 0.
+ inner_replay_period   = 0.
  infile                = inner_infile(dumpfile)
  call open_db_from_file(db,infile,ireadin,ierr)
- if (ierr == 0) call read_inopt(pulsation_period_days,'pulsation_period',db,err=ierr)
+ if (ierr == 0) then
+    call read_inopt(pulsation_period_days,'pulsation_period',db,err=ierr)
+    if (ierr /= 0) pulsation_period_days = 0.
+    call read_inopt(inner_replay_period,'replay_period',db,err=ierr)
+    if (ierr /= 0) inner_replay_period = 0.
+ endif
  call close_db(db)
- if (ierr /= 0) pulsation_period_days = 0.
  pulsation_period = pulsation_period_days*days/utime
+
+ ! nested replay: the flow of an inner replay run repeats with its replay period
+ if (inner_replay_period > 0.) then
+    period = inner_replay_period
+    print *, 'Nested replay: replay period = that of the inner run (days):',period*utime/days
+    return
+ endif
 
  select case(dump%nptmass)
  case(1)

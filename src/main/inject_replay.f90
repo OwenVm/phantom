@@ -18,6 +18,7 @@ module inject
 !   - irotate         : *per-cycle transformation (0=none, 1=random rotation, 2=z-mirror)*
 !   - r_inj           : *injection radius of the outer run (au)*
 !   - replay_dumps    : *first full dump of the inner run of the replay period*
+!   - replay_period   : *replay period (code units), set by the run*
 !   - use_inner_dtmax : *dtmax = time between the dumps of the inner run (0=no, 1=yes)*
 !
 ! :Dependencies: dim, dynamic_dtmax, infile_utils, io, part, partinject,
@@ -156,12 +157,15 @@ end subroutine update_injected_par
 !----------------------------------------------------------------
 subroutine write_options_inject(iunit)
  use infile_utils, only:write_inopt
+ use replayutils,  only:replay_period
  integer, intent(in) :: iunit
 
  call write_inopt(trim(replay_dumps), 'replay_dumps',    'first full dump of the inner run of the replay period',iunit)
  call write_inopt(r_inj_au,           'r_inj',           'injection radius of the outer run (au)',iunit)
  call write_inopt(irotate,            'irotate',         'per-cycle transformation (0=none, 1=random rotation, 2=z-mirror)',iunit)
  call write_inopt(use_inner_dtmax,    'use_inner_dtmax', 'dtmax = time between the dumps of the inner run (0=no, 1=yes)',iunit)
+ ! not an input: the period found at the start of the run, read by a replay nested in this run
+ call write_inopt(replay_period,      'replay_period',   'replay period (code units), set by the run',iunit)
 
 end subroutine write_options_inject
 
@@ -175,6 +179,7 @@ subroutine read_options_inject(db,nerr)
  use infile_utils, only:inopts,read_inopt
  type(inopts), intent(inout) :: db(:)
  integer,      intent(inout) :: nerr
+ real    :: period_in_file
  integer :: ierr
 
  call read_inopt(replay_dumps,    'replay_dumps',    db,err=ierr)
@@ -182,6 +187,8 @@ subroutine read_options_inject(db,nerr)
  call read_inopt(r_inj_au,        'r_inj',           db,errcount=nerr,min=0.,default=50.)
  call read_inopt(irotate,         'irotate',         db,errcount=nerr,min=0,max=2,default=0)
  call read_inopt(use_inner_dtmax, 'use_inner_dtmax', db,errcount=nerr,min=0,max=1,default=0)
+ ! written by write_options_inject, not an input: read only so that it is not an unknown variable
+ call read_inopt(period_in_file,  'replay_period',   db,err=ierr)
 
 end subroutine read_options_inject
 
