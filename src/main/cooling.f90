@@ -23,10 +23,12 @@ module cooling
 ! :Owner: Lionel Siess
 !
 ! :Runtime parameters:
-!   - C_cool    : *factor controlling cooling timestep*
-!   - Tfloor    : *temperature floor (K); on if > 0*
-!   - icooling  : *cooling function (0=off, 1=library (step), 2=library (force),*
-!   - use_bound : *use criteria on the energy to activate cooling (0=off, 1=on)*
+!   - C_cool       : *factor controlling cooling timestep*
+!   - Tfloor       : *temperature floor (K); on if > 0*
+!   - cool_floor   : *cooling of bound gas (0=none [use_bound], 1=down to initial adiabat)*
+!   - floor_factor : *adiabat floor: P_floor = floor_factor*Kref*rho^gamma*
+!   - icooling     : *cooling function (0=off, 1=library (step), 2=library (force),*
+!   - use_bound    : *use criteria on the energy to activate cooling (0=off, 1=on)*
 !
 ! :Dependencies: chem, cooling_gammie, cooling_gammie_PL, cooling_ism,
 !   cooling_koyamainutsuka, cooling_radapprox, cooling_solver, dim, eos,
@@ -49,6 +51,9 @@ module cooling
  real,    public :: Tfloor = 10.                    ! [K]; set in .in file.  On if Tfloor > 0.
  real,    public :: ufloor = 0.                     ! [code units]; set in init_cooling
  integer, public :: use_bound = 0                   ! if true, only cool if e_tot > 0
+ integer, public :: cool_floor   = 0                ! 0=off (use_bound behaviour), 1=adiabat floor
+ real,    public :: floor_factor = 1.               ! f_K > 1: less cooling; f_K < 1: bound gas may cool below its initial adiabat (0 = no floor)
+ public :: apply_cooling_floor
  public :: T0_value,lambda_shock_cgs ! expose to public
 
  private
@@ -107,6 +112,11 @@ subroutine init_cooling(id,master,iprint,ierr)
  case default
     call init_cooling_solver(ierr)
  end select
+
+ !--the adiabat floor is applied in the step routine (cooling_abundances_update)
+ if (cool_floor == 1 .and. (.not.cooling_in_step .or. icooling == 9)) &
+    call fatal('cooling','cool_floor=1 requires cooling in the step routine (icooling=1)',&
+               var='icooling',ival=icooling)
 
  !--calculate the energy floor in code units
  if (icooling == 9) then
@@ -197,6 +207,34 @@ end subroutine energ_cooling
 
 !-----------------------------------------------------------------------
 !+
+!  Adiabat floor for bound gas: limit the cooling rate dudt such that
+!  the pressure does not drop below P_floor = floor_factor*Kref*rho^gamma_ref,
+!  i.e. the particle cannot radiate the entropy it was created with.
+!
+!  - above the floor  : cooled at the physical rate, but not below it
+!  - below the floor  : no further cooling, and NO artificial heating
+!  - heating (dudt>0) : passes unchanged
+!
+!  Kref and rho in code units; gamma_ref is the gamma used to define Kref,
+!  gammai the current adiabatic index of the particle (variable mu/gamma).
+!+
+!-----------------------------------------------------------------------
+subroutine apply_cooling_floor(ui,rhoi,Krefi,gamma_ref,gammai,dt,dudt)
+ real, intent(in)    :: ui,rhoi,Krefi,gamma_ref,gammai,dt
+ real, intent(inout) :: dudt
+ real :: u_fl,unew,gam
+
+ if (dt <= 0. .or. Krefi <= 0. .or. dudt >= 0.) return
+ gam = gammai
+ if (gam <= 1.) gam = gamma_ref
+ u_fl = floor_factor*Krefi*rhoi**(gamma_ref - 1.)/(gam - 1.)
+ unew = max(ui + dt*dudt, min(ui, u_fl))
+ dudt = (unew - ui)/dt
+
+end subroutine apply_cooling_floor
+
+!-----------------------------------------------------------------------
+!+
 !  writes input options to the input file
 !+
 !-----------------------------------------------------------------------
@@ -231,6 +269,9 @@ subroutine write_options_cooling(iunit)
  if (icooling > 0) then
     call write_inopt(Tfloor,'Tfloor','temperature floor (K); on if > 0',iunit)
     call write_inopt(use_bound,'use_bound','use criteria on the energy to activate cooling (0=off, 1=on)',iunit)
+    call write_inopt(cool_floor,'cool_floor','cooling of bound gas (0=none [use_bound], 1=down to initial adiabat)',iunit)
+    if (cool_floor == 1) call write_inopt(floor_factor,'floor_factor',&
+                                          'adiabat floor: P_floor = floor_factor*Kref*rho^gamma',iunit)
  endif
 
 end subroutine write_options_cooling
@@ -242,6 +283,7 @@ end subroutine write_options_cooling
 !-----------------------------------------------------------------------
 subroutine read_options_cooling(db,nerr)
  use io,                only:error
+ use dim,               only:store_ref_entropy
  use eos,               only:ipdv_heating,ishock_heating,eos_allows_shock_and_work,ieos
  use cooling_gammie,    only:read_options_cooling_gammie
  use cooling_gammie_PL, only:read_options_cooling_gammie_PL
@@ -262,6 +304,10 @@ subroutine read_options_cooling(db,nerr)
  call read_inopt(C_cool,'C_cool',db,errcount=nerr,min=0.,default=C_cool)
  call read_inopt(Tfloor,'Tfloor',db,errcount=nerr,min=0.,default=Tfloor)
  call read_inopt(use_bound,'use_bound',db,errcount=nerr,min=0,max=1,default=use_bound)
+ call read_inopt(cool_floor,'cool_floor',db,errcount=nerr,min=0,max=1,default=cool_floor)
+ call read_inopt(floor_factor,'floor_factor',db,errcount=nerr,min=0.,default=floor_factor)
+ ! the floor needs the per-particle reference entropy (allocated & dumped)
+ if (icooling > 0 .and. cool_floor == 1) store_ref_entropy = .true.
 
  select case(icooling)
  case(0,5,6)

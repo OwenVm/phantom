@@ -56,6 +56,9 @@ module dim
 
  integer :: maxTdust = 0
  logical :: store_dust_temperature = .false.
+ ! reference entropy K_ref = P/rho^gamma used by the adiabat cooling floor (cool_floor=1)
+ integer :: maxKref = 0
+ logical :: store_ref_entropy = .false.
 #ifdef SINK_RADIATION
  logical, parameter :: sink_radiation = .true.
 #else
@@ -384,6 +387,7 @@ subroutine update_max_sizes(n,ntot)
  if (curlv) ndivcurlv = 4
 
  if (store_dust_temperature) maxTdust = maxp
+ if (store_ref_entropy) maxKref = maxp
  if (do_nucleation) maxp_nucleation = maxp
 
 #ifdef NCELLSMAX

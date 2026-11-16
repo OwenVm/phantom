@@ -34,8 +34,8 @@ module inject
 !   - verbose           : *enable verbose output (0=off, 1=on)*
 !   - wss               : *radial/tangential spacing ratio*
 !
-! :Dependencies: dust_formation, eos, infile_utils, injectutils, io, part,
-!   physcon, timestep, units, wind_pulsating
+! :Dependencies: dim, dust_formation, eos, infile_utils, injectutils, io,
+!   part, physcon, timestep, units, wind_pulsating
 !
  use io,      only:fatal
  use physcon, only:pi
@@ -354,6 +354,7 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
 
  if (.not. boundary_info_ready) then
     call reconstruct_boundary_info(time,xyzh,xyzmh_ptmass)
+    call fill_missing_Kref(npart,xyzh,vxyzu)
     time_last_reinject = time - mod(time,reinject_period)
  endif
 
@@ -466,6 +467,7 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  call inject_geodesic_sphere(n_shells_total + n_reinjections, npart+1, particles_to_inject, r_inject, &
                              piston_velocity*cos(phase), u, rho, npart, npartoftype, xyzh, vxyzu, igas, x0, v0, &
                              wind_emitting_sink)
+ call set_Kref(old_npart+1,npart,P,rho)
 
  xyzmh_ptmass(4,wind_emitting_sink) = xyzmh_ptmass(4,wind_emitting_sink) - (npart - old_npart)*mass_of_gas_particle
 
@@ -492,7 +494,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
  real,    intent(in)    :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(inout) :: npart,npartoftype(:)
- integer :: i
+ integer :: i,n0
  real    :: rho,u,T,P,x0(3),v0(3)
 
  x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
@@ -506,8 +508,10 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  enddo
  do i = 1,n_shells_total
     call interp_stellar_profile(shell_radii_gas(i),rho,P,u,T)
+    n0 = npart
     call inject_geodesic_sphere(n_shells_bnd+i, npart+1, npart_per_shell(i), shell_radii_gas(i), 0., u, rho, &
                                 npart, npartoftype, xyzh, vxyzu, igas, x0, v0, wind_emitting_sink)
+    call set_Kref(n0+1,npart,P,rho)
  enddo
 
  n_boundary_particles = npartoftype(iboundary)
@@ -549,6 +553,58 @@ subroutine reconstruct_boundary_info(time,xyzh,xyzmh_ptmass)
  endif
 
 end subroutine reconstruct_boundary_info
+
+!----------------------------------------------------------------
+!+
+!  Assign the reference entropy Kref = P_hs/rho_hs^gamma of the
+!  hydrostatic profile to particles i1..i2 (cooling floor, cool_floor=1).
+!  P and rho in code units, as returned by interp_stellar_profile.
+!+
+!----------------------------------------------------------------
+subroutine set_Kref(i1,i2,P,rho)
+ use dim,  only:store_ref_entropy
+ use part, only:Kref
+ use eos,  only:gamma
+ integer, intent(in) :: i1,i2
+ real,    intent(in) :: P,rho
+
+ if (.not. store_ref_entropy .or. i2 < i1) return
+ Kref(i1:i2) = P/rho**gamma
+
+end subroutine set_Kref
+
+!----------------------------------------------------------------
+!+
+!  On restart from a dump without Kref (older dumps): use the current
+!  entropy of each gas particle as its reference. This can never make
+!  the atmosphere collapse, but it keeps any entropy excess that is
+!  already present. Fresh runs are preferred for production.
+!+
+!----------------------------------------------------------------
+subroutine fill_missing_Kref(npart,xyzh,vxyzu)
+ use dim,  only:store_ref_entropy,maxp,maxphase
+ use part, only:Kref,igas,iphase,iamtype,massoftype,rhoh
+ use eos,  only:gamma
+ integer, intent(in) :: npart
+ real,    intent(in) :: xyzh(:,:),vxyzu(:,:)
+ integer :: i,nfilled
+ real    :: rhoi
+
+ if (.not. store_ref_entropy) return
+ nfilled = 0
+ do i = 1,npart
+    if (Kref(i) > 0. .or. xyzh(4,i) <= 0.) cycle
+    if (maxphase == maxp) then
+       if (iamtype(iphase(i)) /= igas) cycle
+    endif
+    rhoi    = rhoh(xyzh(4,i),massoftype(igas))
+    Kref(i) = (gamma - 1.)*vxyzu(4,i)*rhoi**(1. - gamma)
+    nfilled = nfilled + 1
+ enddo
+ if (nfilled > 0) print "(a,i10,a)",' WARNING: Kref missing for ',nfilled, &
+                        ' gas particles; using their current entropy as cooling floor'
+
+end subroutine fill_missing_Kref
 
 !----------------------------------------------------------------
 !+
