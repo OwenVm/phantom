@@ -34,8 +34,9 @@ module inject
 !   - verbose           : *enable verbose output (0=off, 1=on)*
 !   - wss               : *radial/tangential spacing ratio*
 !
-! :Dependencies: dim, dust_formation, eos, infile_utils, injectutils, io,
-!   part, physcon, timestep, units, wind_pulsating
+! :Dependencies: cooling_functions, cooling_solver, dim, dust_formation, eos,
+!   infile_utils, injectutils, io, part, physcon, ptmass_radiation,
+!   timestep, units, wind_pulsating
 !
  use io,      only:fatal
  use physcon, only:pi
@@ -130,7 +131,8 @@ end subroutine set_default_options_inject
 !----------------------------------------------------------------
 subroutine init_inject(ierr)
  use physcon,        only:days,au,solarm,km
- use eos,            only:gmw,gamma
+ use eos,            only:gmw,gamma,icooling
+ use cooling_solver, only:heat_inner
  use units,          only:utime,umass,udist,unit_velocity,unit_luminosity
  use part,           only:xyzmh_ptmass,massoftype,igas,iboundary,nptmass,iTeff,iReff,iLum,npartoftype
  use injectutils,    only:get_neighb_distance,seed_random
@@ -210,6 +212,7 @@ subroutine init_inject(ierr)
 
  call setup_star(Mstar*umass, Tstar, r_max*au, r_min*au, gmw, gamma, rho_inner, rho_power_in)
  call calc_stellar_profile(n_profile_points)
+ if (heat_inner == 1 .and. icooling > 0) call build_inner_heating()
 
  n_shells_bnd   = min(iboundary_spheres, nshells)
  n_shells_total = nshells - n_shells_bnd
@@ -293,6 +296,94 @@ end subroutine init_inject
 
 !----------------------------------------------------------------
 !+
+!  Table for heating_inner (cooling_functions): constant heating that
+!  cancels the cooling of the initial hydrostatic atmosphere, stored
+!  as a function of Tdust (monotonic in r)
+!+
+!----------------------------------------------------------------
+subroutine build_inner_heating()
+ use wind_pulsating,   only:interp_stellar_profile,stellar_1D
+ use cooling_functions,only:set_inner_heating,clear_inner_heating
+ use cooling_solver,   only:calc_cooling_rate
+ use dust_formation,   only:calc_muGamma
+ use dim,              only:update_muGamma,store_dust_temperature
+ use eos,              only:gmw,gamma
+ use part,             only:xyzmh_ptmass,nptmass,maxeosvars,itemp
+ use physcon,          only:Rg,au
+ use units,            only:udist,unit_density,unit_ergg,utime
+ use ptmass_radiation, only:iget_tdust,get_dust_temperature_from_ptmass
+ use io,               only:warning,fatal
+ integer, parameter :: ngrid = 4000
+ real    :: r_tab(ngrid),rate_tab(ngrid),T_tab(ngrid),mu_tab(ngrid),u_tab(ngrid)
+ real    :: rho_tab(ngrid),gam_tab(ngrid),Td_tab(ngrid)
+ real, allocatable :: xyzh_tab(:,:),eos_tab(:,:),tau_tab(:),taul_tab(:)
+ real    :: r_lo,r_hi,P,Tprof,pH,pH_tot,Q,dlnQ_dlnT
+ integer :: j,k,nlist
+ integer, parameter :: nprint = 8
+
+ if (.not.store_dust_temperature) call fatal(label,'heat_inner requires the dust temperature to be stored (e.g. ieos=5)')
+ r_lo = stellar_1D(1,1)/udist
+ r_hi = stellar_1D(1,size(stellar_1D,2))/udist
+ if (iget_tdust == 3 .or. iget_tdust == 4) call warning(label, &
+    'inner heating: optical depth taken as zero when evaluating Tdust (iget_tdust=3,4)')
+
+ do j = 1,ngrid
+    r_tab(j) = r_lo + (r_hi - r_lo)*real(j-1)/real(ngrid-1)
+    call interp_stellar_profile(r_tab(j),rho_tab(j),P,u_tab(j),Tprof)
+    mu_tab(j)  = gmw
+    gam_tab(j) = gamma
+    T_tab(j)   = (gam_tab(j) - 1.)*mu_tab(j)*u_tab(j)*unit_ergg/Rg
+    if (update_muGamma) call calc_muGamma(rho_tab(j)*unit_density,T_tab(j),mu_tab(j),gam_tab(j),pH,pH_tot)
+    T_tab(j)   = (gam_tab(j) - 1.)*mu_tab(j)*u_tab(j)*unit_ergg/Rg
+ enddo
+
+ allocate(xyzh_tab(4,ngrid),eos_tab(maxeosvars,ngrid),tau_tab(ngrid),taul_tab(ngrid))
+ xyzh_tab(1,:) = xyzmh_ptmass(1,wind_emitting_sink) + r_tab
+ xyzh_tab(2,:) = xyzmh_ptmass(2,wind_emitting_sink)
+ xyzh_tab(3,:) = xyzmh_ptmass(3,wind_emitting_sink)
+ xyzh_tab(4,:) = 1.          
+ eos_tab       = 0.
+ eos_tab(itemp,:) = T_tab    
+ tau_tab  = 0.
+ taul_tab = 0.
+ Td_tab   = T_tab           
+ call get_dust_temperature_from_ptmass(ngrid,xyzh_tab,eos_tab,nptmass,xyzmh_ptmass,Td_tab,tau=tau_tab,tau_lucy=taul_tab)
+ deallocate(xyzh_tab,eos_tab,tau_tab,taul_tab)
+
+ ! the heating is a function of Tdust, so Tdust must decrease monotonically with r
+ if (any(Td_tab(2:ngrid) >= Td_tab(1:ngrid-1))) call fatal(label, &
+    'heat_inner needs a dust temperature that decreases monotonically with r (e.g. iget_tdust=1)')
+
+ ! Gamma = -(net rate of all other active terms) [erg/g/s]; any previous table is
+ ! cleared first so that heating_inner itself does not contribute
+ call clear_inner_heating()
+ do j = 1,ngrid
+    call calc_cooling_rate(Q,dlnQ_dlnT,rho_tab(j),T_tab(j),Td_tab(j),mu_tab(j),gam_tab(j),0.,0.,divv=0.)
+    rate_tab(j) = -Q*unit_ergg/utime
+ enddo
+ ! stored vs Tdust in ascending order (outermost radius first)
+ call set_inner_heating(Td_tab(ngrid:1:-1),rate_tab(ngrid:1:-1),T_tab(ngrid:1:-1))
+
+ if (verbose == 1) then
+    print "(/,a)",' Inner heating Gamma = -cooling of the initial hydrostatic atmosphere:'
+    print "(a)",  '     r [au]   Tdust [K]       T [K]       mu      Gamma [erg/g/s]   u/Gamma [Ppuls]'
+    nlist = nprint
+    do k = 1,nlist
+       j = 1 + (ngrid-1)*(k-1)/(nlist-1)
+       if (abs(rate_tab(j)) > 0.) then
+          print "(1x,f10.4,2x,f10.2,2x,es11.4,2x,f7.4,4x,es11.4,6x,es11.4)",r_tab(j)*udist/au,Td_tab(j),T_tab(j), &
+                mu_tab(j),rate_tab(j),u_tab(j)*unit_ergg/abs(rate_tab(j))/(pulsation_period*utime)
+       else
+          print "(1x,f10.4,2x,f10.2,2x,es11.4,2x,f7.4,4x,es11.4,6x,a)",r_tab(j)*udist/au,Td_tab(j),T_tab(j), &
+                mu_tab(j),rate_tab(j),'   -'
+       endif
+    enddo
+ endif
+
+end subroutine build_inner_heating
+
+!----------------------------------------------------------------
+!+
 !  Derive n_particles_first from the target particle mass and the
 !  power-law density profile at r_min.
 !+
@@ -354,7 +445,6 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
 
  if (.not. boundary_info_ready) then
     call reconstruct_boundary_info(time,xyzh,xyzmh_ptmass)
-    call fill_missing_Kref(npart,xyzh,vxyzu)
     time_last_reinject = time - mod(time,reinject_period)
  endif
 
@@ -467,7 +557,6 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  call inject_geodesic_sphere(n_shells_total + n_reinjections, npart+1, particles_to_inject, r_inject, &
                              piston_velocity*cos(phase), u, rho, npart, npartoftype, xyzh, vxyzu, igas, x0, v0, &
                              wind_emitting_sink)
- call set_Kref(old_npart+1,npart,P,rho)
 
  xyzmh_ptmass(4,wind_emitting_sink) = xyzmh_ptmass(4,wind_emitting_sink) - (npart - old_npart)*mass_of_gas_particle
 
@@ -494,7 +583,7 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
  real,    intent(in)    :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(inout) :: npart,npartoftype(:)
- integer :: i,n0
+ integer :: i
  real    :: rho,u,T,P,x0(3),v0(3)
 
  x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
@@ -508,10 +597,8 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  enddo
  do i = 1,n_shells_total
     call interp_stellar_profile(shell_radii_gas(i),rho,P,u,T)
-    n0 = npart
     call inject_geodesic_sphere(n_shells_bnd+i, npart+1, npart_per_shell(i), shell_radii_gas(i), 0., u, rho, &
                                 npart, npartoftype, xyzh, vxyzu, igas, x0, v0, wind_emitting_sink)
-    call set_Kref(n0+1,npart,P,rho)
  enddo
 
  n_boundary_particles = npartoftype(iboundary)
@@ -553,58 +640,6 @@ subroutine reconstruct_boundary_info(time,xyzh,xyzmh_ptmass)
  endif
 
 end subroutine reconstruct_boundary_info
-
-!----------------------------------------------------------------
-!+
-!  Assign the reference entropy Kref = P_hs/rho_hs^gamma of the
-!  hydrostatic profile to particles i1..i2 (cooling floor, cool_floor=1).
-!  P and rho in code units, as returned by interp_stellar_profile.
-!+
-!----------------------------------------------------------------
-subroutine set_Kref(i1,i2,P,rho)
- use dim,  only:store_ref_entropy
- use part, only:Kref
- use eos,  only:gamma
- integer, intent(in) :: i1,i2
- real,    intent(in) :: P,rho
-
- if (.not. store_ref_entropy .or. i2 < i1) return
- Kref(i1:i2) = P/rho**gamma
-
-end subroutine set_Kref
-
-!----------------------------------------------------------------
-!+
-!  On restart from a dump without Kref (older dumps): use the current
-!  entropy of each gas particle as its reference. This can never make
-!  the atmosphere collapse, but it keeps any entropy excess that is
-!  already present. Fresh runs are preferred for production.
-!+
-!----------------------------------------------------------------
-subroutine fill_missing_Kref(npart,xyzh,vxyzu)
- use dim,  only:store_ref_entropy,maxp,maxphase
- use part, only:Kref,igas,iphase,iamtype,massoftype,rhoh
- use eos,  only:gamma
- integer, intent(in) :: npart
- real,    intent(in) :: xyzh(:,:),vxyzu(:,:)
- integer :: i,nfilled
- real    :: rhoi
-
- if (.not. store_ref_entropy) return
- nfilled = 0
- do i = 1,npart
-    if (Kref(i) > 0. .or. xyzh(4,i) <= 0.) cycle
-    if (maxphase == maxp) then
-       if (iamtype(iphase(i)) /= igas) cycle
-    endif
-    rhoi    = rhoh(xyzh(4,i),massoftype(igas))
-    Kref(i) = (gamma - 1.)*vxyzu(4,i)*rhoi**(1. - gamma)
-    nfilled = nfilled + 1
- enddo
- if (nfilled > 0) print "(a,i10,a)",' WARNING: Kref missing for ',nfilled, &
-                        ' gas particles; using their current entropy as cooling floor'
-
-end subroutine fill_missing_Kref
 
 !----------------------------------------------------------------
 !+

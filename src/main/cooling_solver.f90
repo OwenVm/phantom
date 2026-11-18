@@ -27,6 +27,7 @@ module cooling_solver
 !   - D06_H2vib      : *Decin+2006 H2 vibrational cooling (1=on/0=off)*
 !   - D06_Texc_ratio : *H2O excitation temperature ratio T_exc/T*
 !   - D06_cosmicrays : *Decin+2006 cosmic ray heating (1=on/0=off)*
+!   - heat_inner     : *heating cancelling the cooling of the initial atmosphere (1=on/0=off)*
 !   - D06_d2g        : *dust-to-gas mass ratio*
 !   - D06_dustgas    : *Decin+2006 dust-gas heat exchange (1=on/0=off)*
 !   - D06_fH2O       : *H2O abundance n_H2O/n_H2*
@@ -58,6 +59,8 @@ module cooling_solver
  ! Decin et al. (2006) heating & cooling terms
  integer, public :: D06_friction = 0, D06_photoelectric = 0, D06_dustgas = 0, &
                     D06_cosmicrays = 0, D06_H2O = 0, D06_H2vib = 0
+ ! constant heating balancing the cooling of the initial hydrostatic atmosphere (pulsating wind)
+ integer, public :: heat_inner = 0
  integer, parameter :: nTg  = 64
  real :: Tref = 1.d7 !higher value of the temperature grid (for exact cooling)
  real :: Tgrid(nTg)
@@ -100,9 +103,12 @@ subroutine init_cooling_solver(ierr)
  !heating terms can make Q change sign, which the exact solver does not handle
  if (icool_method == 2 .and. (D06_friction+D06_photoelectric+D06_dustgas+D06_cosmicrays) > 0) &
     call warning(label,'Decin heating terms with exact cooling solver: use icool_method=0')
+ if (icool_method == 2 .and. heat_inner == 1) &
+    call warning(label,'heat_inner with exact cooling solver: use icool_method=0')
  !if no cooling flag activated, disable cooling
  if ( (excitation_HI+relax_Bowen+dust_collision+relax_Stefan+shock_problem+high_temp+CO_cooling &
-       +H2O_cooling+H2O_vib_cooling+D06_friction+D06_photoelectric+D06_dustgas+D06_cosmicrays+D06_H2O+D06_H2vib) == 0) then
+       +H2O_cooling+H2O_vib_cooling+D06_friction+D06_photoelectric+D06_dustgas+D06_cosmicrays+D06_H2O+D06_H2vib &
+       +heat_inner) == 0) then
     print *,'ERROR: no cooling prescription activated'
     ierr = 2
  endif
@@ -365,7 +371,7 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
      cooling_radiative_relaxation,piecewise_law, &
      cooling_high_temp,testing_cooling_functions,cooling_CO_rot,cooling_H2O_rot,cooling_H2O_vib,&
      heating_friction_D06,heating_photoelectric_D06,heating_dustgas_D06,&
-     heating_cosmicrays_D06,cooling_H2O_rot_D06,cooling_H2_vib_D06
+     heating_cosmicrays_D06,cooling_H2O_rot_D06,cooling_H2_vib_D06,heating_inner
 
  real, intent(in)  :: rho, T, Teq     !rho in code units
  real, intent(in)  :: mu, gamma
@@ -380,12 +386,14 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
  real :: Q_hightemp, dlnQ_hightemp
  real :: Q_fric, Q_pe, Q_dg, Q_cr, Q_H2O, Q_H2vib
  real :: dlnQ_fric, dlnQ_pe, dlnQ_dg, dlnQ_cr, dlnQ_H2O, dlnQ_H2vib
+ real :: Q_inner, dlnQ_inner
  real :: rho_cgs, ndens
 
  rho_cgs = rho*unit_density
  ndens   = rho_cgs/mass_proton_cgs
 
  Q_H0              = 0.
+ Q_inner           = 0.
  Q_relax_Bowen     = 0.
  Q_col_dust        = 0.
  Q_relax_Stefan    = 0.
@@ -403,6 +411,7 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
  Q_H2vib           = 0.
 
  dlnQ_H0           = 0.
+ dlnQ_inner        = 0.
  dlnQ_relax_Bowen  = 0.
  dlnQ_col_dust     = 0.
  dlnQ_relax_Stefan = 0.
@@ -446,8 +455,11 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
  if (D06_H2O           == 1) call cooling_H2O_rot_D06(T, rho_cgs, mu, Q_H2O, dlnQ_H2O)
  if (D06_H2vib         == 1) call cooling_H2_vib_D06(T, rho_cgs, mu, Q_H2vib, dlnQ_H2vib)
 
+ !heating cancelling the cooling of the initial hydrostatic atmosphere (function of Tdust = Teq)
+ if (heat_inner        == 1) call heating_inner(T, Teq, Q_inner, dlnQ_inner)
+
  Q_cgs = Q_H0 + Q_relax_Bowen + Q_col_dust + Q_relax_Stefan + Q_molec + Q_shock + Q_hightemp + Q_CO &
-       + Q_H2O_NK + Q_H2Ovib_NK + Q_fric + Q_pe + Q_dg + Q_cr + Q_H2O + Q_H2vib
+       + Q_H2O_NK + Q_H2Ovib_NK + Q_fric + Q_pe + Q_dg + Q_cr + Q_H2O + Q_H2vib + Q_inner
 
  if (Q_cgs == 0.) then
     dlnQ_dlnT = 0.
@@ -457,7 +469,7 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
    + Q_hightemp*dlnQ_hightemp &
                + Q_CO*dlnQ_CO + Q_H2O_NK*dlnQ_H2O_NK + Q_H2Ovib_NK*dlnQ_H2Ovib_NK &
                + Q_fric*dlnQ_fric + Q_pe*dlnQ_pe + Q_dg*dlnQ_dg + Q_cr*dlnQ_cr &
-               + Q_H2O*dlnQ_H2O + Q_H2vib*dlnQ_H2vib) / Q_cgs
+               + Q_H2O*dlnQ_H2O + Q_H2vib*dlnQ_H2vib + Q_inner*dlnQ_inner) / Q_cgs
  endif
 
  !limit exponent to prevent overflow
@@ -626,6 +638,7 @@ subroutine write_options_cooling_solver(iunit)
  call write_inopt(D06_cosmicrays,'D06_cosmicrays','Decin+2006 cosmic ray heating (1=on/0=off)',iunit)
  call write_inopt(D06_H2O,'D06_H2O','Decin+2006 H2O rotational cooling (1=on/0=off)',iunit)
  call write_inopt(D06_H2vib,'D06_H2vib','Decin+2006 H2 vibrational cooling (1=on/0=off)',iunit)
+ call write_inopt(heat_inner,'heat_inner','heating cancelling the cooling of the initial atmosphere (1=on/0=off)',iunit)
  if (D06_friction == 1) call write_inopt(D06_vdrift,'D06_vdrift','dust drift velocity (cm/s)',iunit)
  if ((D06_friction+D06_dustgas) > 0) call write_inopt(D06_d2g,'D06_d2g','dust-to-gas mass ratio',iunit)
  if (D06_H2O == 1) then
@@ -670,6 +683,7 @@ subroutine read_options_cooling_solver(db,nerr)
  call read_inopt(D06_cosmicrays,'D06_cosmicrays',db,errcount=nerr,min=0,max=1,default=D06_cosmicrays)
  call read_inopt(D06_H2O,'D06_H2O',db,errcount=nerr,min=0,max=1,default=D06_H2O)
  call read_inopt(D06_H2vib,'D06_H2vib',db,errcount=nerr,min=0,max=1,default=D06_H2vib)
+ call read_inopt(heat_inner,'heat_inner',db,errcount=nerr,min=0,max=1,default=heat_inner)
  if (D06_friction == 1) call read_inopt(D06_vdrift,'D06_vdrift',db,errcount=nerr,min=0.,default=D06_vdrift)
  if ((D06_friction+D06_dustgas) > 0) call read_inopt(D06_d2g,'D06_d2g',db,errcount=nerr,min=0.,default=D06_d2g)
  if (D06_H2O == 1) then

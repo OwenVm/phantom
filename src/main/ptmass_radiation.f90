@@ -33,7 +33,7 @@ module ptmass_radiation
 
  public :: get_rad_accel_from_ptmass,calc_alpha
  public :: read_options_ptmass_radiation,write_options_ptmass_radiation
- public :: get_dust_temperature
+ public :: get_dust_temperature,get_dust_temperature_from_ptmass
  public :: init_radiation_ptmass
 
  private

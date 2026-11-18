@@ -1060,10 +1060,9 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
  use chem,            only:update_abundances,get_dphot
  use dust_formation,  only:evolve_dust,calc_muGamma
  use units,           only:unit_density
- use cooling,         only:energ_cooling,cooling_in_step,use_bound,cool_floor,apply_cooling_floor
+ use cooling,         only:energ_cooling,cooling_in_step,use_bound
  use eos_HIIR,        only:muion,Tion
- use eos,             only:gamma_ref=>gamma
- use part,            only:xyzmh_ptmass,vxyz_ptmass,Kref
+ use part,            only:xyzmh_ptmass,vxyz_ptmass
 #ifdef KROME
  use part,            only: T_gas_cool
  use krome_interface, only:update_krome
@@ -1080,8 +1079,8 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
 
  real :: dudtcool,rhoi,dphot,pH,pH_tot
  real :: abundi(nabn)
- logical :: unbound,do_cool,floor_on
- real :: e_pot, e_kin, e_therm, gammai
+ logical :: unbound
+ real :: e_pot, e_kin, e_therm
 
  dudtcool = 0.
  rhoi = rhoh(xyzh(4,i),pmassi)
@@ -1115,12 +1114,8 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
  ! COOLING
  !
 
- !
- ! Energy criterion w.r.t. the AGB star (sink 1 only, so that gas bound to a
- ! companion still counts as unbound and can cool). Used if use_bound=1 or cool_floor=1.
- !
  unbound = .true.
- if (use_bound == 1 .or. cool_floor == 1) then
+ if (use_bound == 1) then
     unbound = .false.
     e_pot = - xyzmh_ptmass(4, 1) / sqrt( (xyzh(1,i) - xyzmh_ptmass(1, 1))**2 + (xyzh(2,i) - xyzmh_ptmass(2, 1))**2 &
                                        + (xyzh(3,i) - xyzmh_ptmass(3, 1))**2 )
@@ -1130,24 +1125,8 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
     e_therm = vxyzu(4,i)
     if (e_kin + e_therm + e_pot > 0.) unbound = .true.
  endif
- !
- ! unbound gas            : cooled as usual
- ! bound gas, cool_floor=0: not cooled (original use_bound behaviour)
- ! bound gas, cool_floor=1: cooled, but not below its initial adiabat (Kref);
- !                          without a valid Kref fall back to no cooling
- !
- do_cool  = (icooling > 0 .and. cooling_in_step .and. icooling/=9)
- floor_on = .false.
- if (.not.unbound) then
-    if (cool_floor == 1) then
-       floor_on = .true.
-       if (Kref(i) <= 0.) do_cool = .false.   ! nested: Kref only allocated if cool_floor=1
-    else
-       do_cool = .false.
-    endif
- endif
 
- if (do_cool) then
+ if (icooling > 0 .and. cooling_in_step .and. icooling/=9 .and. unbound) then
     if (h2chemistry) then
        !
        ! Call cooling routine, requiring total density, some distance measure and
@@ -1169,19 +1148,6 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
     else
        ! cooling without stored dust temperature
        call energ_cooling(xyzh(1,i),xyzh(2,i),xyzh(3,i),vxyzu(4,i),rhoi,dt,divcurlv(1,i),dudtcool,ipart=i)
-    endif
-    !
-    ! adiabat floor for bound gas: never radiate below P = floor_factor*Kref*rho^gamma
-    ! (use the same adiabatic index as was passed to the cooling routine)
-    !
-    if (floor_on) then
-       gammai = gamma_ref
-       if (store_dust_temperature .and. do_nucleation) then
-          gammai = nucleation(idgamma,i)
-       elseif (h2chemistry .or. update_muGamma) then
-          gammai = eos_vars(igamma,i)
-       endif
-       call apply_cooling_floor(vxyzu(4,i),rhoi,Kref(i),gamma_ref,gammai,dt,dudtcool)
     endif
  endif
 #endif

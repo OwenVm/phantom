@@ -52,7 +52,8 @@ module cooling_functions
            saha_fractions, &
            heating_friction_D06, heating_photoelectric_D06, &
            heating_dustgas_D06, heating_cosmicrays_D06, &
-           cooling_H2O_rot_D06, cooling_H2_vib_D06
+           cooling_H2O_rot_D06, cooling_H2_vib_D06, &
+           heating_inner, set_inner_heating, clear_inner_heating
 
   private
   real, parameter  :: xH = 0.7, xHe = 0.28 !assumed H and He mass fractions
@@ -60,6 +61,11 @@ module cooling_functions
   real, parameter  :: amin_D06 = 5.e-7, amax_D06 = 2.5e-5, rhos_D06 = 3.3, xe_D06 = 3.e-4
   ! Neufeld & Kaufman (1993): temperature range of the tabulated H2O cooling parameters
   real, parameter  :: Tmin_NK93 = 100., Tmax_NK93 = 4000.
+  ! inner heating (heat_inner=1): heating rate Gamma [erg/g/s] that cancels the cooling of the initial
+  ! hydrostatic atmosphere, and its temperature T_hs [K], tabulated vs Tdust (ascending), set by the
+  ! injection module. Tdust is a monotonic function of the distance to the star (e.g. iget_tdust=1).
+  real, allocatable :: heat_tab_Td(:), heat_tab_rate(:), heat_tab_T(:)
+  real, parameter   :: heat_dTfrac = 0.05   ! heating switched off between T_hs and (1+heat_dTfrac)*T_hs
 
 contains
 !-----------------------------------------------------------------------
@@ -1441,5 +1447,76 @@ real function heat_Compton(T_gas, rho_gas)
  endif
 
 end function heat_Compton
+
+!-----------------------------------------------------------------------
+!+
+!  Inner heating: constant heating that cancels the net cooling of the
+!  initial hydrostatic atmosphere
+!+
+!-----------------------------------------------------------------------
+subroutine heating_inner(T, Tdust, Q_cgs, dlnQ_dlnT)
+ real, intent(in)  :: T, Tdust
+ real, intent(out) :: Q_cgs, dlnQ_dlnT
+ integer :: n,ilo,ihi,imid
+ real    :: w,Gam,Tref,x
+
+ Q_cgs     = 0.
+ dlnQ_dlnT = 0.
+ if (.not.allocated(heat_tab_Td)) return
+ n = size(heat_tab_Td)
+ if (n < 2) return
+ if (Tdust < heat_tab_Td(1) .or. Tdust > heat_tab_Td(n)) return
+ ilo = 1
+ ihi = n
+ do while (ihi - ilo > 1)
+    imid = (ilo + ihi)/2
+    if (heat_tab_Td(imid) > Tdust) then
+       ihi = imid
+    else
+       ilo = imid
+    endif
+ enddo
+ w    = (Tdust - heat_tab_Td(ilo))/(heat_tab_Td(ihi) - heat_tab_Td(ilo))
+ Gam  = (1. - w)*heat_tab_rate(ilo) + w*heat_tab_rate(ihi)
+ Tref = (1. - w)*heat_tab_T(ilo)    + w*heat_tab_T(ihi)
+
+ x = (T/Tref - 1.)/heat_dTfrac
+ if (x <= 0.) then
+    Q_cgs = Gam
+ elseif (x < 1.) then
+    Q_cgs     = Gam*(1. - x)
+    dlnQ_dlnT = -(T/Tref)/heat_dTfrac/(1. - x)
+ endif
+
+end subroutine heating_inner
+
+!-----------------------------------------------------------------------
+!+
+!  Store the inner heating table
+!+
+!-----------------------------------------------------------------------
+subroutine set_inner_heating(Tdust,rate,Thyd)
+ real, intent(in) :: Tdust(:),rate(:),Thyd(:)
+ integer :: n
+
+ n = size(Tdust)
+ call clear_inner_heating()
+ allocate(heat_tab_Td(n),heat_tab_rate(n),heat_tab_T(n))
+ heat_tab_Td   = Tdust
+ heat_tab_rate = rate(1:n)
+ heat_tab_T    = Thyd(1:n)
+
+end subroutine set_inner_heating
+
+!-----------------------------------------------------------------------
+!+
+!  Remove the inner heating table (heating_inner then returns zero)
+!+
+!-----------------------------------------------------------------------
+subroutine clear_inner_heating()
+
+ if (allocated(heat_tab_Td)) deallocate(heat_tab_Td,heat_tab_rate,heat_tab_T)
+
+end subroutine clear_inner_heating
 
 end module cooling_functions

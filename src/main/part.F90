@@ -31,7 +31,7 @@ module part
                use_dust,use_dustgrowth,track_lum,maxlum,nalpha,maxmhdni, &
                maxp_growth,maxdusttypes,maxdustsmall,maxdustlarge, &
                maxphase,maxgradh,maxan,maxdustan,maxmhdan,maxprad,maxp_nucleation,&
-               maxTdust,store_dust_temperature,maxKref,store_ref_entropy,use_krome,maxp_krome, &
+               maxTdust,store_dust_temperature,use_krome,maxp_krome, &
                do_radiation,gr,maxgr,maxgran,n_nden_phantom,do_nucleation,&
                inucleation,itau_alloc,itauL_alloc,inject_parts,use_apr,apr_maxlevel,&
                maxp_apr,maxptmassgr,use_sinktree,nvel_ptmass
@@ -266,12 +266,6 @@ module part
 !
  real, allocatable :: cool_rate(:)
  character(len=*), parameter :: cool_rate_label = 'cool_rate'
-!
-!--reference entropy K_ref = P/rho^gamma assigned at particle creation,
-!  used as a floor on radiative cooling of bound gas (cool_floor=1).
-!  Kref < 0 means "no reference available".
-!
- real, allocatable :: Kref(:)
 !
 !--Dust formation - theory of moments
 !
@@ -529,7 +523,6 @@ subroutine allocate_part
  call allocate_array('dustproppred', dustproppred, 2, maxp_growth)
  call allocate_array('filfacpred', filfacpred, maxp_growth)
  call allocate_array('dust_temp',dust_temp,maxTdust)
- call allocate_array('Kref',Kref,maxKref)
  call allocate_array('rad', rad, maxirad, maxprad)
  call allocate_array('radpred', radpred, maxirad, maxprad)
  call allocate_array('drad', drad, maxirad, maxprad)
@@ -636,7 +629,6 @@ subroutine deallocate_part
  if (allocated(cool_rate))    deallocate(cool_rate)
  if (allocated(T_gas_cool))   deallocate(T_gas_cool)
  if (allocated(dust_temp))    deallocate(dust_temp)
- if (allocated(Kref))         deallocate(Kref)
  if (allocated(rad))          deallocate(rad,radpred,drad,radprop)
  if (allocated(iphase))       deallocate(iphase)
  if (allocated(gradh))        deallocate(gradh)
@@ -715,7 +707,6 @@ subroutine init_part
     abundance(iHI,:) = 1.  ! assume all atomic hydrogen initially
  endif
  if (store_dust_temperature) dust_temp = -1.
- if (store_ref_entropy) Kref = -1.
  !-- Initialise dust properties to zero
  if (use_dustgrowth) then
     dustprop(:,:)    = 0.
@@ -1293,7 +1284,6 @@ subroutine copy_particle(src,dst,new_part)
  if (maxp_h2==maxp .or. maxp_krome==maxp) abundance(:,dst) = abundance(:,src)
  eos_vars(:,dst) = eos_vars(:,src)
  if (store_dust_temperature) dust_temp(dst) = dust_temp(src)
- if (store_ref_entropy) Kref(dst) = Kref(src)
  if (do_nucleation) nucleation(:,dst) = nucleation(:,src)
  if (itau_alloc == 1) tau(dst) = tau(src)
  if (itauL_alloc == 1) tau_lucy(dst) = tau_lucy(src)
@@ -1397,7 +1387,6 @@ subroutine copy_particle_all(src,dst,new_part)
  if (maxp_h2==maxp .or. maxp_krome==maxp) abundance(:,dst) = abundance(:,src)
  eos_vars(:,dst) = eos_vars(:,src)
  if (store_dust_temperature) dust_temp(dst) = dust_temp(src)
- if (store_ref_entropy) Kref(dst) = Kref(src)
  if (do_nucleation) nucleation(:,dst) = nucleation(:,src)
  if (itau_alloc == 1) tau(dst) = tau(src)
  if (itauL_alloc == 1) tau_lucy(dst) = tau_lucy(src)
@@ -1511,7 +1500,6 @@ subroutine combine_two_particles(keep,discard)
  if (maxp_h2==maxp .or. maxp_krome==maxp) abundance(:,keep) = 0.5*(abundance(:,keep) + abundance(:,discard))
  eos_vars(:,keep) = 0.5*(eos_vars(:,keep) + eos_vars(:,discard))
  if (store_dust_temperature) dust_temp(keep) = 0.5*(dust_temp(keep) + dust_temp(discard))
- if (store_ref_entropy) Kref(keep) = min(Kref(keep),Kref(discard))  ! conservative: lower floor
  if (do_nucleation) nucleation(:,keep) = 0.5*(nucleation(:,keep) + nucleation(:,discard))
  if (itau_alloc == 1) tau(keep) = 0.5*(tau(keep) + tau(discard))
  if (itauL_alloc == 1) tau_lucy(keep) = 0.5*(tau_lucy(keep) + tau_lucy(discard))
@@ -1718,9 +1706,6 @@ subroutine fill_sendbuf(i,xtemp,nbuf)
     if (store_dust_temperature) then
        call fill_buffer(xtemp, dust_temp(i),nbuf)
     endif
-    if (store_ref_entropy) then
-       call fill_buffer(xtemp, Kref(i),nbuf)
-    endif
     if (do_nucleation) then
        call fill_buffer(xtemp, nucleation(:,i),nbuf)
     endif
@@ -1807,9 +1792,6 @@ subroutine unfill_buffer(ipart,xbuf)
  eos_vars(:,ipart) = unfill_buf(xbuf,j,maxeosvars)
  if (store_dust_temperature) then
     dust_temp(ipart)    = unfill_buf(xbuf,j)
- endif
- if (store_ref_entropy) then
-    Kref(ipart)         = unfill_buf(xbuf,j)
  endif
  if (do_nucleation) then
     nucleation(:,ipart) = unfill_buf(xbuf,j,n_nucleation)
