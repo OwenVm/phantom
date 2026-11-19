@@ -8,7 +8,7 @@ module inject
 !
 ! Handles pulsating AGB stars
 !
-! :References: None
+! :References: Bowen (1988), ApJ 329, 299
 !
 ! :Owner: Owen Vermeulen
 !
@@ -19,11 +19,15 @@ module inject
 !   - mass_loss_end     : *end time for mass-loss calculation (periods)*
 !   - mass_loss_start   : *start time for mass-loss calculation (periods)*
 !   - min_mass_fraction : *minimum mass fraction per shell*
+!   - mode_file         : *file with the non-radial modes (columns: l m amplitude period phase)*
 !   - n_inject_period   : *period between reinjections (periods)*
+!   - n_profile_points  : *number of points in stellar profile*
+!   - nonradial_modes   : *non-radial pulsation modes from mode_file (0=off, 1=on)*
 !   - phi0              : *initial phase offset (radians)*
 !   - piston_velocity   : *piston velocity amplitude (km/s)*
 !   - pulsation_period  : *pulsation period (days)*
 !   - r_min_on_rstar    : *gas atmosphere inner radius as fraction of R_star*
+!   - ramp_periods      : *periods to ramp up the pulsation amplitude (0=off)*
 !   - reinject_enabled  : *enable dynamic reinjection (0=off, 1=on)*
 !   - rho_inner         : *inner boundary density at r_min (cgs)*
 !   - rho_power         : *density profile exponent: rho ~ r^(-rho_power)*
@@ -55,6 +59,7 @@ module inject
  real    :: pulsation_period_days = 300.0
  real    :: piston_velocity_km_s  = 4.0
  real    :: phi0                  = -0.5*pi
+ real    :: ramp_periods          = 0.0
  real    :: wss                   = 1.0
  integer :: save_period           = 0
  integer :: dumps_p_period        = 10
@@ -66,11 +71,24 @@ module inject
  integer :: verbose               = 1
  integer :: use_file_mdot         = 0
 
+ integer            :: nonradial_modes = 0
+ character(len=120) :: mode_file       = 'modes.dat'
+
+ integer, parameter :: max_modes = 100
+ integer :: n_modes                     = 0
+ integer :: l_modes(max_modes)          = 0
+ integer :: m_modes(max_modes)          = 0
+ real    :: mode_amplitudes(max_modes)  = 0.   ! amplitudes relative to the radial pulsation
+ real    :: mode_period_days(max_modes) = 0.
+ real    :: mode_phases(max_modes)      = 0.
+
  integer,          parameter :: wind_emitting_sink = 1
  real,             parameter :: pulsation_timestep = 0.02
  character(len=*), parameter :: label = 'inject_atmosphere'
 
  real    :: omega_pulsation, deltaR_osc, pulsation_period, piston_velocity
+ real    :: shortest_period   ! shortest of the radial and (non-zero) mode periods, sets dtinject
+ real    :: ramp_time         
  real    :: r_min, r_max, Mtotal, mass_of_gas_particle
  integer :: n_shells_total, n_shells_bnd
  integer, allocatable :: npart_per_shell(:), npart_per_boundary_shell(:)
@@ -80,6 +98,8 @@ module inject
  logical :: boundary_info_ready       = .false.
  integer :: n_boundary_particles      = 0
  real, allocatable :: r_boundary_equilibrium(:)
+ real    :: mode_omega(max_modes), mode_deltaR(max_modes), mode_velocity(max_modes)
+ real, allocatable :: ylm_boundary(:,:)   ! Y_k(theta_i,phi_i) for each mode k and boundary particle i
 
  real    :: reinject_period
  real    :: time_last_reinject  = 0.
@@ -108,6 +128,7 @@ subroutine set_default_options_inject(flag)
  pulsation_period_days = 300.0
  piston_velocity_km_s  = 4.0
  phi0                  = -0.5*pi
+ ramp_periods          = 0.0
  wss                   = 1.0
  save_period           = 0
  dumps_p_period        = 10
@@ -118,6 +139,9 @@ subroutine set_default_options_inject(flag)
  update_L              = 0
  verbose               = 1
  use_file_mdot         = 0
+ nonradial_modes       = 0
+ mode_file             = 'modes.dat'
+ n_modes               = 0
 
 end subroutine set_default_options_inject
 
@@ -140,8 +164,8 @@ subroutine init_inject(ierr)
  integer, parameter :: max_shells_tmp = 2000
  real    :: tmp_dr(max_shells_tmp), tmp_r(max_shells_tmp)
  integer :: tmp_n(max_shells_tmp)
- real    :: Mstar, Rstar, Tstar, current_radius, dr
- integer :: nshells, n_shell, n_tot, i, iunit
+ real    :: Mstar, Rstar, Tstar, current_radius, dr, max_nr
+ integer :: nshells, n_shell, n_tot, i, k, iunit
  integer :: n_particles_first              ! derived locally — no longer a module parameter
  logical :: file_exists
  integer :: n_profile_points      = 10000
@@ -169,6 +193,21 @@ subroutine init_inject(ierr)
  omega_pulsation  = 2.*pi/pulsation_period
  piston_velocity  = piston_velocity_km_s*km/unit_velocity
  deltaR_osc       = piston_velocity/omega_pulsation
+ ramp_time        = ramp_periods*pulsation_period
+
+ do k = 1,n_modes
+    if (mode_period_days(k) > 0.) then
+       mode_omega(k) = 2.*pi/(mode_period_days(k)*days/utime)
+    else
+       mode_omega(k) = omega_pulsation
+    endif
+    mode_deltaR(k)   = mode_amplitudes(k)*deltaR_osc
+    mode_velocity(k) = mode_omega(k)*mode_deltaR(k)
+ enddo
+ shortest_period = pulsation_period
+ do k = 1,n_modes
+    if (mode_velocity(k) > 0.) shortest_period = min(shortest_period,2.*pi/mode_omega(k))
+ enddo
 
  r_min = r_min_on_rstar*Rstar + deltaR_osc*sin(phi0)
  if (r_min <= 0.) call fatal(label,'r_min must be > 0')
@@ -288,6 +327,21 @@ subroutine init_inject(ierr)
        print *, 'Gas shell      ', i, ': r=', shell_radii_gas(i)/Rstar, ' Rstar, dr=', delta_r_radial(n_shells_bnd+i)/Rstar, &
                 ' Rstar, N_particles=', npart_per_shell(i)
     enddo
+ endif
+
+ if (n_modes > 0) then
+    print *, ''
+    print *, 'Non-radial pulsation modes: ', n_modes, ' read from ', trim(mode_file)
+    if (piston_velocity <= 0.) print *, ' WARNING: piston_velocity = 0, so all non-radial modes have zero amplitude'
+    print *, ''
+ endif
+
+ if (ramp_periods > 0.) then
+    print *, 'Pulsation amplitude ramps up from zero over ', ramp_periods, ' periods'
+    if (reinject_enabled == 1 .and. use_file_mdot == 0 .and. mass_loss_start < ramp_periods) &
+       print *, ' WARNING: mass_loss_start < ramp_periods, so the mass-loss rate is measured during the ramp-up'
+ elseif (ramp_periods == 0. .and. nonradial_modes > 0) then
+    print *, 'WARNING: there is no ramp-up period even though non-radial modes are used, this might allow particle penetration'
  endif
 
 end subroutine init_inject
@@ -421,14 +475,14 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npar
  integer, intent(inout) :: npartoftype(:)
  real,    intent(out)   :: dtinject
 
- dtinject = pulsation_timestep*pulsation_period
+ dtinject = pulsation_timestep*shortest_period
 
  if (.not. atmosphere_setup_complete) then
     atmosphere_setup_complete = .true.
     if (npart == 0) then
        print *, ''
        print *, 'Setting up stellar atmosphere with ', n_shells_total, ' shells.'
-       call setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
+       call setup_initial_atmosphere(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
        print *, 'Stellar atmosphere setup complete.'
        return
     endif
@@ -529,31 +583,34 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(inout) :: npart,npartoftype(:)
  integer :: old_npart
- real    :: r_inject,phase,rho,u,T,P,mu,gam,x0(3),v0(3)
+ real    :: r_inject,osc,r_dot,rho,u,T,P,mu,gam,x0(3),v0(3)
 
- x0    = xyzmh_ptmass(1:3,wind_emitting_sink)
- v0    = vxyz_ptmass(1:3,wind_emitting_sink)
- phase = omega_pulsation*time + phi0
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ v0 = vxyz_ptmass(1:3,wind_emitting_sink)
+ call get_radial_terms(time,osc,r_dot)
 
  if (n_boundary_particles > 0) then
     r_inject = r_boundary_equilibrium(n_boundary_particles) + delta_r_radial(iboundary_spheres+1)
  else
     r_inject = r_min + sum(delta_r_radial(1:iboundary_spheres+1))
  endif
- r_inject = r_inject + deltaR_osc*sin(phase)
+ r_inject = r_inject + osc
  call interp_stellar_profile(r_inject,rho,P,u,T,mu=mu,gamma=gam)
 
  old_npart      = npart
  n_reinjections = n_reinjections + 1
  call inject_geodesic_sphere(n_shells_total + n_reinjections, npart+1, particles_to_inject, r_inject, &
-                             piston_velocity*cos(phase), u, rho, npart, npartoftype, xyzh, vxyzu, igas, x0, v0, &
+                             r_dot, u, rho, npart, npartoftype, xyzh, vxyzu, igas, x0, v0, &
                              wind_emitting_sink)
+ ! follow the boundary deformation below the new shell, in position and velocity
+ if (n_modes > 0) call displace_nonradial(time,x0,old_npart+1,npart,xyzh,vxyzu,.true.)
  call set_profile_muGamma(old_npart+1,npart,mu,gam)
 
  xyzmh_ptmass(4,wind_emitting_sink) = xyzmh_ptmass(4,wind_emitting_sink) - (npart - old_npart)*mass_of_gas_particle
 
  if (verbose == 1) then
     print *, ''
+    print *, ' Injection time             :', time
     print *, ' Particles injected         :', (npart - old_npart)
     print *, ' Injection radius           :', r_inject
     print *, ' New total particles        :', npart
@@ -568,12 +625,12 @@ end subroutine perform_reinjection
 !  Build the initial atmospheric setup (i.e. build the shells)
 !+
 !----------------------------------------------------------------
-subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
+subroutine setup_initial_atmosphere(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
  use part,           only:igas,iboundary
  use injectutils,    only:inject_geodesic_sphere
  use wind_pulsating, only:interp_stellar_profile
- real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
- real,    intent(in)    :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ real,    intent(in)    :: time,vxyz_ptmass(:,:)
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:)
  integer, intent(inout) :: npart,npartoftype(:)
  integer :: i,first
  real    :: rho,u,T,P,mu,gam,x0(3),v0(3)
@@ -603,6 +660,15 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
     r_boundary_equilibrium(i) = norm2(xyzh(1:3,i) - x0) - deltaR_osc*sin(phi0)
  enddo
  boundary_info_ready = .true.
+
+ ! shells are built at the radial-only position + add the non-radial displacement
+ if (n_modes > 0) then
+    call compute_boundary_ylm(xyzh,x0)
+    call apply_pulsation(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass)
+
+    ! the gas shells start on the deformed surface; gas velocities are left at zero,as for the radial term
+    call displace_nonradial(time,x0,n_boundary_particles+1,npart,xyzh,vxyzu,.false.)
+ endif
 
  print*,'Boundary particles : ',n_boundary_particles
  print*,'Gas particles      : ',npartoftype(igas)
@@ -635,15 +701,21 @@ subroutine reconstruct_boundary_info(time,xyzh,xyzmh_ptmass)
  use part, only:iboundary,npartoftype
  real, intent(in) :: time,xyzh(:,:),xyzmh_ptmass(:,:)
  integer :: i
- real    :: x0(3),osc
+ real    :: x0(3),osc,r_dot,dr_nr,sterm(max_modes),cterm(max_modes)
 
- x0  = xyzmh_ptmass(1:3,wind_emitting_sink)
- osc = deltaR_osc*sin(omega_pulsation*time + phi0)
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ call get_radial_terms(time,osc,r_dot)
 
  n_boundary_particles = npartoftype(iboundary)
  allocate(r_boundary_equilibrium(n_boundary_particles))
+ ! boundary particles only move radially, so Y_k can be recovered from their current direction
+ if (n_modes > 0) call compute_boundary_ylm(xyzh,x0)
+ call get_mode_terms(time,sterm,cterm)
+ ! subtract the full displacement at the restart time (radial + all modes)
  do i = 1,n_boundary_particles
-    r_boundary_equilibrium(i) = norm2(xyzh(1:3,i) - x0) - osc
+    dr_nr = 0.
+    if (n_modes > 0) dr_nr = dot_product(ylm_boundary(1:n_modes,i),sterm(1:n_modes))
+    r_boundary_equilibrium(i) = norm2(xyzh(1:3,i) - x0) - osc - dr_nr
  enddo
  boundary_info_ready = .true.
 
@@ -664,28 +736,188 @@ subroutine apply_pulsation(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass)
  real, intent(in)    :: time,vxyz_ptmass(:,:)
  real, intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:)
  integer :: i
- real    :: phase,osc,r_dot,x0(3),v0(3),x_hat(3)
+ real    :: osc,r_dot,x0(3),v0(3),x_hat(3)
+ real    :: dr_nr,dv_nr,sterm(max_modes),cterm(max_modes)
 
  if (n_boundary_particles == 0) return
 
- x0    = xyzmh_ptmass(1:3,wind_emitting_sink)
- v0    = vxyz_ptmass(1:3,wind_emitting_sink)
- phase = omega_pulsation*time + phi0
- osc   = deltaR_osc*sin(phase)
- r_dot = piston_velocity*cos(phase)
+ x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
+ v0 = vxyz_ptmass(1:3,wind_emitting_sink)
+ call get_radial_terms(time,osc,r_dot)
+ call get_mode_terms(time,sterm,cterm)
 
  do i = 1,n_boundary_particles
     ! Radial unit vector from current position
     x_hat        = xyzh(1:3,i) - x0
     x_hat        = x_hat/norm2(x_hat)
-    xyzh(1:3,i)  = x0 + (r_boundary_equilibrium(i) + osc)*x_hat
-    vxyzu(1:3,i) = v0 + r_dot*x_hat
+    dr_nr        = 0.
+    dv_nr        = 0.
+    if (n_modes > 0) then
+       dr_nr = dot_product(ylm_boundary(1:n_modes,i),sterm(1:n_modes))
+       dv_nr = dot_product(ylm_boundary(1:n_modes,i),cterm(1:n_modes))
+    endif
+    xyzh(1:3,i)  = x0 + (r_boundary_equilibrium(i) + osc + dr_nr)*x_hat
+    vxyzu(1:3,i) = v0 + (r_dot + dv_nr)*x_hat
  enddo
+
 
  if (update_L == 1) call get_lum(xyzmh_ptmass(iLum,wind_emitting_sink), xyzmh_ptmass(iTeff,wind_emitting_sink), &
                                  xyzmh_ptmass(iReff,wind_emitting_sink) + osc)
 
 end subroutine apply_pulsation
+
+!----------------------------------------------------------------
+!+
+!  Start-up phase 
+!+
+!----------------------------------------------------------------
+subroutine get_amplitude_ramp(time,f,dfdt)
+ real, intent(in)  :: time
+ real, intent(out) :: f,dfdt
+ real :: x
+
+ if (ramp_time <= 0. .or. time >= ramp_time) then
+    f    = 1.
+    dfdt = 0.
+ else
+    x    = max(time,0.)/ramp_time
+    f    = sin(0.5*pi*x)**2
+    dfdt = 0.5*pi*sin(pi*x)/ramp_time
+ endif
+
+end subroutine get_amplitude_ramp
+
+!----------------------------------------------------------------
+!+
+!  Radial piston displacement and its velocity r_dot = d(osc)/dt:
+!
+!    osc = dR [f sin(w t + phi0) + (1 - f) sin(phi0)]
+!
+!  with f the start-up ramp. At t=0 the piston is at dR sin(phi0),
+!  as without a ramp, and the oscillation grows from there: for
+!  phi0 = -pi/2 the star starts at its minimum radius, which stays
+!  the bottom of the stroke while the top grows to r_eq + dR.
+!+
+!----------------------------------------------------------------
+subroutine get_radial_terms(time,osc,r_dot)
+ real, intent(in)  :: time
+ real, intent(out) :: osc,r_dot
+ real :: phase,f,dfdt
+
+ call get_amplitude_ramp(time,f,dfdt)
+ phase = omega_pulsation*time + phi0
+ osc   = deltaR_osc*(f*sin(phase) + (1. - f)*sin(phi0))
+ r_dot = f*piston_velocity*cos(phase) + dfdt*deltaR_osc*(sin(phase) - sin(phi0))
+
+end subroutine get_radial_terms
+
+!----------------------------------------------------------------
+!+
+!  Per-mode time factors
+!+
+!----------------------------------------------------------------
+subroutine get_mode_terms(time,sterm,cterm)
+ real, intent(in)  :: time
+ real, intent(out) :: sterm(max_modes),cterm(max_modes)
+ integer :: k
+ real    :: phase_k,f,dfdt
+
+ sterm = 0.
+ cterm = 0.
+ call get_amplitude_ramp(time,f,dfdt)
+ do k = 1,n_modes
+    phase_k  = mode_omega(k)*time + mode_phases(k)
+    sterm(k) = f*mode_deltaR(k)*sin(phase_k)
+    cterm(k) = f*mode_velocity(k)*cos(phase_k) + dfdt*mode_deltaR(k)*sin(phase_k)
+ enddo
+
+end subroutine get_mode_terms
+
+!----------------------------------------------------------------
+!+
+!  Store Y_k(theta_i,phi_i) for every boundary particle and mode.
+!+
+!----------------------------------------------------------------
+subroutine compute_boundary_ylm(xyzh,x0)
+ real, intent(in) :: xyzh(:,:),x0(3)
+ integer :: i,k
+ real    :: x_hat(3)
+
+ if (allocated(ylm_boundary)) deallocate(ylm_boundary)
+ allocate(ylm_boundary(n_modes,n_boundary_particles))
+ do i = 1,n_boundary_particles
+    x_hat = xyzh(1:3,i) - x0
+    x_hat = x_hat/norm2(x_hat)
+    do k = 1,n_modes
+       ylm_boundary(k,i) = real_ylm(l_modes(k),m_modes(k),x_hat)
+    enddo
+ enddo
+
+end subroutine compute_boundary_ylm
+
+!----------------------------------------------------------------
+!+
+!  Shift gas particles i1..i2 radially by the non-radial displacement
+!  of the boundary in their direction
+!+
+!----------------------------------------------------------------
+subroutine displace_nonradial(time,x0,i1,i2,xyzh,vxyzu,add_velocity)
+ real,    intent(in)    :: time,x0(3)
+ integer, intent(in)    :: i1,i2
+ real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
+ logical, intent(in)    :: add_velocity
+ integer :: i,k
+ real    :: x_hat(3),r,ylm,dr_nr,dv_nr,sterm(max_modes),cterm(max_modes)
+
+ call get_mode_terms(time,sterm,cterm)
+ do i = i1,i2
+    x_hat = xyzh(1:3,i) - x0
+    r     = norm2(x_hat)
+    x_hat = x_hat/r
+    dr_nr = 0.
+    dv_nr = 0.
+    do k = 1,n_modes
+       ylm   = real_ylm(l_modes(k),m_modes(k),x_hat)
+       dr_nr = dr_nr + ylm*sterm(k)
+       dv_nr = dv_nr + ylm*cterm(k)
+    enddo
+    xyzh(1:3,i) = x0 + (r + dr_nr)*x_hat
+    if (add_velocity) vxyzu(1:3,i) = vxyzu(1:3,i) + dv_nr*x_hat
+ enddo
+
+end subroutine displace_nonradial
+
+!----------------------------------------------------------------
+!+
+!  Orthonormal real spherical harmonic Y_lm for a unit vector x_hat
+!+
+!----------------------------------------------------------------
+real function real_ylm(l,m,x_hat)
+ use mathfunc, only:legendre_associated
+ integer, intent(in) :: l,m
+ real,    intent(in) :: x_hat(3)
+ integer :: i,ma
+ real    :: plm(0:l),norm,phi
+
+ ma = abs(m)
+ call legendre_associated(l,ma,max(-1.,min(1.,x_hat(3))),plm)
+ norm = (2.*l + 1.)/(4.*pi)
+ do i = l-ma+1,l+ma
+    norm = norm/i
+ enddo
+ norm = sqrt(norm)*(-1)**ma
+ if (m == 0) then
+    real_ylm = norm*plm(l)
+ else
+    phi = atan2(x_hat(2),x_hat(1))
+    if (m > 0) then
+       real_ylm = sqrt(2.)*norm*plm(l)*cos(ma*phi)
+    else
+       real_ylm = sqrt(2.)*norm*plm(l)*sin(ma*phi)
+    endif
+ endif
+
+end function real_ylm
 
 !----------------------------------------------------------------
 !+
@@ -808,6 +1040,78 @@ end subroutine calculate_period
 
 !----------------------------------------------------------------
 !+
+!  Read the non-radial modes from a file with one mode per row
+!+
+!----------------------------------------------------------------
+subroutine read_mode_file(filename,nerr)
+ character(len=*), intent(in)    :: filename
+ integer,          intent(inout) :: nerr
+ character(len=256) :: line
+ character(len=16)  :: extra
+ integer :: iunit,ierr,iline,ic,l,m,nerr_in
+ real    :: amp,period,phase
+
+ nerr_in = nerr
+ n_modes = 0
+ open(newunit=iunit,file=trim(filename),status='old',action='read',iostat=ierr)
+ if (ierr /= 0) then
+    print "(a)", ' ERROR: cannot open mode_file '//trim(filename)
+    nerr = nerr + 1
+    return
+ endif
+ iline = 0
+ do
+    read(iunit,'(a)',iostat=ierr) line
+    if (ierr /= 0) exit
+    iline = iline + 1
+    ic = index(line,'#')
+    if (ic > 0) line(ic:) = ' '
+    if (len_trim(line) == 0) cycle
+    read(line,*,iostat=ierr) l,m,amp,period,phase
+    if (ierr /= 0) then
+       print "(a,i0,a)", ' ERROR: '//trim(filename)//' line ',iline, &
+                         ': cannot read 5 values (integers l m, then amplitude period phase)'
+       nerr = nerr + 1
+       cycle
+    endif
+    read(line,*,iostat=ierr) l,m,amp,period,phase,extra
+    if (ierr == 0) then
+       print "(a,i0,a)", ' ERROR: '//trim(filename)//' line ',iline,': more than 5 columns'
+       nerr = nerr + 1
+       cycle
+    endif
+    if (l < 0 .or. abs(m) > l) then
+       print "(a,i0,a,i0,a,i0,a)", ' ERROR: '//trim(filename)//' line ',iline,': l=',l,', m=',m,'; need l >= 0 and |m| <= l'
+       nerr = nerr + 1
+       cycle
+    endif
+    if (amp < 0.) then
+       print "(a,i0,a)", ' ERROR: '//trim(filename)//' line ',iline,': negative amplitude'
+       nerr = nerr + 1
+       cycle
+    endif
+    if (n_modes >= max_modes) then
+       print "(a,i0,a)", ' ERROR: '//trim(filename)//' has more than ',max_modes,' modes'
+       nerr = nerr + 1
+       exit
+    endif
+    n_modes = n_modes + 1
+    l_modes(n_modes)          = l
+    m_modes(n_modes)          = m
+    mode_amplitudes(n_modes)  = amp
+    mode_period_days(n_modes) = period
+    mode_phases(n_modes)      = phase
+ enddo
+ close(iunit)
+ if (n_modes == 0 .and. nerr == nerr_in) then
+    print "(a)", ' ERROR: no modes found in mode_file '//trim(filename)
+    nerr = nerr + 1
+ endif
+
+end subroutine read_mode_file
+
+!----------------------------------------------------------------
+!+
 !  Write options to .in file
 !+
 !----------------------------------------------------------------
@@ -824,6 +1128,7 @@ subroutine write_options_inject(iunit)
  call write_inopt(pulsation_period_days, 'pulsation_period',  'pulsation period (days)',iunit)
  call write_inopt(piston_velocity_km_s,  'piston_velocity',   'piston velocity amplitude (km/s)',iunit)
  call write_inopt(phi0,                  'phi0',              'initial phase offset (radians)',iunit)
+ call write_inopt(ramp_periods,          'ramp_periods',      'periods to ramp up the pulsation amplitude (0=off)',iunit)
  call write_inopt(wss,                   'wss',               'radial/tangential spacing ratio',iunit)
  call write_inopt(save_period,           'save_period',       'wether to save dumps as fraction of period (0=off, 1=on)',iunit)
  call write_inopt(dumps_p_period,        'dumps_p_period',    'number of dumps per period (if save_period = 1)',iunit)
@@ -834,6 +1139,9 @@ subroutine write_options_inject(iunit)
  call write_inopt(use_file_mdot,         'use_file_mdot',     'skip measurement phase (0=off, 1=on)',iunit)
  call write_inopt(update_L,              'update_L',          'update luminosity with pulsation (0=off, 1=on)',iunit)
  call write_inopt(verbose,               'verbose',           'enable verbose output (0=off, 1=on)',iunit)
+ call write_inopt(nonradial_modes,       'nonradial_modes',   'non-radial pulsation modes from mode_file (0=off, 1=on)',iunit)
+ if (nonradial_modes == 1) call write_inopt(mode_file,'mode_file', &
+                                            'file with the modes (columns: l m amplitude period phase)',iunit)
 
 end subroutine write_options_inject
 
@@ -857,6 +1165,7 @@ subroutine read_options_inject(db,nerr)
  call read_inopt(pulsation_period_days, 'pulsation_period',  db,errcount=nerr,min=0.)
  call read_inopt(piston_velocity_km_s,  'piston_velocity',   db,errcount=nerr,min=0.)
  call read_inopt(phi0,                  'phi0',              db,errcount=nerr,min=-pi,max=pi)
+ call read_inopt(ramp_periods,          'ramp_periods',      db,errcount=nerr,min=0.,default=0.)
  call read_inopt(wss,                   'wss',               db,errcount=nerr,min=epsilon(wss),max=10.)
  call read_inopt(save_period,           'save_period',       db,errcount=nerr,min=0,max=1)
  call read_inopt(dumps_p_period,        'dumps_p_period',    db,errcount=nerr,min=0)
@@ -867,6 +1176,12 @@ subroutine read_options_inject(db,nerr)
  call read_inopt(use_file_mdot,         'use_file_mdot',     db,errcount=nerr,min=0,max=1)
  call read_inopt(update_L,              'update_L',          db,errcount=nerr,min=0,max=1)
  call read_inopt(verbose,               'verbose',           db,errcount=nerr,min=0,max=1)
+ call read_inopt(nonradial_modes,       'nonradial_modes',   db,errcount=nerr,min=0,max=1,default=0)
+ n_modes = 0
+ if (nonradial_modes == 1) then
+    call read_inopt(mode_file,'mode_file',db,errcount=nerr)
+    call read_mode_file(mode_file,nerr)
+ endif
 
 end subroutine read_options_inject
 
