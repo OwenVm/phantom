@@ -20,7 +20,6 @@ module inject
 !   - mass_loss_start   : *start time for mass-loss calculation (periods)*
 !   - min_mass_fraction : *minimum mass fraction per shell*
 !   - n_inject_period   : *period between reinjections (periods)*
-!   - n_profile_points  : *number of points in stellar profile*
 !   - phi0              : *initial phase offset (radians)*
 !   - piston_velocity   : *piston velocity amplitude (km/s)*
 !   - pulsation_period  : *pulsation period (days)*
@@ -48,7 +47,6 @@ module inject
  private
 
  integer :: iboundary_spheres     = 5
- integer :: n_profile_points      = 10000
  real    :: min_mass_fraction     = 0.01
  real    :: rho_power_in          = 6.0
  real    :: r_min_on_rstar        = 1.0
@@ -102,7 +100,6 @@ subroutine set_default_options_inject(flag)
  integer, optional, intent(in) :: flag
 
  iboundary_spheres     = 5
- n_profile_points      = 10000
  min_mass_fraction     = 0.01
  rho_power_in          = 6.0
  r_min_on_rstar        = 1.0
@@ -147,6 +144,7 @@ subroutine init_inject(ierr)
  integer :: nshells, n_shell, n_tot, i, iunit
  integer :: n_particles_first              ! derived locally — no longer a module parameter
  logical :: file_exists
+ integer :: n_profile_points      = 10000
 
  ierr = 0
  seed_random = -1  ! reset seed_random so the shell rotations are reproducible
@@ -298,26 +296,24 @@ end subroutine init_inject
 !+
 !  Table for heating_inner (cooling_functions): constant heating that
 !  cancels the cooling of the initial hydrostatic atmosphere, stored
-!  as a function of Tdust (monotonic in r)
+!  as a function of Tdust
 !+
 !----------------------------------------------------------------
 subroutine build_inner_heating()
  use wind_pulsating,   only:interp_stellar_profile,stellar_1D
  use cooling_functions,only:set_inner_heating,clear_inner_heating
  use cooling_solver,   only:calc_cooling_rate
- use dust_formation,   only:calc_muGamma
- use dim,              only:update_muGamma,store_dust_temperature
- use eos,              only:gmw,gamma
+ use dim,              only:store_dust_temperature
  use part,             only:xyzmh_ptmass,nptmass,maxeosvars,itemp
- use physcon,          only:Rg,au
- use units,            only:udist,unit_density,unit_ergg,utime
+ use physcon,          only:au
+ use units,            only:udist,unit_ergg,utime
  use ptmass_radiation, only:iget_tdust,get_dust_temperature_from_ptmass
  use io,               only:warning,fatal
  integer, parameter :: ngrid = 4000
  real    :: r_tab(ngrid),rate_tab(ngrid),T_tab(ngrid),mu_tab(ngrid),u_tab(ngrid)
  real    :: rho_tab(ngrid),gam_tab(ngrid),Td_tab(ngrid)
  real, allocatable :: xyzh_tab(:,:),eos_tab(:,:),tau_tab(:),taul_tab(:)
- real    :: r_lo,r_hi,P,Tprof,pH,pH_tot,Q,dlnQ_dlnT
+ real    :: r_lo,r_hi,P,Q,dlnQ_dlnT
  integer :: j,k,nlist
  integer, parameter :: nprint = 8
 
@@ -329,12 +325,7 @@ subroutine build_inner_heating()
 
  do j = 1,ngrid
     r_tab(j) = r_lo + (r_hi - r_lo)*real(j-1)/real(ngrid-1)
-    call interp_stellar_profile(r_tab(j),rho_tab(j),P,u_tab(j),Tprof)
-    mu_tab(j)  = gmw
-    gam_tab(j) = gamma
-    T_tab(j)   = (gam_tab(j) - 1.)*mu_tab(j)*u_tab(j)*unit_ergg/Rg
-    if (update_muGamma) call calc_muGamma(rho_tab(j)*unit_density,T_tab(j),mu_tab(j),gam_tab(j),pH,pH_tot)
-    T_tab(j)   = (gam_tab(j) - 1.)*mu_tab(j)*u_tab(j)*unit_ergg/Rg
+    call interp_stellar_profile(r_tab(j),rho_tab(j),P,u_tab(j),T_tab(j),mu=mu_tab(j),gamma=gam_tab(j))
  enddo
 
  allocate(xyzh_tab(4,ngrid),eos_tab(maxeosvars,ngrid),tau_tab(ngrid),taul_tab(ngrid))
@@ -538,7 +529,7 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(inout) :: npart,npartoftype(:)
  integer :: old_npart
- real    :: r_inject,phase,rho,u,T,P,x0(3),v0(3)
+ real    :: r_inject,phase,rho,u,T,P,mu,gam,x0(3),v0(3)
 
  x0    = xyzmh_ptmass(1:3,wind_emitting_sink)
  v0    = vxyz_ptmass(1:3,wind_emitting_sink)
@@ -550,13 +541,14 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
     r_inject = r_min + sum(delta_r_radial(1:iboundary_spheres+1))
  endif
  r_inject = r_inject + deltaR_osc*sin(phase)
- call interp_stellar_profile(r_inject,rho,P,u,T)
+ call interp_stellar_profile(r_inject,rho,P,u,T,mu=mu,gamma=gam)
 
  old_npart      = npart
  n_reinjections = n_reinjections + 1
  call inject_geodesic_sphere(n_shells_total + n_reinjections, npart+1, particles_to_inject, r_inject, &
                              piston_velocity*cos(phase), u, rho, npart, npartoftype, xyzh, vxyzu, igas, x0, v0, &
                              wind_emitting_sink)
+ call set_profile_muGamma(old_npart+1,npart,mu,gam)
 
  xyzmh_ptmass(4,wind_emitting_sink) = xyzmh_ptmass(4,wind_emitting_sink) - (npart - old_npart)*mass_of_gas_particle
 
@@ -583,22 +575,26 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:)
  real,    intent(in)    :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(inout) :: npart,npartoftype(:)
- integer :: i
- real    :: rho,u,T,P,x0(3),v0(3)
+ integer :: i,first
+ real    :: rho,u,T,P,mu,gam,x0(3),v0(3)
 
  x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
  v0 = vxyz_ptmass(1:3,wind_emitting_sink)
 
  npart = 0
  do i = 1,n_shells_bnd
-    call interp_stellar_profile(shell_radii_bnd(i),rho,P,u,T)
-    call inject_geodesic_sphere(i, npart+1, npart_per_boundary_shell(i), shell_radii_bnd(i), 0., u, rho, &
+    call interp_stellar_profile(shell_radii_bnd(i),rho,P,u,T,mu=mu,gamma=gam)
+    first = npart + 1
+    call inject_geodesic_sphere(i, first, npart_per_boundary_shell(i), shell_radii_bnd(i), 0., u, rho, &
                                 npart, npartoftype, xyzh, vxyzu, iboundary, x0, v0, wind_emitting_sink)
+    call set_profile_muGamma(first,npart,mu,gam)
  enddo
  do i = 1,n_shells_total
-    call interp_stellar_profile(shell_radii_gas(i),rho,P,u,T)
-    call inject_geodesic_sphere(n_shells_bnd+i, npart+1, npart_per_shell(i), shell_radii_gas(i), 0., u, rho, &
+    call interp_stellar_profile(shell_radii_gas(i),rho,P,u,T,mu=mu,gamma=gam)
+    first = npart + 1
+    call inject_geodesic_sphere(n_shells_bnd+i, first, npart_per_shell(i), shell_radii_gas(i), 0., u, rho, &
                                 npart, npartoftype, xyzh, vxyzu, igas, x0, v0, wind_emitting_sink)
+    call set_profile_muGamma(first,npart,mu,gam)
  enddo
 
  n_boundary_particles = npartoftype(iboundary)
@@ -612,6 +608,23 @@ subroutine setup_initial_atmosphere(xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  print*,'Gas particles      : ',npartoftype(igas)
 
 end subroutine setup_initial_atmosphere
+
+!----------------------------------------------------------------
+!+
+!  Give particles i1..i2 the mu and gamma of the stellar profile.
+!+
+!----------------------------------------------------------------
+subroutine set_profile_muGamma(i1,i2,mu,gam)
+ use dim,  only:update_muGamma
+ use part, only:eos_vars,imu,igamma
+ integer, intent(in) :: i1,i2
+ real,    intent(in) :: mu,gam
+
+ if (.not.update_muGamma) return
+ eos_vars(imu,i1:i2)    = mu
+ eos_vars(igamma,i1:i2) = gam
+
+end subroutine set_profile_muGamma
 
 !----------------------------------------------------------------
 !+
@@ -802,7 +815,6 @@ subroutine write_options_inject(iunit)
  use infile_utils, only:write_inopt
  integer, intent(in) :: iunit
 
- call write_inopt(n_profile_points,      'n_profile_points',  'number of points in stellar profile',iunit)
  call write_inopt(iboundary_spheres,     'iboundary_spheres', 'number of boundary spheres (piston layers)',iunit)
  call write_inopt(min_mass_fraction,     'min_mass_fraction', 'minimum mass fraction per shell',iunit)
  call write_inopt(rho_power_in,          'rho_power',         'density profile exponent: rho ~ r^(-rho_power)',iunit)
@@ -835,7 +847,6 @@ subroutine read_options_inject(db,nerr)
  type(inopts), intent(inout) :: db(:)
  integer,      intent(inout) :: nerr
 
- call read_inopt(n_profile_points,      'n_profile_points',  db,errcount=nerr,min=11)
  call read_inopt(iboundary_spheres,     'iboundary_spheres', db,errcount=nerr,min=0)
  call read_inopt(min_mass_fraction,     'min_mass_fraction', db,errcount=nerr,min=0.)
  call read_inopt(rho_power_in,          'rho_power',         db,errcount=nerr,min=epsilon(rho_power_in))
