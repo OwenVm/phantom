@@ -764,7 +764,7 @@ subroutine read_options_dust_formation(db,nerr)
  use dim,          only:nucleation,do_nucleation,inucleation,store_dust_temperature
  use eos,          only:ieos
  use infile_utils, only:inopts,read_inopt
- use cooling_functions, only:D06_Tcond,D06_delta
+ use cooling_functions, only:dust_Tcond,dust_delta
  type(inopts), intent(inout) :: db(:)
  integer,      intent(inout) :: nerr
 
@@ -781,9 +781,9 @@ subroutine read_options_dust_formation(db,nerr)
     call read_inopt(bowen_Tcond,'bowen_Tcond',db,errcount=nerr,min=0.)
     call read_inopt(bowen_delta,'bowen_delta',db,errcount=nerr,min=0.)
  endif
- !dust condensation used by the Decin et al. (2006) dust heating terms
- D06_Tcond = bowen_Tcond
- D06_delta = bowen_delta
+ !dust condensation used by the dust heating terms in cooling_functions
+ dust_Tcond = bowen_Tcond
+ dust_delta = bowen_delta
  if (nucleation .and. idust_opacity == 2) then
     call read_inopt(kappa_gas,'kappa_gas',db,errcount=nerr,min=0.)
     call read_inopt(wind_CO_ratio,'wind_CO_ratio',db,errcount=nerr,min=0.)
