@@ -96,6 +96,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use cooling_functions,only:bowen_Cprime
  use dust_formation,   only:idust_opacity,kappa_gas,bowen_kmax
  use ptmass_radiation, only:isink_radiation,iget_tdust,iray_resolution,tdust_exp
+ use kernel,           only:hfact_default
 
  integer,           intent(in)    :: id
  integer,           intent(inout) :: npart
@@ -153,16 +154,14 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  if (.not. iexist .and. .not. iexist_in) call set_default_options_inject()
 
  time = 0.
- filename = trim(fileprefix)//'.setup'
- inquire(file=filename,exist=iexist)
- if (iexist) call read_setupfile(filename,ierr)
- if (.not. iexist .or. ierr /= 0) then
-    if (id==master) then
-       call write_setupfile(filename)
-    endif
- endif
+ ! write the defaults if there is no .setup file, then always read it,
+ ! since read_setupfile is where the stellar parameters are converted to code units
+ if (.not. iexist .and. id==master) call write_setupfile(filename)
+ call read_setupfile(filename,ierr)
 
  gamma = wind_gamma
+ polyk = 0.
+ hfact = hfact_default
 
  !
  !--space available for injected gas particles

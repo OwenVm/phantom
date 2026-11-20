@@ -381,10 +381,12 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
  real :: Q_fric, Q_pe, Q_dg, Q_cr, Q_H2vib
  real :: dlnQ_fric, dlnQ_pe, dlnQ_dg, dlnQ_cr, dlnQ_H2vib
  real :: Q_inner, dlnQ_inner
- real :: rho_cgs, ndens
+ real :: rho_cgs, ndens, divv_cgs
 
  rho_cgs = rho*unit_density
  ndens   = rho_cgs/mass_proton_cgs
+ divv_cgs = 0.
+ if (present(divv)) divv_cgs = divv/utime
 
  Q_H0              = 0.
  Q_inner           = 0.
@@ -424,10 +426,10 @@ subroutine calc_cooling_rate(Q, dlnQ_dlnT, rho, T, Teq, mu, gamma, K2, kappa, di
 
  if (relax_Bowen        == 1) call cooling_Bowen_relaxation(T, Teq, rho_cgs, mu, gamma,Q_relax_Bowen, dlnQ_relax_Bowen)
 
- if (CO_cooling == 1 .and. present(divv)) call cooling_CO_rot_new(T, rho_cgs, divv/utime, Q_CO, dlnQ_CO)
+ if (CO_cooling == 1 .and. present(divv)) call cooling_CO_rot_new(T, rho_cgs, divv_cgs, Q_CO, dlnQ_CO)
 
- if (H2O_cooling     == 1 .and. present(divv)) call cooling_H2O_rot_new(T, rho_cgs, divv/utime, Q_H2O, dlnQ_H2O)
- if (H2O_vib_cooling == 1 .and. present(divv)) call cooling_H2O_vib_new(T, rho_cgs, divv/utime, Q_H2Ovib, dlnQ_H2Ovib)
+ if (H2O_cooling     == 1 .and. present(divv)) call cooling_H2O_rot_new(T, rho_cgs, divv_cgs, Q_H2O, dlnQ_H2O)
+ if (H2O_vib_cooling == 1 .and. present(divv)) call cooling_H2O_vib_new(T, rho_cgs, divv_cgs, Q_H2Ovib, dlnQ_H2Ovib)
 
  if (dust_collision == 1 .and. K2 > 0.) call cooling_dust_collision(T, Teq, rho_cgs, K2, &
                                                         mu, Q_col_dust, dlnQ_col_dust)

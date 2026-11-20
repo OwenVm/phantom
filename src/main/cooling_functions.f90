@@ -790,19 +790,20 @@ pure subroutine saha_fractions(T_gas, rho_gas, XH, YHe, xx, yy, z1, z2)
  real, parameter  :: H_ion   = 2.179d-11     ! 13.60 eV in erg
  real, parameter  :: He_ion  = 3.940d-11     ! 24.59 eV in erg
  real, parameter  :: He2_ion = 8.720d-11     ! 54.42 eV in erg
- real, parameter  :: Kmin    = 1.d-300
- real             :: KH, KH2, KHe, KHe2, B, cst
+ real, parameter  :: Kmin    = sqrt(tiny(0.)) ! keeps 4./K finite in single and double precision
+ real             :: KH, KH2, KHe, KHe2, B, cst, kT
 
- cst  = mass_proton_cgs/rho_gas*sqrt(mass_electron_cgs*kboltz*T_gas/(2.*pi*planckhbar**2))**3
+ kT   = kboltz*T_gas
+ cst  = mass_proton_cgs/rho_gas*sqrt(mass_electron_cgs*kT/(2.*pi*planckhbar**2))**3
 
- KH2  = max(2.11/(rho_gas*XH) * exp(-H2_diss/(kboltz*T_gas)), Kmin)
+ KH2  = max(2.11/(rho_gas*XH) * exp(-H2_diss/kT), Kmin)
  yy   = 2./(1. + sqrt(1. + 4./KH2)) !Eq. 15
 
- KH   = max(cst/XH * exp(-H_ion/(kboltz*T_gas)), Kmin)
+ KH   = max(cst/XH * exp(-H_ion/kT), Kmin)
  xx   = 2./(1. + sqrt(1. + 4./KH)) ! Eq. 16
 
- KHe  = max(4.*cst * exp(-He_ion/(kboltz*T_gas)), Kmin)
- KHe2 = max(   cst * exp(-He2_ion/(kboltz*T_gas)), Kmin)
+ KHe  = max(4.*cst * exp(-He_ion/kT), Kmin)
+ KHe2 = max(   cst * exp(-He2_ion/kT), Kmin)
 
  z1   = 2.*KHe/(sqrt((KHe+XH)**2 + KHe*YHe) + KHe + XH) ! Eq. 17
  B    = KHe2 + XH + 0.25*YHe
