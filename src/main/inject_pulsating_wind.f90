@@ -164,7 +164,7 @@ subroutine init_inject(ierr)
  integer, parameter :: max_shells_tmp = 2000
  real    :: tmp_dr(max_shells_tmp), tmp_r(max_shells_tmp)
  integer :: tmp_n(max_shells_tmp)
- real    :: Mstar, Rstar, Tstar, current_radius, dr, max_nr
+ real    :: Mstar, Rstar, Tstar, current_radius, dr
  integer :: nshells, n_shell, n_tot, i, k, iunit
  integer :: n_particles_first              ! derived locally — no longer a module parameter
  logical :: file_exists
@@ -468,9 +468,10 @@ end subroutine derive_n_particles_first
 !  The actual function that is called by phantom
 !+
 !----------------------------------------------------------------
-subroutine inject_particles(time,dtlast,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npart_old,npartoftype,dtinject)
+subroutine inject_particles(time,dtlast,xyzh,vxyzu,rho,xyzmh_ptmass,vxyz_ptmass,npart,npart_old,npartoftype,dtinject)
  real,    intent(in)    :: time,dtlast
  real,    intent(inout) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ real,    intent(in)    :: rho(:)
  integer, intent(inout) :: npart,npart_old
  integer, intent(inout) :: npartoftype(:)
  real,    intent(out)   :: dtinject
@@ -600,7 +601,7 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
  old_npart      = npart
  n_reinjections = n_reinjections + 1
  call inject_geodesic_sphere(n_shells_total + n_reinjections, npart+1, particles_to_inject, r_inject, &
-                             r_dot, u, rho, npart, npartoftype, xyzh, vxyzu, igas, x0, v0, &
+                             r_dot, u, npart, npartoftype, xyzh, vxyzu, rho, igas, x0, v0, &
                              wind_emitting_sink)
  ! follow the boundary deformation below the new shell, in position and velocity
  if (n_modes > 0) call displace_nonradial(time,x0,old_npart+1,npart,xyzh,vxyzu,.true.)
@@ -642,15 +643,15 @@ subroutine setup_initial_atmosphere(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npa
  do i = 1,n_shells_bnd
     call interp_stellar_profile(shell_radii_bnd(i),rho,P,u,T,mu=mu,gamma=gam)
     first = npart + 1
-    call inject_geodesic_sphere(i, first, npart_per_boundary_shell(i), shell_radii_bnd(i), 0., u, rho, &
-                                npart, npartoftype, xyzh, vxyzu, iboundary, x0, v0, wind_emitting_sink)
+    call inject_geodesic_sphere(i, first, npart_per_boundary_shell(i), shell_radii_bnd(i), 0., u, &
+                                npart, npartoftype, xyzh, vxyzu, rho, iboundary, x0, v0, wind_emitting_sink)
     call set_profile_muGamma(first,npart,mu,gam)
  enddo
  do i = 1,n_shells_total
     call interp_stellar_profile(shell_radii_gas(i),rho,P,u,T,mu=mu,gamma=gam)
     first = npart + 1
-    call inject_geodesic_sphere(n_shells_bnd+i, first, npart_per_shell(i), shell_radii_gas(i), 0., u, rho, &
-                                npart, npartoftype, xyzh, vxyzu, igas, x0, v0, wind_emitting_sink)
+    call inject_geodesic_sphere(n_shells_bnd+i, first, npart_per_shell(i), shell_radii_gas(i), 0., u, &
+                                npart, npartoftype, xyzh, vxyzu, rho, igas, x0, v0, wind_emitting_sink)
     call set_profile_muGamma(first,npart,mu,gam)
  enddo
 
