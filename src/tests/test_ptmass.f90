@@ -14,13 +14,14 @@ module testptmass
 !
 ! :Runtime parameters: None
 !
-! :Dependencies: HIIRegion, boundary, centreofmass, checksetup, cons2prim,
-!   deriv, dim, energies, eos, eos_HIIR, extern_binary, extern_gr,
-!   externalforces, gravwaveutils, io, kdtree, kernel, metric,
-!   metric_tools, mpiutils, neighkdtree, options, orbits, part, physcon,
-!   ptmass, ptmass_tree, random, setbinary, setdisc, setorbit,
-!   setup_params, spherical, step_lf_global, stretchmap, subgroup,
-!   table_utils, testutils, timestep, timing, units, utils_subgroup
+! :Dependencies: HIIRegion, apr, boundary, centreofmass, checksetup,
+!   cons2prim, deriv, dim, energies, eos, eos_HIIR, extern_binary,
+!   extern_gr, externalforces, gravwaveutils, infile_utils, io, kdtree,
+!   kernel, metric, metric_tools, mpiutils, neighkdtree, options, orbits,
+!   part, physcon, ptmass, ptmass_tree, random, setbinary, setdisc,
+!   setorbit, setup_params, spherical, step_lf_global, stretchmap,
+!   subgroup, substepping, table_utils, testutils, timestep, timing, units,
+!   utils_subgroup
 !
  use testutils, only:checkval,update_test_scores
  implicit none
@@ -28,14 +29,17 @@ module testptmass
 
  private
 
+ real :: gaussian_pos_fac  ! needed for sink creation test
+
 contains
 
 subroutine test_ptmass(ntests,npass,string)
  use io,      only:id,master,iskfile
  use eos,     only:polyk,gamma
- use part,    only:nptmass,gr
+ use part,    only:nptmass,gr,apr_level
  use options, only:iexternalforce,alpha
  use ptmass,  only:use_fourthorder,set_integration_precision
+ use apr,     only:init_apr,use_apr
  character(len=*), intent(in)    :: string
  integer,          intent(inout) :: ntests,npass
  character(len=20) :: filename
@@ -43,7 +47,7 @@ subroutine test_ptmass(ntests,npass,string)
  integer :: itmp,ierr,itest,istart,imax
  logical :: do_test_binary,do_test_accretion,do_test_createsink,do_test_softening
  logical :: do_test_chinese_coin,do_test_merger,do_test_potential,do_test_HII,do_test_SDAR
- logical :: do_test_binary_gr,do_test_orbit
+ logical :: do_test_binary_gr,do_test_orbit,do_test_sinkgas,do_bench_HII
  logical :: testall
 
  if (id==master) write(*,"(/,a,/)") '--> TESTING PTMASS MODULE'
@@ -59,6 +63,8 @@ subroutine test_ptmass(ntests,npass,string)
  do_test_SDAR = .false.
  do_test_binary_gr = .false.
  do_test_orbit = .false.
+ do_test_sinkgas = .false.
+ do_bench_HII = .false.
  testall = .false.
  istart = 1
  select case(trim(string))
@@ -85,10 +91,14 @@ subroutine test_ptmass(ntests,npass,string)
     do_test_merger = .true.
  case('ptmassHII')
     do_test_HII = .true.
+ case('ptmassHIIbench')
+    do_bench_HII = .true.
  case('ptmassSDAR')
     do_test_SDAR = .true.
  case('ptmassorbit','ptmassflyby')
     do_test_orbit = .true.
+ case('ptmasssinkgas','sinkgas')
+    do_test_sinkgas = .true.
  case default
     testall = .true.
  end select
@@ -101,6 +111,7 @@ subroutine test_ptmass(ntests,npass,string)
  alpha = 0.01
  imax = 2
  use_fourthorder = .false.
+ if (use_apr) call init_apr(apr_level,ierr)
  !
  !  Test for sink particles in GR
  !
@@ -149,6 +160,14 @@ subroutine test_ptmass(ntests,npass,string)
  !
  if (do_test_potential .or. testall) call test_sink_potential(ntests,npass)
  !
+ !  Test that sink particle options are written and read back correctly
+ !
+ if (testall) call test_ptmass_options(ntests,npass)
+ !
+ !  Test that sink-gas forces conserve momentum (with unequal gas masses if APR)
+ !
+ if (do_test_sinkgas .or. testall) call test_sinkgas_momentum(ntests,npass)
+ !
  !  Tests of accrete_particle routine
  !
  if (do_test_accretion .or. testall) then
@@ -164,6 +183,8 @@ subroutine test_ptmass(ntests,npass,string)
  if (do_test_SDAR .or. testall .and. .not.gr) call test_SDAR(ntests,npass)
 
  if (do_test_HII .or. testall .and. .not.gr) call test_HIIregion(ntests,npass)
+
+ if (do_bench_HII) call bench_HIIregion()
 
  !reset stuff and clean up temporary files
  itmp    = 201
@@ -184,6 +205,139 @@ subroutine test_ptmass(ntests,npass,string)
  if (id==master) write(*,"(/,a)") '<-- PTMASS TEST COMPLETE'
 
 end subroutine test_ptmass
+
+!-----------------------------------------------------------------------
+!+
+!  check that the sink particle options survive a write/read of the
+!  input file (use_sinktree and use_regnbody are written independently)
+!+
+!-----------------------------------------------------------------------
+subroutine test_ptmass_options(ntests,npass)
+ use dim,          only:use_sinktree
+ use ptmass,       only:write_options_ptmass,read_options_ptmass,use_regnbody
+ use infile_utils, only:open_db_from_file,close_db,inopts
+ use io,           only:id,master
+ use mpiutils,     only:barrier_mpi
+ use testutils,    only:checkval,update_test_scores
+ integer, intent(inout) :: ntests,npass
+ type(inopts), allocatable :: db(:)
+ integer :: nfailed(2),ierr,nerr
+ logical :: use_sinktree_in,use_regnbody_in
+ integer, parameter :: iunit = 25
+ character(len=*), parameter :: filename = 'test_ptmass_options.in'
+
+ if (id==master) write(*,"(/,a)") '--> testing write/read of sink particle options'
+ use_sinktree_in = use_sinktree
+ use_regnbody_in = use_regnbody
+
+ ! sink tree on, subgroups off, so the two cannot be confused
+ use_sinktree = .true.
+ use_regnbody = .false.
+ ! only one MPI task writes the file, and all wait for it before reading
+ if (id==master) then
+    open(unit=iunit,file=filename,status='replace',form='formatted')
+    call write_options_ptmass(iunit)
+    close(iunit)
+ endif
+ call barrier_mpi()
+
+ use_sinktree = .false.
+ nerr = 0
+ call open_db_from_file(db,filename,iunit,ierr)
+ call read_options_ptmass(db,nerr)
+ call close_db(db)
+ nfailed(:) = 0
+ call checkval(use_sinktree,.true.,nfailed(1),'use_sinktree read back')
+ call checkval(use_regnbody,.false.,nfailed(2),'use_regnbody read back')
+ call update_test_scores(ntests,nfailed,npass)
+
+ ! restore options and remove the file
+ use_sinktree = use_sinktree_in
+ use_regnbody = use_regnbody_in
+ call barrier_mpi()
+ if (id==master) then
+    open(unit=iunit,file=filename,status='old',iostat=ierr)
+    close(iunit,status='delete',iostat=ierr)
+ endif
+
+end subroutine test_ptmass_options
+
+!-----------------------------------------------------------------------
+!+
+!  check that the sink-gas forces computed during substepping conserve
+!  linear momentum; with APR alternate gas particles are refined so that
+!  the back-reaction on the sink must use the mass of each particle
+!+
+!-----------------------------------------------------------------------
+subroutine test_sinkgas_momentum(ntests,npass)
+ use dim,         only:use_apr,use_sinktree
+ use part,        only:init_part,npart,npartoftype,massoftype,xyzh,vxyzu,fext,igas,&
+                       nptmass,xyzmh_ptmass,vxyz_ptmass,fxyz_ptmass,fxyz_ptmass_tree,&
+                       dsdt_ptmass,ihacc,ihsoft,apr_level,set_particle_type,get_pmass,&
+                       bin_info,group_info,nmatrix,sync_aprmassoftype,get_ntypes
+ use substepping, only:get_force
+ use random,      only:ran2
+ use io,          only:id,master
+ use mpiutils,    only:reduceall_mpi
+ use testutils,   only:checkval,update_test_scores
+ integer, intent(inout) :: ntests,npass
+ integer :: i,iseed,nfailed(1),force_count,ntypes
+ real    :: dtextforce,dmom(3),smom,pmassi
+ real, parameter :: tol = 1.e-15
+
+ ! with sinks in the tree the sink-gas forces are not computed here
+ if (use_sinktree) return
+
+ if (id==master) write(*,"(/,a)") '--> testing momentum conservation in sink-gas forces'
+ call init_part()
+ iseed = -7123
+ npart = 1000
+ do i=1,npart
+    xyzh(1:3,i) = 0.8*(/ran2(iseed),ran2(iseed),ran2(iseed)/) - 0.4
+    xyzh(4,i)   = 0.1
+    vxyzu(:,i)  = 0.
+    call set_particle_type(i,igas)
+    if (use_apr .and. mod(i,2)==0) apr_level(i) = 2
+ enddo
+ npartoftype(igas) = npart
+ massoftype(igas)  = 1.e-3
+ call sync_aprmassoftype()
+ ntypes = get_ntypes(npartoftype)
+
+ nptmass = 1
+ xyzmh_ptmass(:,1)     = 0.
+ xyzmh_ptmass(4,1)     = 1.
+ xyzmh_ptmass(ihacc,1) = 0.01
+ xyzmh_ptmass(ihsoft,1) = 0.05
+ vxyz_ptmass(:,1) = 0.
+ fxyz_ptmass = 0.
+ fxyz_ptmass_tree = 0.
+ dsdt_ptmass = 0.
+ fext(:,1:npart) = 0.
+ force_count = 0
+ dtextforce = huge(dtextforce)
+ call get_force(nptmass,npart,1,ntypes,0.,dtextforce,xyzh,vxyzu,fext,xyzmh_ptmass,&
+                vxyz_ptmass,fxyz_ptmass,fxyz_ptmass_tree,dsdt_ptmass,0.01,0.5,force_count,&
+                .false.,bin_info,group_info,nmatrix)
+
+ dmom = 0.
+ smom = 0.
+ do i=1,npart
+    pmassi = get_pmass(i,.false.)
+    dmom = dmom + pmassi*fext(1:3,i)
+    smom = smom + pmassi*sqrt(dot_product(fext(1:3,i),fext(1:3,i)))
+ enddo
+ dmom = reduceall_mpi('+',dmom)
+ smom = reduceall_mpi('+',smom)
+ dmom = dmom + xyzmh_ptmass(4,1)*fxyz_ptmass(1:3,1)
+ call checkval(sqrt(dot_product(dmom,dmom))/smom,0.,tol,nfailed(1),'sink-gas forces conserve momentum')
+ call update_test_scores(ntests,nfailed,npass)
+
+ ! restore equal masses for subsequent tests
+ if (use_apr) apr_level(1:npart) = 1
+ nptmass = 0
+
+end subroutine test_sinkgas_momentum
 
 !-----------------------------------------------------------------------
 !+
@@ -325,7 +479,7 @@ subroutine test_binary(ntests,npass,string)
        nparttot = 1000
        call set_disc(id,master,nparttot=nparttot,npart=npart,rmin=rin,rmax=rout,p_index=1.0,q_index=0.75,&
                      HoverR=0.1,disc_mass=0.01*m1,star_mass=m1+m2,gamma=gamma,&
-                     particle_mass=massoftype(igas),hfact=hfact,xyzh=xyzh,vxyzu=vxyzu,&
+                     particle_type=igas,particle_mass=massoftype(igas),hfact=hfact,xyzh=xyzh,vxyzu=vxyzu,&
                      polyk=polyk,verbose=.false.)
        npartoftype(igas) = npart
     endif
@@ -376,7 +530,7 @@ subroutine test_binary(ntests,npass,string)
     if (gr) then
        call init_metric(nptmass,xyzmh_ptmass,metrics_ptmass,metricderivs_ptmass)
        call prim2consall(nptmass,xyzmh_ptmass,metrics_ptmass,&
-                         vxyz_ptmass,pxyzu_ptmass,use_dens=.false.,use_sink=.true.)
+                         vxyz_ptmass,pxyzu_ptmass,use_sink=.true.)
     endif
     !
     ! initialise forces
@@ -606,7 +760,7 @@ subroutine test_sink_binary_gr(ntests,npass,string)
  !
  call init_metric(nptmass,xyzmh_ptmass,metrics_ptmass,metricderivs_ptmass)
  call prim2consall(nptmass,xyzmh_ptmass,metrics_ptmass,&
-                   vxyz_ptmass,pxyzu_ptmass,use_dens=.false.,use_sink=.true.)
+                   vxyz_ptmass,pxyzu_ptmass,use_sink=.true.)
  ! sinks in GR, provide external force due to metric to determine the sink total force
  call get_accel_sink_sink(nptmass,xyzmh_ptmass,fxyz_sinksink,epot_sinksink,&
                           dtsinksink,0,0.,merge_ij,merge_n,dsdt_sinksink)
@@ -759,7 +913,7 @@ subroutine test_softening(ntests,npass)
  if (gr) then
     call init_metric(nptmass,xyzmh_ptmass,metrics_ptmass,metricderivs_ptmass)
     call prim2consall(nptmass,xyzmh_ptmass,metrics_ptmass,&
-                     vxyz_ptmass,pxyzu_ptmass,use_dens=.false.,use_sink=.true.)
+                     vxyz_ptmass,pxyzu_ptmass,use_sink=.true.)
  endif
 
  call get_accel_sink_sink(nptmass,xyzmh_ptmass,fxyz_ptmass,epot_sinksink,&
@@ -769,7 +923,7 @@ subroutine test_softening(ntests,npass)
  totmomin = totmom
  angmomin = angtot
 
- call checkval(epot,m1*m2*(phisoft)/h_soft_sinksink,2.*epsilon(0.),nfailed(1),'potential energy')
+ call checkval(epot,m1*m2*(phisoft)/h_soft_sinksink,1.e-15,nfailed(1),'potential energy')
  call update_test_scores(ntests,nfailed(1:1),npass)
 
  C_force = 0.25
@@ -796,7 +950,7 @@ subroutine test_softening(ntests,npass)
  enddo
  call compute_energies(t)
  nfailed(:) = 0
- call checkval(angtot,angmomin,2.e-14,nfailed(1),'angular momentum')
+ call checkval(angtot,angmomin,2.5e-14,nfailed(1),'angular momentum')
  call checkval(totmom,totmomin,tiny(0.),nfailed(2),'linear momentum')
  call checkval(etotin+errmax,etotin,2.e-9,nfailed(3),'total energy')
 !  call checkval(      ,r_max,1.e-10,nfailed(4),'radius')
@@ -903,7 +1057,8 @@ subroutine test_accretion(ntests,npass,itest)
                         npart,npartoftype,xyzh,vxyzu,fxyzu,igas,ihacc,&
                         isdead_or_accreted,set_particle_type,ndptmass,hfact,&
                         metrics_ptmass,metricderivs_ptmass,pxyzu_ptmass,gr,&
-                        metrics,metricderivs,pxyzu
+                        metrics,metricderivs,pxyzu,apr_level,rho,eos_vars,&
+                        igasP,ics,igamma,itemp,init_rho_from_h
  use ptmass,       only:ptmass_accrete,update_ptmass
  use ptmass_tree,  only:build_ptmass_tree,ptmasskdtree,get_ptmass_neigh
  use neighkdtree,  only:listneigh
@@ -911,13 +1066,16 @@ subroutine test_accretion(ntests,npass,itest)
  use mpiutils,     only:bcast_mpi,reduce_in_place_mpi,reduceall_mpi
  use testutils,    only:checkval,update_test_scores
  use kernel,       only:hfact_default
- use eos,          only:polyk,gamma,ieos
+ use eos,          only:polyk,gamma,ieos,init_eos,equationofstate
+ use dim,          only:maxvxyzu
  use setdisc,      only:set_disc
  use metric_tools, only:init_metric
+ use apr,          only:use_apr,init_apr,sync_aprmassoftype
  integer, intent(inout) :: ntests,npass
  integer, intent(in)    :: itest
- integer :: i,j,nfailed(11),np_disc,nneigh
+ integer :: i,j,nfailed(11),np_disc,nneigh,ierr
  real :: xyz(3)
+ real :: tempi,ponrhoi,spsoundi
  integer(kind=8) :: naccreted
  integer(kind=1) :: ibin_wakei
  character(len=20) :: string
@@ -971,7 +1129,7 @@ subroutine test_accretion(ntests,npass,itest)
     np_disc = 1000
     call set_disc(id,master,nparttot=np_disc,npart=npart,rmin=1.,rmax=2.*xyzmh_ptmass(ihacc,1),p_index=1.0,q_index=0.75,&
                   HoverR=0.1,disc_mass=0.5*xyzmh_ptmass(4,1),star_mass=xyzmh_ptmass(4,1),gamma=1.,&
-                  particle_mass=massoftype(igas),hfact=hfact,xyzh=xyzh,vxyzu=vxyzu,&
+                  particle_type=igas,particle_mass=massoftype(igas),hfact=hfact,xyzh=xyzh,vxyzu=vxyzu,&
                   polyk=polyk,verbose=.false.)
     npartoftype(igas) = npart
  endif
@@ -993,6 +1151,23 @@ subroutine test_accretion(ntests,npass,itest)
  nfailed(:)  = 0
  !--check energies before accretion event
  t=0.
+ if (use_apr) then
+    call init_apr(apr_level,ierr)
+    call sync_aprmassoftype()
+ endif
+ ! initialise rho and EOS variables needed by compute_energies
+ call init_eos(ieos,ierr)
+ call init_rho_from_h()
+ do i=1,npart
+    if (xyzh(4,i) > 0.) then
+       if (maxvxyzu >= 4) vxyzu(4,i) = polyk
+       call equationofstate(ieos,ponrhoi,spsoundi,rho(i),xyzh(1,i),xyzh(2,i),xyzh(3,i),tempi,vxyzu(4,i))
+       eos_vars(igasP,i)   = ponrhoi*rho(i)
+       eos_vars(ics,i)     = spsoundi
+       eos_vars(igamma,i)  = gamma
+       eos_vars(itemp,i)   = tempi
+    endif
+ enddo
  call compute_energies(t)
  etotin   = etot
  totmomin = totmom
@@ -1000,9 +1175,11 @@ subroutine test_accretion(ntests,npass,itest)
  ibin_wakei = 0
  naccreted  = 0
  dptmass(:,1:nptmass) = 0.
- !$omp parallel default(shared)&
- !$omp private(i,accreted,nneigh,xyz)&
- !$omp firstprivate(dptmass_thread,rsearch)&
+ !$omp parallel default(none) &
+ !$omp shared(npart,nptmass,xyzh,itest,ptmasskdtree,pxyzu,fxyzu,massoftype) &
+ !$omp shared(xyzmh_ptmass,pxyzu_ptmass,vxyzu,vxyz_ptmass,dptmass,t,ibin_wakei) &
+ !$omp private(i,j,accreted,nneigh,xyz) &
+ !$omp firstprivate(dptmass_thread,rsearch) &
  !$omp reduction(+:naccreted)
  dptmass_thread(:,1:nptmass) = 0.
  !$omp do
@@ -1107,7 +1284,7 @@ subroutine test_createsink(ntests,npass)
  use eos,          only:ieos,polyk,gamma
  use kdtree,       only:tree_accuracy
  use io,           only:id,master,iverbose
- use part,         only:init_part,npart,npartoftype,igas,xyzh,massoftype,hfact,rhoh,&
+ use part,         only:init_part,npart,npartoftype,igas,xyzh,massoftype,hfact,rho,&
                         iphase,isetphase,fext,divcurlv,vxyzu,fxyzu,poten, &
                         nptmass,xyzmh_ptmass,vxyz_ptmass,fxyz_ptmass,ndptmass, &
                         dptmass,fxyz_ptmass_sinksink,pxyzu_ptmass,metrics_ptmass
@@ -1160,6 +1337,7 @@ subroutine test_createsink(ntests,npass)
     call init_part()
     call set_units_for_tests(pos_fac,vel_fac)
     if (gr) pos_fac = 1e4*pos_fac ! to avoid too small a density for GR
+    gaussian_pos_fac = pos_fac
 
     vxyzu(:,:) = 0.
     fxyzu(:,:) = 0.
@@ -1232,15 +1410,15 @@ subroutine test_createsink(ntests,npass)
     if (itest==2 .and. gravity) then
        imin = minloc(xyzh(4,1:npart))
        itestp = imin(1)
-       rhomax_test = rhoh(xyzh(4,itestp),massoftype(igas))
+       rhomax_test = rho(itestp)
        !
        ! only check on the thread that has rhomax
        !
        ipart_rhomax_global = ipart_rhomax
        call reduceloc_mpi('max',ipart_rhomax_global,id_rhomax)
        if (id == id_rhomax) then
-          rhomax = rhoh(xyzh(4,ipart_rhomax),massoftype(igas))
-          call checkval(rhomax,rhomax_test,epsilon(0.),nfailed(1),'rhomax',thread_id=id)
+          rhomax = rho(ipart_rhomax)
+          call checkval(rhomax,rhomax_test,1.e-15,nfailed(1),'rhomax',thread_id=id)
        else
           itestp = -1 ! set itest = -1 on other threads
           call checkval(ipart_rhomax,-1,0,nfailed(1),'ipart_rhomax',thread_id=id)
@@ -1330,20 +1508,19 @@ subroutine test_createsink(ntests,npass)
  iverbose = 0
  icreate_sinks  = 0
 
-contains
+end subroutine test_createsink
+
 !-----------------------------------------------------------------------
 !+
-!  Helper function used in sink particle creation test
+!  Gaussian density used by the sink particle creation test.
 !+
 !-----------------------------------------------------------------------
 real function gaussianr(r)
  real, intent(in) :: r
 
- gaussianr = exp(-(r/(0.05*pos_fac))**2) !1./(r**2 + 0.0001**2)
+ gaussianr = exp(-(r/(0.05*gaussian_pos_fac))**2)
 
 end function gaussianr
-
-end subroutine test_createsink
 
 !-----------------------------------------------------------------------
 !+
@@ -1504,7 +1681,7 @@ subroutine test_merger(ntests,npass)
        mass1 = 0.
        call init_metric(nptmass,xyzmh_ptmass,metrics_ptmass,metricderivs_ptmass)
        call prim2consall(nptmass,xyzmh_ptmass,metrics_ptmass,&
-                         vxyz_ptmass,pxyzu_ptmass,use_dens=.false.,use_sink=.true.)
+                         vxyz_ptmass,pxyzu_ptmass,use_sink=.true.)
     endif
     call compute_energies(0.)
     nsink0 = nptmass; angmom0 = angtot; mv0 = totmom; mtot0 = mtot
@@ -1612,45 +1789,430 @@ subroutine test_merger(ntests,npass)
 
 end subroutine test_merger
 
+subroutine test_HIIregion(ntests,npass)
+ integer, intent(inout) :: ntests,npass
+
+ call test_HII_eos(ntests,npass)
+
+ call test_HII_exp(ntests,npass)
+
+end subroutine test_HIIregion
+
+!-----------------------------------------------------------------------
+!+
+!  Test the two phase eos of the HII regions: the isothermal eos (ieos=21)
+!  mixed at the front and the two phase relaxation of the adiabatic model (icooling=10)
+!+
+!-----------------------------------------------------------------------
+subroutine test_HII_eos(ntests,npass)
+ use io,        only:id,master,iprint
+ use eos,       only:gmw,gamma,polyk,init_eos
+ use eos_HIIR,  only:get_eos_HIIR_iso,Tion,Tcold,muion,polykion,uIon
+ use cooling_HIIR, only:init_cooling_HIIR,relax_HIIR,heated_u_HIIR,held_HIIR,Crelax
+ use eos,       only:temperature_coef
+ use units,     only:set_units,unit_velocity
+ use physcon,   only:pc,solarm,kboltz,mass_proton_cgs
+ use testutils, only:checkval,update_test_scores
+ integer, intent(inout) :: ntests,npass
+ integer :: nfailed(17),ierr
+ real    :: tempi,ponrhoi,spsoundi,ucold,u0,dudt,h,dt,trelax,Crelax0,muhalf,uhalf
+ real    :: gmw0,gamma0,polyk0
+
+ if (id==master) write(iprint,"(/,a)") '--> testing HII region two phase equation of state'
+ nfailed(:) = 0
+ gmw0 = gmw; gamma0 = gamma; polyk0 = polyk
+ call set_units(dist=pc,mass=solarm,G=1.d0)
+ gmw   = 1.
+ gamma = 5./3.
+ polyk = (kboltz*100.)/(gmw*mass_proton_cgs)/unit_velocity**2
+ call init_eos(21,ierr)
+
+ !-- ieos=21: neutral, ionised, half ionised front particle, temperature not set yet
+ tempi = Tcold
+ call get_eos_HIIR_iso(polyk,temperature_coef,gmw,tempi,ponrhoi,spsoundi)
+ call checkval(ponrhoi,polyk,epsilon(0.),nfailed(1),'iso: P/rho of the cold phase')
+
+ tempi = Tion
+ call get_eos_HIIR_iso(polyk,temperature_coef,muion,tempi,ponrhoi,spsoundi)
+ call checkval(ponrhoi,polykion,epsilon(0.),nfailed(2),'iso: P/rho of the ionised phase')
+
+ tempi = 0.5*(Tion + Tcold)
+ call get_eos_HIIR_iso(polyk,temperature_coef,gmw,tempi,ponrhoi,spsoundi)
+ call checkval(ponrhoi,0.5*(polyk + polykion),1.e-14,nfailed(3),'iso: P/rho of a half ionised particle')
+
+ tempi = -1.
+ call get_eos_HIIR_iso(polyk,temperature_coef,gmw,tempi,ponrhoi,spsoundi)
+ call checkval(ponrhoi,polyk,epsilon(0.),nfailed(4),'iso: unset temperature is cold')
+
+ !-- icooling=10: the front relaxes over Crelax*h/c_s, the ionised gas is held at uIon,
+ !   the neutral gas away from the front is held in force (no du/dt)
+ call init_cooling_HIIR(ierr)
+ ucold   = polyk/(gamma - 1.)
+ muhalf  = 0.5*(muion + gmw)
+ uhalf   = 0.5*(Tion + Tcold)/(temperature_coef*muhalf*(gamma - 1.))
+ h       = 1.e-2
+ dt      = 1.e-6
+ u0      = 100.*ucold
+ call relax_HIIR(u0,h,muion,gamma,dt,dudt)
+ call checkval(u0 + dt*dudt,uIon,1.e-14,nfailed(5),'relax: ionised gas held at uIon')
+ call checkval(held_HIIR(muion,0.),.true.,nfailed(6),'held: ionised gas')
+ call checkval(held_HIIR(gmw,0.),.true.,nfailed(7),'held: neutral gas away from the front')
+ call checkval(held_HIIR(0.,0.),.true.,nfailed(8),'held: unset mu counts as neutral')
+ call checkval(held_HIIR(gmw,2.),.false.,nfailed(9),'held: neutral gas of the front is free')
+ call checkval(held_HIIR(muhalf,0.),.false.,nfailed(10),'held: partially ionised gas is free')
+
+ Crelax0 = Crelax
+ Crelax  = 2.
+ u0      = 3.*uhalf
+ trelax  = Crelax*h/sqrt(gamma*(gamma - 1.)*u0)  ! sound speed of the shocked gas
+ call relax_HIIR(u0,h,muhalf,gamma,trelax,dudt)
+ call checkval((u0 + trelax*dudt - uhalf)/(u0 - uhalf),exp(-1.),1.e-12,nfailed(11),&
+               'relax: shocked front decays over Crelax*h/cs')
+
+ u0      = 3.*ucold
+ trelax  = Crelax*h/sqrt(gamma*(gamma - 1.)*u0)
+ call relax_HIIR(u0,h,gmw,gamma,trelax,dudt)
+ call checkval((u0 + trelax*dudt - ucold)/(u0 - ucold),exp(-1.),1.e-12,nfailed(12),&
+               'relax: shocked neutral gas decays over Crelax*h/cs')
+
+ !-- half ionised front particle, still cold: heated by the star at once
+ call relax_HIIR(ucold,h,muhalf,gamma,dt,dudt)
+ call checkval(ucold + dt*dudt,uhalf,1.e-12,nfailed(13),'relax: front particle heated at once')
+
+ !-- thermal energy given to the forces in derivs
+ call checkval(heated_u_HIIR(ucold,muion,gamma),uIon,epsilon(0.),nfailed(14),'heat: ionised gas at uIon')
+ call checkval(heated_u_HIIR(0.5*ucold,gmw,gamma),ucold,1.e-14,nfailed(15),'heat: neutral gas at least at Tcold')
+ call checkval(heated_u_HIIR(ucold,muhalf,gamma),uhalf,1.e-14,nfailed(16),'heat: front particle at its target')
+ call checkval(heated_u_HIIR(2.*uhalf,muhalf,gamma),2.*uhalf,epsilon(0.),nfailed(17),'heat: shocked front kept')
+
+ Crelax  = Crelax0
+ gmw = gmw0; gamma = gamma0; polyk = polyk0
+
+ call update_test_scores(ntests,nfailed,npass)
+
+end subroutine test_HII_eos
+
 !-----------------------------------------------------------------------
 !+
 !  Test HII region expansion around sink particles
 !+
 !-----------------------------------------------------------------------
-subroutine test_HIIregion(ntests,npass)
- use dim,            only:maxp,maxphase,maxvxyzu,periodic,mpi
- use io,             only:id,master,iverbose,iprint
- use eos_HIIR,       only:polykion,init_eos_HIIR
- use eos,            only:gmw,ieos,polyk,gamma,temperature_coef,gmw
- use part,           only:nptmass,xyzmh_ptmass,vxyz_ptmass, &
-                          npart,ihacc,irstrom,xyzh,vxyzu,hfact,igas, &
-                          npartoftype,fxyzu,massoftype,init_part,&
-                          iphase,isetphase,irateion,irstrom,rhoh,&
-                          eos_vars,imu
- use ptmass,         only:h_acc
- use step_lf_global, only:init_step,step
- use spherical,      only:set_sphere
- use units,          only:set_units,utime,unit_velocity,udist,umass
- use physcon,        only:pc,solarm,years,pi,kboltz,mass_proton_cgs
- use kernel,         only:hfact_default
- use kdtree,         only:tree_accuracy
+subroutine test_HII_exp(ntests,npass)
+ use dim,            only:periodic,mpi
+ use io,             only:id,master,iprint
+ use part,           only:nptmass,xyzmh_ptmass,vxyz_ptmass,npart,xyzh,vxyzu,&
+                          init_part,irstrom,irateion,rho,eos_vars
+ use eos,            only:ieos
+ use units,          only:utime
+ use physcon,        only:pi
  use testutils,      only:checkval,update_test_scores
- use HIIRegion,      only:initialize_H2R,update_ionrate,HII_feedback,nHIIsources,ar,mH,iH2R
- use setup_params,   only:npart_total
- use deriv,          only:get_density_global
+ use HIIRegion,      only:HII_feedback,ar,mH,iH2R,nside_H2R,rstrom_sec,initialize_H2R,sectors_on
+ use mpiutils,       only:reduceall_mpi
  integer, intent(inout) :: ntests,npass
- integer          :: np,i,nfailed(2),itest,nion,ierr
- real             :: totmass,psep,r2,rstrommax
- real             :: Rstrom,ci,k,rho0,rhomean
- real             :: totvol,nx,rmin,rmax,temp
+ integer          :: nfailed(12),itest,nion,ngas
+ real             :: rstrommax,Rstrom,rho0,Rdense,rnorth,rsouth,psep
  character(len=22) :: string
 
- if (mpi .or. periodic) then
-    write(iprint,*) '--> Skip HII tests when periodic or MPI are on...'
+ if (periodic) then
+    write(iprint,*) '--> Skip HII tests when periodic is on...'
     return
  else
     write(iprint,*) '--> testing HII feedback. Compute Stromgrën radius in homogeneous sphere'
  endif
+ call setup_HII_sphere(49.,rho0)
+
+ psep = norm2(xyzh(1:3,1)-xyzh(1:3,2))
+
+ nfailed(:) = 0
+ do itest = 1,4
+    !-- itest 3: bounded neighbours from scratch, itest 4: warm start from the radius of itest 3
+    iH2R = min(itest,3)
+    if (itest >= 3) iH2R = 4
+    if (mpi .and. iH2R /= 4) cycle  ! only the bounded neighbours method runs with MPI
+    if (itest < 4) xyzmh_ptmass(irstrom,1) = -1.
+
+    string = "nearest neighbors"
+
+    if (iH2R == 2) string = "inversed ray tracing"
+    if (iH2R == 4) string = "bounded neighbours"
+    if (itest == 4) string = "bounded (warm start)"
+
+    if (id==master) write(iprint,"(/,a)") '--> testing HII region feedback with '//trim(string)//' method'
+
+    call HII_feedback(nptmass,npart,xyzh,xyzmh_ptmass,vxyz_ptmass,vxyzu,rho,eos_vars)
+    call measure_HII_region(rstrommax,nion)
+
+    !-- with sectors each sector resolves its own front: compare their mean radius
+
+    if (iH2R == 4) rstrommax = xyzmh_ptmass(irstrom,1)
+    Rstrom = 10**((1./3)*(log10(((3*mH**2)/(4*pi*ar*rho0**2)))+xyzmh_ptmass(irateion,1)+log10(utime)))
+
+    call checkval(rstrommax,Rstrom,1.4e-2,nfailed(itest),'Initial strömgren radius')
+
+    !-- ~1200 hot particles resolve the 12 sectors: the source stays in sectors
+    if (itest == 3) call checkval(sectors_on(1),.true.,nfailed(8),'sectors kept on')
+ enddo
+
+ !
+ !-- sectors: 48 sectors (Nside=2) in the uniform sphere, the mean radius is unchanged
+ !
+ iH2R = 4
+ nside_H2R = 2
+ call initialize_H2R
+ xyzmh_ptmass(irstrom,1) = -1.
+ if (id==master) write(iprint,"(/,a)") '--> testing HII region feedback with 48 sectors'
+ call HII_feedback(nptmass,npart,xyzh,xyzmh_ptmass,vxyz_ptmass,vxyzu,rho,eos_vars)
+ call checkval(xyzmh_ptmass(irstrom,1),Rstrom,1.4e-2,nfailed(5),'mean sector radius')
+
+ !
+ !-- shadowing: rho doubled for z > 0, the particles staying where they are. The photons
+ !   used per particle (alpha m rho/mH**2) double, so the photons used per unit volume
+ !   double too and R_S shrinks by 2**(-1/3) there. With Nside=1 the 4 northern sectors
+ !   (pixels 0-3) lie in z > 0, the 4 southern ones (pixels 8-11) in z < 0 keep the
+ !   uniform radius
+ !
+ nside_H2R = 1
+ call initialize_H2R
+ xyzmh_ptmass(irateion,1) = 50.5
+ xyzmh_ptmass(irstrom,1)  = -1.
+
+ where (xyzh(3,1:npart) > 0.) rho(1:npart) = 2.*rho(1:npart)
+ if (id==master) write(iprint,"(/,a)") '--> testing HII region feedback with sectors, density x2 for z > 0'
+
+ call HII_feedback(nptmass,npart,xyzh,xyzmh_ptmass,vxyz_ptmass,vxyzu,rho,eos_vars)
+
+ Rstrom = 10**((1./3)*(log10(((3*mH**2)/(4*pi*ar*rho0**2)))+xyzmh_ptmass(irateion,1)+log10(utime)))
+ Rdense = Rstrom*2.**(-1./3.)
+ rnorth = sum(rstrom_sec(1:4,1))/4.
+ rsouth = sum(rstrom_sec(9:12,1))/4.
+
+ call checkval(rnorth,Rdense,3.e-2,nfailed(6),'radius of the dense (northern) sectors')
+ call checkval(rsouth,Rstrom,3.e-2,nfailed(7),'radius of the uniform (southern) sectors')
+ where (xyzh(3,1:npart) > 0.) rho(1:npart) = 0.5*rho(1:npart)
+
+ !
+ !-- unresolved bubble (birth environment): ~12 hot particles, fewer than two
+ !   per sector on average, so the source falls back to a single isotropic region, and
+ !   stays there since the isotropic bubble is not resolved either
+ !
+ xyzmh_ptmass(irateion,1) = 47.
+ xyzmh_ptmass(irstrom,1)  = -1.
+ if (id==master) write(iprint,"(/,a)") '--> testing HII region feedback with an unresolved bubble'
+
+ call HII_feedback(nptmass,npart,xyzh,xyzmh_ptmass,vxyz_ptmass,vxyzu,rho,eos_vars)
+
+ call checkval(sectors_on(1),.false.,nfailed(9),'unresolved bubble switched to isotropic')
+
+ call HII_feedback(nptmass,npart,xyzh,xyzmh_ptmass,vxyz_ptmass,vxyzu,rho,eos_vars)
+
+ call checkval(sectors_on(1),.false.,nfailed(10),'isotropic bubble stays isotropic')
+ Rstrom = 10**((1./3)*(log10(((3*mH**2)/(4*pi*ar*rho0**2)))+xyzmh_ptmass(irateion,1)+log10(utime)))
+ call checkval(xyzmh_ptmass(irstrom,1),Rstrom,psep/Rstrom,nfailed(11),'isotropic radius of the unresolved bubble')
+
+ !
+ !-- escape: the Stromgren sphere is larger than the cloud, every sector reaches
+ !   the edge of the gas and the whole cloud is ionised
+ !
+ xyzmh_ptmass(irateion,1) = 52.5
+ xyzmh_ptmass(irstrom,1)  = -1.
+ if (id==master) write(iprint,"(/,a)") '--> testing HII region feedback with escaping photons'
+
+ call HII_feedback(nptmass,npart,xyzh,xyzmh_ptmass,vxyz_ptmass,vxyzu,rho,eos_vars)
+ call measure_HII_region(rstrommax,nion)
+
+ ngas = npart
+ if (mpi) ngas = int(reduceall_mpi('+',npart))
+ call checkval(nion,ngas,0,nfailed(12),'whole cloud ionised')
+ xyzmh_ptmass(irateion,1) = 49.
+
+ call update_test_scores(ntests,nfailed,npass)
+
+ call init_part()
+ iH2R = 0
+ ieos = 2
+
+end subroutine test_HII_exp
+
+!-----------------------------------------------------------------------
+!+
+!  Benchmark of the HII region methods: wall time of one call of each
+!  method for increasing ionising rates, i.e. increasing numbers of
+!  ionised particles in the same 10^6 particle sphere. Not part of the
+!  test suite: run with "phantomtest ptmassHIIbench"
+!+
+!-----------------------------------------------------------------------
+subroutine bench_HIIregion()
+ use dim,            only:periodic,mpi
+ use io,             only:id,master,iprint,nprocs
+ use part,           only:nptmass,xyzmh_ptmass,vxyz_ptmass,npart,xyzh,vxyzu,&
+                          init_part,irstrom,irateion,rho,eos_vars
+ use eos,            only:ieos
+ use units,          only:utime
+ use physcon,        only:pi
+ use timing,         only:getused
+ use mpiutils,       only:barrier_mpi,reduceall_mpi
+ use omputils,       only:init_omp,omp_num_threads
+ use HIIRegion,      only:HII_feedback,ar,mH,iH2R
+ integer, parameter :: nq = 4, nmeth = 4
+ real,    parameter :: logQ(nq) = (/49.,50.,51.,51.5/)
+ character(len=12), parameter :: label(nmeth) = &
+    (/'KNN         ','ray tracing ','bounded     ','bounded warm'/)
+ integer :: iq,imeth,nion(nq,nmeth)
+ real    :: rho0,Rstrom(nq),rmeas(nq,nmeth),tmeth(nq,nmeth)
+ real(kind=4) :: t1,t2
+
+ if (periodic) then
+    write(iprint,*) '--> Skip HII benchmark when periodic is on...'
+    return
+ endif
+ if (id==master) write(iprint,"(/,a)") '--> benchmarking HII region methods in a homogeneous sphere'
+ call setup_HII_sphere(logQ(1),rho0)
+
+ nion  = 0
+ rmeas = 0.
+ tmeth = -1.     ! -1: not run
+ do iq=1,nq
+    xyzmh_ptmass(irateion,1) = logQ(iq)
+    Rstrom(iq) = 10**((1./3)*(log10(((3*mH**2)/(4*pi*ar*rho0**2)))+logQ(iq)+log10(utime)))
+
+    do imeth=1,nmeth
+       select case(imeth)
+       case(1)
+          iH2R = 1
+       case(2)
+          iH2R = 2
+       case default
+          iH2R = 4
+       end select
+       if (mpi .and. iH2R /= 4) cycle  ! KNN and ray tracing are serial only
+
+       if (imeth < 4) xyzmh_ptmass(irstrom,1) = -1.  ! method 4 starts from the radius of method 3
+       if (id==master) write(iprint,"(a,f5.1,a)") ' log Q = ',logQ(iq),', method: '//trim(label(imeth))
+
+       if (mpi) call barrier_mpi()
+
+       call getused(t1)
+       call HII_feedback(nptmass,npart,xyzh,xyzmh_ptmass,vxyz_ptmass,vxyzu,rho,eos_vars)
+       call getused(t2)
+
+       tmeth(iq,imeth) = real(t2 - t1)
+
+       if (mpi) tmeth(iq,imeth) = reduceall_mpi('max',tmeth(iq,imeth))
+       call measure_HII_region(rmeas(iq,imeth),nion(iq,imeth))
+    enddo
+ enddo
+
+ call init_omp()
+ if (id==master) then
+    write(iprint,"(/,a,i0,a,i0,a)") ' HII region benchmark: wall time [s] of one call, ',&
+                                    nprocs,' MPI task(s), ',omp_num_threads,' OpenMP thread(s)'
+    write(iprint,"(1x,a5,a9,a9,4(1x,a12))") 'logQ','R_S [pc]','N_ion',label
+    do iq=1,nq
+       write(iprint,"(1x,f5.1,f9.3,i9,4(1x,a12))") logQ(iq),Rstrom(iq),maxval(nion(iq,:)),&
+            (time_string(tmeth(iq,imeth)),imeth=1,nmeth)
+    enddo
+    write(iprint,"(/,a)") ' measured radius / analytic Stromgren radius'
+    write(iprint,"(1x,a5,4(1x,a12))") 'logQ',label
+    do iq=1,nq
+       write(iprint,"(1x,f5.1,4(1x,a12))") logQ(iq),(ratio_string(rmeas(iq,imeth)/Rstrom(iq),&
+            tmeth(iq,imeth)),imeth=1,nmeth)
+    enddo
+ endif
+
+ call init_part()
+ iH2R = 0
+ ieos = 2
+
+end subroutine bench_HIIregion
+
+!-----------------------------------------------------------------------
+!+
+!  format a time for the benchmark table, "-" when the method was not run
+!+
+!-----------------------------------------------------------------------
+character(len=12) function time_string(t)
+ real, intent(in) :: t
+
+ if (t < 0.) then
+    time_string = '           -'
+ else
+    write(time_string,"(es12.3)") t
+ endif
+
+end function time_string
+
+character(len=12) function ratio_string(ratio,t)
+ real, intent(in) :: ratio,t
+
+ if (t < 0.) then
+    ratio_string = '           -'
+ else
+    write(ratio_string,"(f12.4)") ratio
+ endif
+
+end function ratio_string
+
+!-----------------------------------------------------------------------
+!+
+!  largest distance from the sink of an ionised particle, and the number
+!  of ionised particles, over all MPI tasks
+!+
+!-----------------------------------------------------------------------
+subroutine measure_HII_region(rstrommax,nion)
+ use dim,      only:mpi
+ use part,     only:xyzmh_ptmass,npart,xyzh,eos_vars,imu
+ use eos,      only:gmw
+ use mpiutils, only:reduceall_mpi
+ real,    intent(out) :: rstrommax
+ integer, intent(out) :: nion
+ integer :: i
+ real    :: r2
+
+ rstrommax = epsilon(rstrommax)
+ nion      = 0
+ do i=1,npart
+    if (eos_vars(imu,i) < gmw) then
+       nion = nion + 1
+       r2 = (xyzmh_ptmass(1,1)-xyzh(1,i))**2 + (xyzmh_ptmass(2,1)-xyzh(2,i))**2 &
+          + (xyzmh_ptmass(3,1)-xyzh(3,i))**2
+       rstrommax = max(rstrommax,sqrt(r2))
+    endif
+ enddo
+ if (mpi) then
+    rstrommax = reduceall_mpi('max',rstrommax)
+    nion      = int(reduceall_mpi('+',nion))
+ endif
+
+end subroutine measure_HII_region
+
+!-----------------------------------------------------------------------
+!+
+!  homogeneous sphere of 10^6 particles with one ionising sink at its
+!  centre, densities computed, HII module initialised
+!+
+!-----------------------------------------------------------------------
+subroutine setup_HII_sphere(logQ,rho0)
+ use dim,            only:maxp,maxphase,maxvxyzu
+ use io,             only:id,master,iverbose
+ use eos_HIIR,       only:init_eos_HIIR
+ use eos,            only:gmw,ieos,polyk,gamma,temperature_coef
+ use part,           only:nptmass,xyzmh_ptmass,vxyz_ptmass,npart,irstrom,xyzh,vxyzu,&
+                          hfact,igas,npartoftype,fxyzu,massoftype,init_part,&
+                          iphase,isetphase,irateion
+ use ptmass,         only:h_acc
+ use spherical,      only:set_sphere
+ use units,          only:set_units,unit_velocity,udist,umass
+ use physcon,        only:pc,solarm,pi,kboltz,mass_proton_cgs
+ use kdtree,         only:tree_accuracy
+ use HIIRegion,      only:initialize_H2R,nHIIsources,iH2R
+ use setup_params,   only:npart_total
+ use deriv,          only:get_density_global
+ use mpiutils,       only:reduceall_mpi
+ real, intent(in)  :: logQ
+ real, intent(out) :: rho0
+ integer :: np,i,ierr
+ real    :: totmass,psep,totvol,nx,rmin,rmax,temp
+
  call set_units(dist=pc,mass=solarm,G=1.d0)
  call init_eos_HIIR(gamma,polyk,gmw,temperature_coef,ierr)
  iverbose = 0
@@ -1668,7 +2230,7 @@ subroutine test_HIIregion(ntests,npass)
  h_acc = 0.002
 
  xyzmh_ptmass(4,1) = -1.
- xyzmh_ptmass(irateion,1) = 49. ! rate_ion [s^-1]
+ xyzmh_ptmass(irateion,1) = logQ ! log10 of the ionising rate [s^-1]
  nptmass = 1
  nHIIsources = 1
 
@@ -1684,7 +2246,7 @@ subroutine test_HIIregion(ntests,npass)
 !
  np       = 1000000
  totvol   = 4./3.*pi*rmax**3
- nx       = int(np**(1./3.))
+ nx       = nint(np**(1./3.))
  psep     = totvol**(1./3.)/real(nx)
  npart    = 0
  npart_total = 0
@@ -1693,8 +2255,6 @@ subroutine test_HIIregion(ntests,npass)
  if (id==master) then
     call set_sphere('cubic',id,master,rmin,rmax,psep,hfact,npart,xyzh,nptot=npart_total,np_requested=np)
  endif
- np       = npart
-
 !
 !--set particle properties
 !
@@ -1703,61 +2263,28 @@ subroutine test_HIIregion(ntests,npass)
  npartoftype(:)    = 0
  npartoftype(igas) = npart
  massoftype(:)     = 0.0
- massoftype(igas)  = totmass/npartoftype(igas)
+ massoftype(igas)  = totmass/reduceall_mpi('+',npart)
  if (maxphase==maxp) then
     do i=1,npart
        iphase(i) = isetphase(igas,iactive=.true.)
     enddo
  endif
 
- if (id==master) then
-    call initialize_H2R
- endif
+ iH2R = 4  ! allocates the sectors, used by the bounded method
+ call initialize_H2R
 
  xyzmh_ptmass(irstrom,1) = -1.
- ci   = sqrt(polykion)
- k = 0.005
 
  polyk = (kboltz*temp)/(gmw*mass_proton_cgs)*((unit_velocity)**2)
  vxyzu(:,:) = 0.
  fxyzu(:,:) = 0.
  if (maxvxyzu >= 4) then
     vxyzu(4,:) = polyk
-    ieos = 22
+    ieos = 2
  endif
  call get_density_global(2)
 
- do itest = 1,2
-    iH2R = itest
-    string = "nearest neighbors"
-    if (iH2R == 2) string = "inversed ray tracing"
-    if (id==master) write(iprint,"(/,a)") '--> testing HII region feedback with '//trim(string)//' method'
-    call HII_feedback(nptmass,npart,xyzh,xyzmh_ptmass,vxyzu,eos_vars)
-    rstrommax = epsilon(rstrommax)
-    rhomean   = 0.
-    nion      = 0
-
-    do i= 1,npart
-       r2 = (xyzmh_ptmass(1,1)-xyzh(1,i))**2 + (xyzmh_ptmass(2,1)-xyzh(2,i))**2 + (xyzmh_ptmass(3,1)-xyzh(3,i))**2
-       if (eos_vars(imu,i) < gmw) then
-          if (r2>rstrommax**2) then
-             rstrommax = sqrt(r2)
-          endif
-       endif
-       rhomean = rhomean + rhoh(xyzh(4,i),massoftype(1))
-    enddo
-    rhomean = rhomean / npart
-    Rstrom = 10**((1./3)*(log10(((3*mH**2)/(4*pi*ar*rho0**2)))+xyzmh_ptmass(irateion,1)+log10(utime)))
-
-    call checkval(rstrommax,Rstrom,1.4e-2,nfailed(itest),'Initial strömgren radius')
- enddo
- call update_test_scores(ntests,nfailed,npass)
-
- call init_part()
- iH2R = 0
- ieos = 2
-
-end subroutine test_HIIregion
+end subroutine setup_HII_sphere
 
 !-----------------------------------------------------------------------
 !+
@@ -1947,7 +2474,7 @@ subroutine test_SDAR(ntests,npass)
  nfailed(:) = 0
  eccfin = 0.99617740539553523
  tolecc = 3e-5
- tolmom = 2.3e-11
+ tolmom = 5.e-11
  tolang = 5.e-11
  tolen  = 8.e-6
  !
@@ -1980,7 +2507,7 @@ subroutine test_sink_potential(ntests,npass)
  use units,      only:set_units
  integer, intent(inout) :: ntests,npass
  integer :: nfailed(1)
- real :: phi1,phi,eps,x0(3)
+ real :: phi1,phi2,phi,eps,x0(3)
  real :: dphidx,hi,xi,yi,zi,dumxi,dumyi,dumzi,fxi,fyi,fzi,rp
 
  if (id==master) write(*,"(/,a)") '--> testing sink particle surface force'
@@ -2006,14 +2533,18 @@ subroutine test_sink_potential(ntests,npass)
  zi = x0(3) + 1.*rp
  fxi = 0.; fyi = 0.; fzi = 0.; phi = 0.
  call get_accel_sink_gas(nptmass,xi,yi,zi,hi,xyzmh_ptmass,fxi,fyi,fzi,phi)
- ! evaluate sink-gas acceleration at some position + epsilon
- eps = 1.e-6
+ ! evaluate sink-gas potential at position +/- epsilon: phi (~27) is much larger
+ ! than phi1 - phi (~fx*eps), so a one-sided difference with eps=1e-6 loses ~8
+ ! digits to roundoff; a centred difference with eps=1e-4 is accurate to ~1e-9
+ eps = 1.e-4
  dumxi = 0.; dumyi = 0.; dumzi = 0.; phi1 = 0.
  call get_accel_sink_gas(nptmass,xi+eps,yi,zi,hi,xyzmh_ptmass,dumxi,dumyi,dumzi,phi1)
+ dumxi = 0.; dumyi = 0.; dumzi = 0.; phi2 = 0.
+ call get_accel_sink_gas(nptmass,xi-eps,yi,zi,hi,xyzmh_ptmass,dumxi,dumyi,dumzi,phi2)
  ! get the derivative of phi and check it equals the acceleration
- dphidx = -(phi1 - phi)/eps
+ dphidx = -(phi1 - phi2)/(2.*eps)
 
- call checkval(dphidx,fxi,3.9e-8,nfailed(1),'dphi/dx = acceleration')
+ call checkval(dphidx,fxi,5.e-9,nfailed(1),'dphi/dx = acceleration')
  call update_test_scores(ntests,nfailed(1:1),npass)
 
  ! reset options

@@ -44,6 +44,7 @@ module cooling_solver
 ! :Dependencies: cooling_functions, infile_utils, io, physcon, timestep,
 !   units
 !
+ use cooling_functions, only:bowen_Cprime,lambda_shock_cgs,T0_value,T1_factor
 
  use cooling_functions, only:bowen_Cprime,lambda_shock_cgs,T0_value,T1_factor,CO_abun,H2O_abun,&
                               dust_vdrift,dust_d2g
@@ -170,6 +171,7 @@ end subroutine explicit_cooling
 !+
 !-----------------------------------------------------------------------
 subroutine implicit_cooling (ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, divv)
+ use, intrinsic :: ieee_arithmetic, only:ieee_is_nan
  use physcon, only:Rg
  use units,   only:unit_ergg
 
@@ -234,7 +236,7 @@ subroutine implicit_cooling (ui, dudt, rho, dt, mu, gamma, Tdust, K2, kappa, div
  enddo
  u = Tmid/T_on_u
  dudt =(u-ui)/dt
- if (u < 0. .or. isnan(u)) then
+ if (u < 0. .or. ieee_is_nan(u)) then
     print *,u
     stop '[implicit_cooling] u<0'
  endif
