@@ -113,7 +113,9 @@ subroutine startrun(infile,logfile,evfile,dumpfile,noread)
  use mpiutils,         only:reduceall_mpi
  use part,             only:npart,npartoftype,alphaind,ntot,update_npartoftypetot,&
                             iamtype,igas,nptmass,xyzmh_ptmass,vxyz_ptmass,&
-                            xyzh,vxyzu,ibin,ibin_old,ibin_wake,ibelong,rho
+                            xyzh,vxyzu,ibin,ibin_old,ibin_wake,ibelong,rho,iLum
+ use dust_formation,   only:idust_opacity,kappa_max_set,calc_kappa_max
+ use units,            only:umass,unit_luminosity
  use partinject,       only:update_injected_particles
  use readwrite_dumps,  only:dt_read_in
  use timing,           only:get_timings
@@ -196,6 +198,12 @@ subroutine startrun(infile,logfile,evfile,dumpfile,noread)
     call inject_particles(time,0.,xyzh,vxyzu,rho,xyzmh_ptmass,vxyz_ptmass,&
                           npart,npart_old,npartoftype,dtinject)
     call update_injected_particles(npart_old,npart,istepfrac,nbinmax,time,dtmax,dt,dtinject)
+ endif
+
+ ! Bowen opacity with bowen_kmax <= 0: kappa_max from the Eddington limit of the first sink,
+ if (idust_opacity == 1 .and. .not.kappa_max_set) then
+    if (nptmass < 1) call fatal('initial','bowen_kmax <= 0 requires a sink particle to compute kappa_max')
+    call calc_kappa_max(xyzmh_ptmass(4,1)*umass,xyzmh_ptmass(iLum,1)*unit_luminosity)
  endif
 
  ! set initial chemical abundance values

@@ -54,6 +54,7 @@ module dust_formation
  real, public :: bowen_kmax  = 2.7991
  real :: grad_to_ggrav = 0.95
  real :: kappa_max   = 2.7991  ! set from bowen_kmax, or by calc_kappa_max if bowen_kmax < 0
+ logical, public :: kappa_max_set = .false.  ! true once kappa_max has been set from bowen_kmax or calc_kappa_max
  real :: bowen_Tcond = 1500.
  real :: bowen_delta = 60.
 
@@ -286,6 +287,7 @@ subroutine calc_kappa_max(Mstar_cgs, Lstar_cgs)
     kappa_max = grad_to_ggrav * 4.0 * pi * Gg * Mstar_cgs * c / Lstar_cgs
  endif
 
+ kappa_max_set = .true.
  print *,'Calculated kappa_max =',kappa_max,' cm^2/g'
 
 end subroutine calc_kappa_max
@@ -396,6 +398,7 @@ end subroutine evol_K
 !----------------------------------------
 subroutine calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot, ppH2)
 ! all quantities in cgs
+ use io, only:fatal
  real, intent(in)    :: rho_cgs
  real, intent(inout) :: T, mu, gamma
  real, intent(out)   :: pH, pH_tot
@@ -407,7 +410,7 @@ subroutine calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot, ppH2)
 
  Tu  = T/(mu*(gamma-1.))
  Tlo = 0.35*Tu
- Thi = 1.05*Tu
+ Thi = 1.2*Tu
 
  call saha_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot, pH2)
  T_old = T
@@ -417,7 +420,7 @@ subroutine calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot, ppH2)
  do i = 1,itermax
     call saha_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot, pH2)
     f = T - Tu*mu*(gamma-1.)
-    if (abs(f) < tol*T) exit
+    if (abs(f) <= tol*T) exit   ! <= so that T = 0 (u = 0) returns immediately
 
     if (f > 0.) then
        Thi = T
@@ -436,6 +439,7 @@ subroutine calc_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot, ppH2)
     f_old = f
     T    = T_new
  enddo
+ if (i > itermax) call fatal(label,'cannot converge on T(mu,gamma)',var='T',val=T)
  if (present(ppH2)) ppH2 = pH2
 
 end subroutine calc_muGamma
@@ -473,8 +477,10 @@ pure subroutine saha_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot, pH2)
  real, intent(out) :: mu, gamma, pH, pH_tot, pH2
  real :: XH, xx, yy, z1, z2, xe, n_mono, n_H2, ntot, Cv
 
- XH     = 1./(1.+4.*eps(iHe))  ! H mass fraction
- call saha_fractions(T, rho_cgs, XH, 1.-XH, xx, yy, z1, z2)
+ ! H and He mass fractions as used in saha_fractions (n_H = rho X/m_p, n_He = rho Y/(4 m_p)),
+ ! consistent with pH_tot below (n_H = rho/mass_per_H, which includes the metals)
+ XH     = mass_proton_cgs/mass_per_H
+ call saha_fractions(T, rho_cgs, XH, 4.*eps(iHe)*XH, xx, yy, z1, z2)
 
  pH_tot = rho_cgs*T*kboltz/(patm*mass_per_H)
  xe  = yy*xx + eps(iHe)*z1*(1.+z2)
@@ -485,7 +491,7 @@ pure subroutine saha_muGamma(rho_cgs, T, mu, gamma, pH, pH_tot, pH2)
  n_H2   = 0.5*(1.-yy)
  ntot   = n_mono + n_H2
  Cv     = 1.5*n_mono + 2.5*n_H2
- mu     = (1.+4.*eps(iHe))/ntot
+ mu     = mass_per_H/(atomic_mass_unit*ntot)   ! mass per H nucleus / particles per H nucleus (Rg = k/amu)
  gamma  = 1. + ntot/Cv
 
 end subroutine saha_muGamma
@@ -777,7 +783,8 @@ subroutine read_options_dust_formation(db,nerr)
     call read_inopt(kappa_gas,'kappa_gas',db,errcount=nerr,min=0.)
     call read_inopt(grad_to_ggrav,'grad_to_ggrav',db,errcount=nerr,min=0.)
     call read_inopt(bowen_kmax,'bowen_kmax',db,errcount=nerr,min=-10.)
-    if (bowen_kmax > 0.) kappa_max = bowen_kmax
+    kappa_max_set = (bowen_kmax > 0.)
+    if (kappa_max_set) kappa_max = bowen_kmax
     call read_inopt(bowen_Tcond,'bowen_Tcond',db,errcount=nerr,min=0.)
     call read_inopt(bowen_delta,'bowen_delta',db,errcount=nerr,min=0.)
  endif

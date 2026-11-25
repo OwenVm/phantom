@@ -107,13 +107,14 @@ module inject
  integer :: particles_to_inject = 0
 
  real    :: mass_loss_start_time, mass_loss_end_time
- real    :: time_next_measurement     = 0.
+ real    :: time_measure_start        = 0.   ! time of the first count
+ real    :: time_measure_end          = 0.   ! time of the second count
  real    :: mean_mass_loss_rate       = 0.
- integer :: n_measurements            = 0
- integer :: n_escaping_prev           = 0
+ integer :: n_escaping_start          = 0    ! escaped particles at the first count
+ integer :: n_alive_base              = 0    ! live gas particles at the first count
+ real    :: macc_base                 = 0.   ! mass accreted by the sinks at the first count
  logical :: mass_loss_rate_calculated = .false.
  logical :: measurement_active        = .false.
- real, allocatable :: mass_loss_rates(:)
 
 contains
 
@@ -152,7 +153,7 @@ end subroutine set_default_options_inject
 !+
 !----------------------------------------------------------------
 subroutine init_inject(ierr)
- use physcon,        only:days,au,solarm,km
+ use physcon,        only:days,km
  use eos,            only:gmw,gamma,icooling
  use cooling_solver, only:heat_inner
  use units,          only:utime,umass,udist,unit_velocity,unit_luminosity
@@ -165,7 +166,7 @@ subroutine init_inject(ierr)
  integer, parameter :: max_shells_tmp = 2000
  real    :: tmp_dr(max_shells_tmp), tmp_r(max_shells_tmp)
  integer :: tmp_n(max_shells_tmp)
- real    :: Mstar, Rstar, Tstar, current_radius, dr
+ real    :: Mstar, Rstar, Tstar, Lstar, current_radius, dr
  integer :: nshells, n_shell, n_tot, i, k, iunit
  integer :: n_particles_first              ! derived locally — no longer a module parameter
  logical :: file_exists
@@ -178,7 +179,13 @@ subroutine init_inject(ierr)
  Mstar = xyzmh_ptmass(4,wind_emitting_sink)
  Rstar = xyzmh_ptmass(iReff,wind_emitting_sink)
  Tstar = xyzmh_ptmass(iTeff,wind_emitting_sink)
- call calc_kappa_max(Mstar*solarm, xyzmh_ptmass(iLum,wind_emitting_sink)*unit_luminosity)
+ ! with update_L the dump holds the instantaneous (pulsating) luminosity
+ if (update_L == 1) then
+    call get_lum(Lstar, Tstar, Rstar)
+ else
+    Lstar = xyzmh_ptmass(iLum,wind_emitting_sink)
+ endif
+ call calc_kappa_max(Mstar*umass, Lstar*unit_luminosity)
 
  inquire(file='mass_loss_rate.dat', exist=file_exists)
  if (npartoftype(igas) < 100 .and. file_exists .and. use_file_mdot == 0) then
@@ -238,7 +245,7 @@ subroutine init_inject(ierr)
     dr = wss*current_radius*get_neighb_distance(n_shell)
     if (nshells > 2 .and. real(n_shell) < min_mass_fraction*real(n_tot)) then
        nshells = nshells - 1
-       r_max   = current_radius - dr
+       r_max   = tmp_r(nshells)   ! last accepted shell 
        exit
     endif
     tmp_dr(nshells) = dr
@@ -248,7 +255,7 @@ subroutine init_inject(ierr)
     n_tot           = n_tot + n_shell
  enddo
 
- call setup_star(Mstar*umass, Tstar, r_max*au, r_min*au, gmw, gamma, rho_inner, rho_power_in)
+ call setup_star(Mstar*umass, Tstar, r_max*udist, r_min*udist, gmw, gamma, rho_inner, rho_power_in)
  call calc_stellar_profile(n_profile_points)
  if (heat_inner == 1 .and. icooling > 0) call build_inner_heating()
 
@@ -268,17 +275,13 @@ subroutine init_inject(ierr)
  reinject_period      = pulsation_period/n_inject_period
  mass_loss_start_time = mass_loss_start*pulsation_period
  mass_loss_end_time   = mass_loss_end*pulsation_period
- allocate(mass_loss_rates(ceiling((mass_loss_end_time - mass_loss_start_time)/reinject_period) + 1))
- mass_loss_rates = 0.
 
  if (verbose == 1) then
     print *, ''
     print *, 'Calculated reinject period:', reinject_period
-    print *, 'Measurement period:', reinject_period
     print *, 'Mass loss measurement start time:', mass_loss_start_time
     print *, 'Mass loss measurement end time  :', mass_loss_end_time
     print *, 'Rmax                            :', r_max
-    print *, 'Expected number of measurements :', size(mass_loss_rates)
     print *, ''
  endif
 
@@ -478,6 +481,8 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,rho,xyzmh_ptmass,vxyz_ptmass,
  real,    intent(out)   :: dtinject
 
  dtinject = pulsation_timestep*shortest_period
+ ! a step longer than reinject_period would skip a scheduled reinjection
+ if (reinject_enabled == 1) dtinject = min(dtinject, reinject_period)
 
  if (.not. atmosphere_setup_complete) then
     atmosphere_setup_complete = .true.
@@ -491,17 +496,20 @@ subroutine inject_particles(time,dtlast,xyzh,vxyzu,rho,xyzmh_ptmass,vxyz_ptmass,
  endif
 
  if (.not. boundary_info_ready) then
-    call reconstruct_boundary_info(time,xyzh,xyzmh_ptmass)
+    call reconstruct_boundary_info(time,xyzh,xyzmh_ptmass,npart)
     time_last_reinject = time - mod(time,reinject_period)
  endif
 
  if (reinject_enabled == 1) then
     if (.not. mass_loss_rate_calculated) &
-       call take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
-    if (mass_loss_rate_calculated .and. time - time_last_reinject >= reinject_period &
-        .and. time >= mass_loss_start_time) then
-       call perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
-       time_last_reinject = time
+       call take_mass_loss_measurement(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
+    if (mass_loss_rate_calculated .and. time >= mass_loss_start_time) then
+       if (time - time_last_reinject >= 2.*reinject_period) time_last_reinject = time - mod(time,reinject_period)
+       if (time - time_last_reinject >= reinject_period) then
+          call perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,npartoftype)
+          ! fixed schedule: a late reinjection does not delay the next one
+          time_last_reinject = time_last_reinject + reinject_period
+       endif
     endif
  endif
 
@@ -511,66 +519,75 @@ end subroutine inject_particles
 
 !----------------------------------------------------------------
 !+
-!  Counts particles that are unbound from the AGB star
+!  Counts live gas particles that are unbound from the AGB star (n)
 !+
 !----------------------------------------------------------------
-function count_unbound(xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass) result(n)
- real,    intent(in) :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
- integer, intent(in) :: npart
- integer :: n,i
+subroutine count_unbound(xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,n,n_alive)
+ use part, only:iphase,iamtype,igas,isdead_or_accreted
+ real,    intent(in)  :: xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ integer, intent(in)  :: npart
+ integer, intent(out) :: n,n_alive
+ integer :: i
  real    :: x0(3),v0(3),m,r
 
  x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
  v0 = vxyz_ptmass(1:3,wind_emitting_sink)
  m  = xyzmh_ptmass(4,wind_emitting_sink)
- n  = 0
+ n       = 0
+ n_alive = 0
  do i = 1,npart
+    if (isdead_or_accreted(xyzh(4,i)) .or. iamtype(iphase(i)) /= igas) cycle
+    n_alive = n_alive + 1
     r = norm2(xyzh(1:3,i) - x0)
     if (r <= 0.) cycle
     if (0.5*sum((vxyzu(1:3,i) - v0)**2) + vxyzu(4,i) - m/r > 0.) n = n + 1
  enddo
 
-end function count_unbound
+end subroutine count_unbound
 
 !----------------------------------------------------------------
 !+
-!  Checks how much mass the star has lost, and calculates the mass loss rate
+!  Mass-loss rate from two counts of the escaped particles: one at
+!  the first call after mass_loss_start, one a window
+!  (mass_loss_end - mass_loss_start) later. The rate uses the time
+!  actually elapsed between the two counts. After a restart the
+!  first count is redone, so the window starts at the restart time.
 !+
 !----------------------------------------------------------------
-subroutine take_periodic_mass_measurements(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
+subroutine take_mass_loss_measurement(time,xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
+ use part, only:imacc,nptmass
  real,    intent(in) :: time,xyzh(:,:),vxyzu(:,:),xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  integer, intent(in) :: npart
- integer :: n_escaping,newly_unbound
+ integer :: n_escaped,n_unbound,n_alive,n_accreted
 
- if (.not. measurement_active .and. time >= mass_loss_start_time) then
-    measurement_active    = .true.
-    time_next_measurement = time + reinject_period
-    n_escaping_prev       = count_unbound(xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
-    if (verbose == 1) print*,' Baseline unbound particles at measurement start:',n_escaping_prev
+ if (.not. measurement_active) then
+    if (time < mass_loss_start_time) return
+    measurement_active = .true.
+    time_measure_start = time
+    time_measure_end   = time + (mass_loss_end_time - mass_loss_start_time)
+    call count_unbound(xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,n_escaping_start,n_alive_base)
+    macc_base          = sum(xyzmh_ptmass(imacc,1:nptmass))
+    if (verbose == 1) print*,' Unbound particles at measurement start:',n_escaping_start
+    return
  endif
+ if (time < time_measure_end) return
 
- if (measurement_active .and. time >= time_next_measurement .and. time < mass_loss_end_time) then
-    n_escaping      = count_unbound(xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass)
-    newly_unbound   = max(0, n_escaping - n_escaping_prev)
-    n_escaping_prev = n_escaping
-    n_measurements  = n_measurements + 1
-    mass_loss_rates(n_measurements) = newly_unbound*mass_of_gas_particle/reinject_period
-    time_next_measurement = time + reinject_period
-    if (verbose == 1) then
-       print *, ' Unbound+outflowing particles     :',n_escaping
-       print*,' Newly unbound since last snapshot:',newly_unbound
-       print*,' Rate this interval               :',mass_loss_rates(n_measurements)
-    endif
+ call count_unbound(xyzh,vxyzu,npart,xyzmh_ptmass,vxyz_ptmass,n_unbound,n_alive)
+ ! gas removed since the first count (e.g. by rkill) and not accreted by a sink has escaped
+ n_accreted = nint((sum(xyzmh_ptmass(imacc,1:nptmass)) - macc_base)/mass_of_gas_particle)
+ n_escaped  = max(0, n_unbound + max(0, n_alive_base - n_alive - n_accreted) - n_escaping_start)
+
+ mean_mass_loss_rate       = n_escaped*mass_of_gas_particle/(time - time_measure_start)
+ particles_to_inject       = max(1, nint(mean_mass_loss_rate*reinject_period/mass_of_gas_particle))
+ mass_loss_rate_calculated = .true.
+ if (verbose == 1) then
+    print*,' Particles escaped during measurement:',n_escaped
+    print*,' Measurement duration (code units)   :',time - time_measure_start
+    print*,' Mean mass-loss rate (code units)    :',mean_mass_loss_rate
  endif
+ call write_mass_loss_data()
 
- if (measurement_active .and. time >= mass_loss_end_time .and. n_measurements > 0) then
-    mean_mass_loss_rate       = sum(mass_loss_rates(1:n_measurements))/n_measurements
-    particles_to_inject       = max(1, nint(mean_mass_loss_rate*reinject_period/mass_of_gas_particle))
-    mass_loss_rate_calculated = .true.
-    call write_mass_loss_data()
- endif
-
-end subroutine take_periodic_mass_measurements
+end subroutine take_mass_loss_measurement
 
 !----------------------------------------------------------------
 !+
@@ -606,7 +623,7 @@ subroutine perform_reinjection(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npart,np
                              wind_emitting_sink)
  ! follow the boundary deformation below the new shell, in position and velocity
  if (n_modes > 0) call displace_nonradial(time,x0,old_npart+1,npart,xyzh,vxyzu,.true.)
- call set_profile_muGamma(old_npart+1,npart,mu,gam)
+ call set_profile_muGamma(old_npart+1,npart,T,mu,gam,xyzh)
 
  xyzmh_ptmass(4,wind_emitting_sink) = xyzmh_ptmass(4,wind_emitting_sink) - (npart - old_npart)*mass_of_gas_particle
 
@@ -646,14 +663,14 @@ subroutine setup_initial_atmosphere(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass,npa
     first = npart + 1
     call inject_geodesic_sphere(i, first, npart_per_boundary_shell(i), shell_radii_bnd(i), 0., u, &
                                 npart, npartoftype, xyzh, vxyzu, rho, iboundary, x0, v0, wind_emitting_sink)
-    call set_profile_muGamma(first,npart,mu,gam)
+    call set_profile_muGamma(first,npart,T,mu,gam,xyzh)
  enddo
  do i = 1,n_shells_total
     call interp_stellar_profile(shell_radii_gas(i),rho,P,u,T,mu=mu,gamma=gam)
     first = npart + 1
     call inject_geodesic_sphere(n_shells_bnd+i, first, npart_per_shell(i), shell_radii_gas(i), 0., u, &
                                 npart, npartoftype, xyzh, vxyzu, rho, igas, x0, v0, wind_emitting_sink)
-    call set_profile_muGamma(first,npart,mu,gam)
+    call set_profile_muGamma(first,npart,T,mu,gam,xyzh)
  enddo
 
  n_boundary_particles = npartoftype(iboundary)
@@ -679,18 +696,31 @@ end subroutine setup_initial_atmosphere
 
 !----------------------------------------------------------------
 !+
-!  Give particles i1..i2 the mu and gamma of the stellar profile.
+!  Give particles i1..i2 the temperature, mu and gamma of the stellar
+!  profile, and their dust temperature. 
 !+
 !----------------------------------------------------------------
-subroutine set_profile_muGamma(i1,i2,mu,gam)
- use dim,  only:update_muGamma
- use part, only:eos_vars,imu,igamma
+subroutine set_profile_muGamma(i1,i2,T,mu,gam,xyzh)
+ use dim,              only:update_muGamma,store_dust_temperature
+ use part,             only:eos_vars,itemp,imu,igamma,dust_temp,xyzmh_ptmass,nptmass
+ use ptmass_radiation, only:get_dust_temperature_from_ptmass
  integer, intent(in) :: i1,i2
- real,    intent(in) :: mu,gam
+ real,    intent(in) :: T,mu,gam,xyzh(:,:)
+ real :: tau0(max(i2-i1+1,0)),taul0(max(i2-i1+1,0))
 
- if (.not.update_muGamma) return
- eos_vars(imu,i1:i2)    = mu
- eos_vars(igamma,i1:i2) = gam
+ if (i2 < i1) return
+ eos_vars(itemp,i1:i2) = T
+ if (update_muGamma) then
+    eos_vars(imu,i1:i2)    = mu
+    eos_vars(igamma,i1:i2) = gam
+ endif
+ ! optical depths as initialised at the start of a run (initial.F90)
+ if (store_dust_temperature) then
+    tau0  = 0.
+    taul0 = 2./3.
+    call get_dust_temperature_from_ptmass(i2-i1+1,xyzh(:,i1:i2),eos_vars(:,i1:i2),nptmass,xyzmh_ptmass, &
+                                          dust_temp(i1:i2),tau=tau0,tau_lucy=taul0)
+ endif
 
 end subroutine set_profile_muGamma
 
@@ -699,22 +729,27 @@ end subroutine set_profile_muGamma
 !  Reconstructs boundary particle info after resuming from a dump
 !+
 !----------------------------------------------------------------
-subroutine reconstruct_boundary_info(time,xyzh,xyzmh_ptmass)
- use part, only:iboundary,npartoftype
- real, intent(in) :: time,xyzh(:,:),xyzmh_ptmass(:,:)
+subroutine reconstruct_boundary_info(time,xyzh,xyzmh_ptmass,npart)
+ real,    intent(in) :: time,xyzh(:,:),xyzmh_ptmass(:,:)
+ integer, intent(in) :: npart
  integer :: i
  real    :: x0(3),osc,r_dot,dr_nr,sterm(max_modes),cterm(max_modes)
 
  x0 = xyzmh_ptmass(1:3,wind_emitting_sink)
  call get_radial_terms(time,osc,r_dot)
 
- n_boundary_particles = npartoftype(iboundary)
+ n_boundary_particles = 0
+ do i = 1,npart
+    if (is_live_boundary(i,xyzh(4,i))) n_boundary_particles = i
+ enddo
  allocate(r_boundary_equilibrium(n_boundary_particles))
+ r_boundary_equilibrium = 0.
  ! boundary particles only move radially, so Y_k can be recovered from their current direction
  if (n_modes > 0) call compute_boundary_ylm(xyzh,x0)
  call get_mode_terms(time,sterm,cterm)
  ! subtract the full displacement at the restart time (radial + all modes)
  do i = 1,n_boundary_particles
+    if (.not.is_live_boundary(i,xyzh(4,i))) cycle
     dr_nr = 0.
     if (n_modes > 0) dr_nr = dot_product(ylm_boundary(1:n_modes,i),sterm(1:n_modes))
     r_boundary_equilibrium(i) = norm2(xyzh(1:3,i) - x0) - osc - dr_nr
@@ -749,6 +784,7 @@ subroutine apply_pulsation(time,xyzh,vxyzu,xyzmh_ptmass,vxyz_ptmass)
  call get_mode_terms(time,sterm,cterm)
 
  do i = 1,n_boundary_particles
+    if (.not.is_live_boundary(i,xyzh(4,i))) cycle
     ! Radial unit vector from current position
     x_hat        = xyzh(1:3,i) - x0
     x_hat        = x_hat/norm2(x_hat)
@@ -847,7 +883,9 @@ subroutine compute_boundary_ylm(xyzh,x0)
 
  if (allocated(ylm_boundary)) deallocate(ylm_boundary)
  allocate(ylm_boundary(n_modes,n_boundary_particles))
+ ylm_boundary = 0.
  do i = 1,n_boundary_particles
+    if (.not.is_live_boundary(i,xyzh(4,i))) cycle
     x_hat = xyzh(1:3,i) - x0
     x_hat = x_hat/norm2(x_hat)
     do k = 1,n_modes
@@ -856,6 +894,20 @@ subroutine compute_boundary_ylm(xyzh,x0)
  enddo
 
 end subroutine compute_boundary_ylm
+
+!----------------------------------------------------------------
+!+
+!  True if particle i is a boundary particle that has not been accreted
+!+
+!----------------------------------------------------------------
+logical function is_live_boundary(i,hi)
+ use part, only:iphase,iamtype,iboundary,isdead_or_accreted
+ integer, intent(in) :: i
+ real,    intent(in) :: hi
+
+ is_live_boundary = (iamtype(iphase(i)) == iboundary .and. .not.isdead_or_accreted(hi))
+
+end function is_live_boundary
 
 !----------------------------------------------------------------
 !+
@@ -935,12 +987,12 @@ end subroutine update_injected_par
 !+
 !----------------------------------------------------------------
 subroutine get_lum(Lum,Teff,Reff)
- use physcon, only:au,steboltz
- use units,   only:unit_luminosity
+ use physcon, only:steboltz
+ use units,   only:udist,unit_luminosity
  real, intent(out) :: Lum
  real, intent(in)  :: Teff,Reff
 
- Lum = 4.*pi*steboltz*Teff**4*(Reff*au)**2/unit_luminosity
+ Lum = 4.*pi*steboltz*Teff**4*(Reff*udist)**2/unit_luminosity
 
 end subroutine get_lum
 
@@ -953,7 +1005,7 @@ subroutine write_mass_loss_data()
  use io,      only:iprint
  use physcon, only:solarm,years
  use units,   only:umass,utime
- integer :: iunit,ierr,i
+ integer :: iunit,ierr
 
  open(newunit=iunit,file='mass_loss_rate.dat',status='replace',iostat=ierr)
  if (ierr /= 0) then
@@ -968,11 +1020,8 @@ subroutine write_mass_loss_data()
  write(iunit,*) mean_mass_loss_rate/(solarm/umass)/(utime/years)
  write(iunit,*) Mtotal
  write(iunit,*) particles_to_inject
- write(iunit,*) n_measurements
+ write(iunit,*) 0   ! number of per-interval rates: none, line kept so the file format is unchanged
  write(iunit,*) mass_of_gas_particle
- do i = 1,n_measurements
-    write(iunit,*) mass_loss_rates(i)
- enddo
  close(iunit)
 
  print *, ''
@@ -988,7 +1037,7 @@ end subroutine write_mass_loss_data
 !----------------------------------------------------------------
 subroutine read_mass_loss_data()
  use io, only:iprint
- integer :: iunit,ierr,i
+ integer :: iunit,ierr
 
  open(newunit=iunit,file='mass_loss_rate.dat',status='old',iostat=ierr)
  if (ierr /= 0) return
@@ -1004,16 +1053,8 @@ subroutine read_mass_loss_data()
  read(iunit,*,iostat=ierr) mean_mass_loss_rate
  read(iunit,*,iostat=ierr) Mtotal
  read(iunit,*,iostat=ierr) particles_to_inject
- read(iunit,*,iostat=ierr) n_measurements
+ read(iunit,*,iostat=ierr)   ! number of per-interval rates (older files list them below; not used)
  read(iunit,*,iostat=ierr) mass_of_gas_particle
-
- if (n_measurements > 0) then
-    if (.not. allocated(mass_loss_rates)) allocate(mass_loss_rates(n_measurements))
-    do i = 1,n_measurements
-       read(iunit,*,iostat=ierr) mass_loss_rates(i)
-       if (ierr /= 0) exit
-    enddo
- endif
  close(iunit)
 
  if (verbose == 1) then
@@ -1032,10 +1073,13 @@ end subroutine read_mass_loss_data
 !+
 !----------------------------------------------------------------
 subroutine calculate_period(M,R,pulsation_period_days)
- real, intent(in)  :: M,R
+ use physcon, only:solarm,solarr
+ use units,   only:umass,udist
+ real, intent(in)  :: M,R   ! code units
  real, intent(out) :: pulsation_period_days
 
- pulsation_period_days = 10.**(-1.92 - 0.73*log10(M) + 1.86*log10(R*215.032))
+ ! Ostlie & Cox (1986), M and R in solar units
+ pulsation_period_days = 10.**(-1.92 - 0.73*log10(M*umass/solarm) + 1.86*log10(R*udist/solarr))
  print*,'Calculated pulsation period (days): ',pulsation_period_days
 
 end subroutine calculate_period
