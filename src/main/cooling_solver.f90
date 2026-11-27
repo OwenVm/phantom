@@ -36,7 +36,7 @@ module cooling_solver
 !   - high_temp      : *radiative cooling for high temperatures (1=on/0=off)*
 !   - icool_method   : *integration method (0=implicit, 1=explicit, 2=exact solution)*
 !   - lambda_shock   : *Cooling rate parameter for analytic shock solution*
-!   - photoelectric_heating : *photoelectric heating, unattenuated, Decin et al. 2006 (1=on/0=off)*
+!   - photoe_heating : *photoelectric heating, unattenuated, Decin et al. 2006 (1=on/0=off)*
 !   - relax_bowen    : *Bowen (diffusive) relaxation (1=on/0=off)*
 !   - relax_stefan   : *radiative relaxation (1=on/0=off)*
 !   - shock_problem  : *piecewise formulation for analytic shock solution (1=on/0=off)*
@@ -626,7 +626,7 @@ subroutine write_options_cooling_solver(iunit)
  endif
  call write_inopt(bowen_Cprime,'bowen_Cprime','radiative cooling rate (g.s/cm³)',iunit)
  call write_inopt(friction_heating,'friction_heating','gas-grain friction heating, Decin et al. 2006 (1=on/0=off)',iunit)
- call write_inopt(photoelectric_heating,'photoelectric_heating',&
+ call write_inopt(photoelectric_heating,'photoe_heating',&
                   'photoelectric heating, unattenuated, Decin et al. 2006 (1=on/0=off)',iunit)
  call write_inopt(dustgas_heating,'dustgas_heating','dust-gas heat exchange, Decin et al. 2006 (1=on/0=off)',iunit)
  call write_inopt(cosmicray_heating,'cosmicray_heating','cosmic ray heating, Decin et al. 2006 (1=on/0=off)',iunit)
@@ -667,7 +667,7 @@ subroutine read_options_cooling_solver(db,nerr)
  endif
  call read_inopt(bowen_Cprime,'bowen_Cprime',db,errcount=nerr,min=0.,default=bowen_Cprime)
  call read_inopt(friction_heating,'friction_heating',db,errcount=nerr,min=0,max=1,default=friction_heating)
- call read_inopt(photoelectric_heating,'photoelectric_heating',db,errcount=nerr,min=0,max=1,default=photoelectric_heating)
+ call read_inopt(photoelectric_heating,'photoe_heating',db,errcount=nerr,min=0,max=1,default=photoelectric_heating)
  call read_inopt(dustgas_heating,'dustgas_heating',db,errcount=nerr,min=0,max=1,default=dustgas_heating)
  call read_inopt(cosmicray_heating,'cosmicray_heating',db,errcount=nerr,min=0,max=1,default=cosmicray_heating)
  call read_inopt(H2_vib_cooling,'H2_vib_cooling',db,errcount=nerr,min=0,max=1,default=H2_vib_cooling)
